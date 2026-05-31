@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+.env
+data/books/*.pdf
+data/chapters/
+data/vector_db/
+data/progress/
+data/images/
+*.pyc

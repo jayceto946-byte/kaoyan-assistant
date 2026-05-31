@@ -1,0 +1,51 @@
+"""全局状态定义 — LangGraph AgentState"""
+import operator
+from typing import Annotated, TypedDict, Optional
+
+
+class AgentState(TypedDict):
+    # === 用户输入 ===
+    user_input: str
+    user_images: list[str]
+
+    # === 用户画像 (长期) ===
+    user_profile: dict
+    learning_progress: dict
+    long_term_memory: dict
+    book_name: str
+
+    # === 会话上下文 ===
+    messages: Annotated[list[dict], operator.add]
+
+    # === Planner 输出 ===
+    intent: str                 # qa | teach | summarize | quiz | plan | cross_chapter
+    sub_tasks: list[dict]       # [{step, description, agent, chapter}]
+    target_chapters: list[str]
+    route_decision: str
+
+    # === 检索结果 ===
+    chapter_contents: dict      # {chapter_name: [docs]}
+    concept_results: list[dict]  # 语义检索结果
+    history_results: list[dict]  # 学习历史
+    knowledge_graph_path: list[str]  # 知识图谱关联路径
+
+    # === 章节教学输出 ===
+    teaching_content: str
+    key_points: list[str]
+    extracted_examples: list[dict]
+    quiz_questions: list[dict]
+    chapter_summary: str
+
+    # === 综合生成输出 ===
+    final_output: str
+    output_type: str            # text | quiz | plan | mindmap
+
+    # === 反馈 ===
+    user_feedback: Optional[dict]
+    mastery_update: dict
+    next_review: Optional[str]
+
+    # === 控制 ===
+    error: str
+    iteration: int
+    max_iterations: int
