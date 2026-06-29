@@ -1239,3 +1239,11 @@ npm run dev
 - 修复 `desktop/main.cjs` 中桌面主进程更新状态、窗口标题、启动错误等中文文案乱码问题，并通过 `node --check desktop/main.cjs`。
 - 验证：`latest.yml` 指向新安装包；打包资源中未发现 `.env`、`*.env` 或 `*.key`；已用打包后的 `backend_server.exe` 在临时端口启动并访问 `/api/system/settings`，确认接口成功且未回显 `sk-...` 形态密钥。
 - 产物大小：Setup 约 1847.22 MB，`win-unpacked` 约 3314.04 MB，其中后端资源约 2994.60 MB。
+
+## 2026-06-29 发布前反馈问题记录
+
+- 旧版 setup 安装后 Electron 可能停留在初始化页，实际是桌面壳等待本地后端 `/health` 超时；当前缺少打包版后端 stdout/stderr 日志与初始化页错误展示，需要在下一版加入 `%APPDATA%\kaoyan-assistant-desktop\logs\backend.log` 和可见 fallback。
+- 当前安装包没有内置 `BAAI/bge-small-zh-v1.5` 嵌入模型，首启资源下载依赖 HuggingFace / hf-mirror；用户网络不可用时会报 `Embedding model download failed`，下一版应改为离线内置模型或提供本地导入包。
+- `desktop/sample_data` 当前只有 README，没有真实“优化设计”示例数据；下一版需要把示例 books、chapters、progress、images、vector_db、models 按安全白名单种入安装包。
+- GitHub 上展示的 `.env.example` 出现中文注释乱码；本次已重写为 UTF-8 英文注释，并同步检查桌面入口文案、应用名和嵌入模型日志文案。
+- 待确认功能：新增“本章重点题目化展开”。方向是基于已有章节内容、KG、语义角色与教材例题检索，为指定章节生成更详细的重点清单，并把每个重点展开成题目、考法、解法步骤、易错点和教材依据。
