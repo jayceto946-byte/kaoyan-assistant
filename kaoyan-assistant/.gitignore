@@ -1,9 +1,62 @@
 venv/
+venv312/
+venv310/
 __pycache__/
 .env
-data/books/*.pdf
-data/chapters/
-data/vector_db/
-data/progress/
-data/images/
+.env.*
+!.env.example
+deepseek-api.txt
+*api*.txt
+*.key
+*.pem
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+*.bak
+*.bak_*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.pyc
+
+# Frontend build/dependency artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local learning data, models, generated indexes, and backups
+data/
+mineru_output/
+test_mineru/
+backups/
+
+# Local assistant/tool logs
+.codex_logs/
+.claude/
+.codex_desktop_smoke/
+
+# Local OCR/TOC samples and extracted textbook snippets
+kimi_toc.json
+ocr_*.json
+ocr_*.txt
+
+# Local diagnostics and benchmark scratch files
+_benchmark*.py
+_benchmark*_output.txt
+_test_*.py
+_test_*.md
+_test_*.json
+_smoke_test.txt
+_output.txt
+_show*.txt
+_show*.py
+_check_chunks.py
+session_*.zip
+exports/
+
+desktop/node_modules/
+desktop/dist/
+release/
+build/
+.codex/

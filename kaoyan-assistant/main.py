@@ -28,6 +28,9 @@ def main():
         print("   创建 .env 配置 MOONSHOT_API_KEY (Kimi K2.6)")
 
     if args.mode == "web":
+        import os
+        for v in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            os.environ[v] = ""
         from ui.web import StudyWebUI
         ui = StudyWebUI()
         ui.launch(share=args.share, port=args.port)

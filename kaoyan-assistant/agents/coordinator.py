@@ -33,7 +33,7 @@ class CoordinatorAgent:
 
     def __init__(self, vector_store: ChapterVectorStore):
         self.vector_store = vector_store
-        self.llm = get_llm(temperature=0)
+        self.llm = get_llm()
         self._chapter_agents: dict[str, ChapterAgent] = {}
 
     def _get_chapter_names(self) -> list[str]:

@@ -1,11 +1,15 @@
 """参数化章节教学 Subgraph — 一个通用图，按 chapter_name 注入不同内容
 
-Pipeline: 获取内容 → 提炼重点 → 生成讲解 → 例题解析 → 出题巩固
+Pipeline: 获取内容 → 【并行】提炼重点 / 出题 / 生成讲解+总结
+优化后关键路径仅 1 次 LLM 调用（讲解+总结合并），非关键任务后台并行。
 """
 import json
+from concurrent.futures import ThreadPoolExecutor
 from config import get_llm
-from ingestion.vector_store import ChapterVectorStore
+from ingestion.vector_store import get_vector_store
 from knowledge.summary_store import SummaryStore
+from utils.latex_sanitizer import sanitize_latex
+from utils.thinking_filter import strip_thinking
 
 EXTRACT_KEYPOINTS_PROMPT = """基于以下章节内容，提取考研重点：
 
@@ -22,117 +26,31 @@ EXTRACT_KEYPOINTS_PROMPT = """基于以下章节内容，提取考研重点：
 }}
 """
 
-TEACH_PROMPT = """你是一位考研辅导名师。请基于以下内容讲解这一章。
+TEACH_PROMPT = """请基于以下教材内容，讲解"{chapter}"。直接开始，不要寒暄。
 
-## 章节：{chapter}
-## 内容
+## 教材内容
 {content}
 
-## 重点概念
-{key_points}
-
-## 讲解要求
-1. 从基础概念开始，逐步深入
-2. 用通俗语言解释，配合公式（LaTeX）
-3. 强调考研高频考点和易错点
-4. 给出典型例题的解题思路
-5. 总结本章知识框架
-"""
-
-SUMMARIZE_PROMPT = """请对以下章节生成精简总结：
-
-## 章节：{chapter}
-## 讲解内容
-{teaching}
-
 ## 要求
-1. 1000字以内
-2. 包含核心概念、公式速查、知识脉络
-3. 标注★★★重点
+1. 概念定义请使用教材原文表述，如"单纯形法是指……"、"某某概念是……"
+2. 以例题为主线展开讲解，逐步拆解解题过程，每步都要有具体步骤和说明；若例题题干不完整，必须如实说明，不得编造缺失的题干
+3. 公式使用LaTeX：行内$...$，块级$$...$$；所有 $ / $$ 必须成对闭合，不能把中文文字或标点包在数学模式内
 """
 
 
-def chapter_subgraph_run(state: dict) -> dict:
-    """参数化章节教学流水线
-
-    根据 state.target_chapters[0] 加载对应章节内容，执行教学流水线。
-    所有章节共用同一个 subgraph，通过 chapter_name 参数化。
-    """
-    target = state.get("target_chapters", [])
-    if not target:
-        return {"teaching_content": "未指定章节", "error": "no_chapter"}
-
-    chapter = target[0]
-    user_input = state.get("user_input", "")
-    intent = state.get("intent", "teach")
-    book_name = state.get("book_name", "default")
-
-    vs = ChapterVectorStore()
-    llm = get_llm(temperature=0.3)
-
-    # Step 1: 获取内容
-    docs = vs.search_chapter(chapter, user_input + " 重点 概念 定义", k=8)
-    if not docs:
-        docs = vs.search_chapter(chapter, "全部内容", k=10)
-    content = "\n\n".join(d.page_content for d in docs) if docs else "（无内容）"
-
-    # Step 2: 尝试从缓存获取摘要
-    ss = SummaryStore(book_name)
-    cached = ss.get(chapter)
-
-    # Step 3: 提取重点
-    key_points_str = ""
-    if cached:
-        key_points_str = "\n".join(cached.get("key_points", []))
-    else:
-        resp = llm.invoke(EXTRACT_KEYPOINTS_PROMPT.format(content=content[:4000]))
-        try:
-            kp = json.loads(_clean_json(resp.content))
-            key_points_str = "\n".join(kp.get("key_concepts", []))
-        except json.JSONDecodeError:
-            key_points_str = ""
-
-    # Step 4: 生成讲解
-    if intent in ("teach", "summarize"):
-        teaching = llm.invoke(TEACH_PROMPT.format(
-            chapter=chapter,
-            content=content[:6000],
-            key_points=key_points_str or "从内容中提取",
-        )).content
-    else:
-        teaching = f"## {chapter}\n\n{content[:3000]}"
-
-    examples = []
-    quiz_questions = []
-
-    # Step 5: 出题（如果是 teach 意图）
-    if intent == "teach":
-        quiz_questions = _generate_quiz(chapter, content, llm)
-
-    # Step 6: 总结
-    summary = ""
-    if intent in ("teach", "summarize"):
-        summary = llm.invoke(SUMMARIZE_PROMPT.format(
-            chapter=chapter,
-            teaching=teaching[:4000],
-        )).content
-        # 缓存
-        ss.set(chapter, {
-            "summary": summary,
-            "key_points": key_points_str.split("\n") if key_points_str else [],
-            "teaching": teaching[:2000],
-        })
-
-    return {
-        "teaching_content": teaching,
-        "key_points": key_points_str.split("\n") if key_points_str else [],
-        "extracted_examples": examples,
-        "quiz_questions": quiz_questions,
-        "chapter_summary": summary,
-    }
+def _extract_keypoints(content: str, llm) -> str:
+    """同步提取重点，用于后台线程。"""
+    resp = llm.invoke(EXTRACT_KEYPOINTS_PROMPT.format(content=content[:4000]))
+    raw = strip_thinking(resp.content)
+    try:
+        kp = json.loads(_clean_json(raw))
+        return "\n".join(kp.get("key_concepts", []))
+    except json.JSONDecodeError:
+        return ""
 
 
 def _generate_quiz(chapter: str, content: str, llm) -> list[dict]:
+    """同步出题，用于后台线程。"""
     prompt = f"""基于以下章节内容，生成 3 道选择题和 2 道填空题。
 
 ## 章节：{chapter}
@@ -146,8 +64,9 @@ def _generate_quiz(chapter: str, content: str, llm) -> list[dict]:
 ]
 """
     resp = llm.invoke(prompt)
+    raw = strip_thinking(resp.content)
     try:
-        return json.loads(_clean_json(resp.content))
+        return json.loads(_clean_json(raw))
     except json.JSONDecodeError:
         return [{"question": "出题失败", "type": "text", "error": True}]
 
@@ -157,3 +76,128 @@ def _clean_json(text: str) -> str:
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("\n", 1)[0]
     return text
+
+
+def _future_result_if_done(futures: dict, name: str, default=None):
+    """Return a background result only if it is already ready; otherwise cancel it."""
+    fut = futures.get(name)
+    if not fut:
+        return default
+    if not fut.done():
+        fut.cancel()
+        return default
+    try:
+        return fut.result()
+    except Exception:
+        return default
+
+def prepare_chapter_subgraph(state: dict):
+    """准备章节教学内容：获取内容、启动后台任务。
+
+    Returns:
+        (content, chapter, book_name, executor, futures)
+    """
+    target = state.get("target_chapters", [])
+    if not target:
+        return "（无内容）", "", "", None, {}
+
+    chapter = target[0]
+    user_input = state.get("user_input", "")
+    intent = state.get("intent", "teach")
+    book_name = state.get("book_name", "default")
+
+    vs = get_vector_store()
+    llm = get_llm()
+
+    # Step 1: 获取内容（向量检索，毫秒级）
+    docs = vs.search_chapter(chapter, user_input + " 重点 概念 定义", k=8)
+    if not docs:
+        docs = vs.search_chapter(chapter, "全部内容", k=10)
+
+    # 【模糊匹配 fallback】如果按章节名精确匹配不到（plan_node 可能返回了小节标题），
+    # 用全库语义搜索找最相关的章节
+    if not docs:
+        all_results = vs.search_all(user_input, k=5, top_n=1)
+        if all_results:
+            chapter = list(all_results.keys())[0]
+            docs = vs.search_chapter(chapter, user_input + " 重点 概念 定义", k=8)
+            if not docs:
+                docs = vs.search_chapter(chapter, "全部内容", k=10)
+
+    content = "\n\n".join(d.page_content for d in docs) if docs else "（无内容）"
+    if content == "（无内容）":
+        return content, chapter, book_name, None, {}
+
+    # Step 2: 尝试从缓存获取摘要
+    ss = SummaryStore(book_name)
+    cached = ss.get(chapter)
+
+    # Step 3: 启动后台并行任务（提取重点、出题）
+    executor = ThreadPoolExecutor(max_workers=2)
+    futures = {}
+
+    if not cached:
+        futures["keypoints"] = executor.submit(_extract_keypoints, content[:4000], llm)
+
+    if intent == "teach":
+        futures["quiz"] = executor.submit(_generate_quiz, chapter, content, llm)
+
+    return content, chapter, book_name, executor, futures
+
+
+def chapter_subgraph_run(state: dict) -> dict:
+    """参数化章节教学流水线（同步版，供非流式场景使用）。
+
+    关键路径：1 次 LLM 调用（讲解+总结合并）
+    后台并行：提取重点、出题（不阻塞关键路径）
+    """
+    content, chapter, book_name, executor, futures = prepare_chapter_subgraph(state)
+    intent = state.get("intent", "teach")
+
+    if content == "（无内容）":
+        # 返回空字符串，让 generate_node fallback 到正常 QA 生成流程
+        return {"teaching_content": "", "error": "no_chapter"}
+
+    llm = get_llm()
+    ss = SummaryStore(book_name)
+    cached = ss.get(chapter)
+
+    # Step 4: 一次 LLM 调用生成讲解 + 总结
+    if intent in ("teach", "summarize"):
+        teach_prompt = TEACH_PROMPT.format(
+            chapter=chapter,
+            content=content[:6000],
+        )
+        resp = llm.invoke(teach_prompt)
+        full_output = resp.content
+        teaching = sanitize_latex(full_output)
+        summary = ""
+    else:
+        teaching = sanitize_latex(f"## {chapter}\n\n{content[:3000]}")
+        summary = ""
+
+    # Step 5: 收集后台任务结果。后台任务不阻塞主讲解；没完成就跳过。
+    key_points_str = _future_result_if_done(futures, "keypoints", "")
+    if not key_points_str and cached:
+        key_points_str = "\n".join(cached.get("key_points", []))
+
+    quiz_questions = _future_result_if_done(futures, "quiz", [])
+
+    if executor:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    # Step 6: 缓存结果
+    if intent in ("teach", "summarize"):
+        ss.set(chapter, {
+            "summary": summary,
+            "key_points": key_points_str.split("\n") if key_points_str else [],
+            "teaching": teaching[:2000],
+        })
+
+    return {
+        "teaching_content": teaching,
+        "key_points": key_points_str.split("\n") if key_points_str else [],
+        "extracted_examples": [],
+        "quiz_questions": quiz_questions,
+        "chapter_summary": summary,
+    }

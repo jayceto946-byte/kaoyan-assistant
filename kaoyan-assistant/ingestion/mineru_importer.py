@@ -1,0 +1,314 @@
+"""Textbook import helpers backed by MinerU output.
+
+The preferred path is MinerU 3.x API -> content/middle JSON -> chapters ->
+chapter vector stores. If MinerU is unavailable, callers can explicitly fall
+back to local TOC parsing, but the result is marked as non-OCR.
+"""
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+from config import MINERU_API_URL, MINERU_CLI_COMMAND, MINERU_OUTPUT_PATH, MINERU_TASK_POLL_SECONDS, MINERU_TASK_TIMEOUT_SECONDS
+from ingestion.chapter_splitter import ChapterSplitter
+from ingestion.mineru_client import MinerUClient
+from ingestion.pdf_parser import PDFParser
+from ingestion.vector_store import get_vector_store
+
+ProgressCallback = Callable[[str, str, int | None], None]
+
+
+@dataclass
+class BookImportResult:
+    book_name: str
+    chapters: list[dict]
+    used_mineru: bool
+    indexed_chunks: int = 0
+    output_dir: str = ""
+    message: str = ""
+
+
+def import_textbook(
+    pdf_path: Path,
+    book_name: str,
+    toc_pages: str = "",
+    require_mineru: bool = True,
+    on_progress: ProgressCallback | None = None,
+) -> BookImportResult:
+    if require_mineru and not MINERU_API_URL:
+        raise RuntimeError("未配置 MINERU_API_URL，无法执行 MinerU 教材导入")
+    if MINERU_API_URL:
+        return _import_with_mineru(pdf_path, book_name, on_progress)
+    return import_textbook_local(pdf_path, book_name, toc_pages, on_progress)
+
+
+def import_textbook_local(
+    pdf_path: Path,
+    book_name: str,
+    toc_pages: str = "",
+    on_progress: ProgressCallback | None = None,
+) -> BookImportResult:
+    if on_progress:
+        on_progress("local_parse", "使用本地目录解析，扫描件正文不会 OCR", 35)
+    chapters = _parse_chapters_locally(pdf_path, book_name, toc_pages)
+    return BookImportResult(
+        book_name=book_name,
+        chapters=chapters,
+        used_mineru=False,
+        message="本地目录解析完成；扫描件正文未 OCR",
+    )
+
+
+def _import_with_mineru(pdf_path: Path, book_name: str, on_progress: ProgressCallback | None) -> BookImportResult:
+    output_dir = MINERU_OUTPUT_PATH / book_name / "hybrid_auto"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if on_progress:
+        on_progress("mineru_submit", "提交到 MinerU 服务", 10)
+    client = MinerUClient(MINERU_API_URL)
+    task_id = client.submit_pdf(pdf_path, parse_method="auto")
+
+    if on_progress:
+        on_progress("mineru_running", f"MinerU 解析中：{task_id}", 20)
+
+    def status_update(state: str, payload: dict[str, Any]) -> None:
+        if on_progress:
+            queued = payload.get("queued_ahead") or payload.get("queue_position")
+            msg = f"MinerU 状态：{state}"
+            if queued is not None:
+                msg += f"，队列前方 {queued}"
+            on_progress("mineru_running", msg, None)
+
+    client.wait_for_task(task_id, MINERU_TASK_TIMEOUT_SECONDS, MINERU_TASK_POLL_SECONDS, on_progress=status_update)
+
+    if on_progress:
+        on_progress("mineru_download", "下载 MinerU 解析结果", 55)
+    client.fetch_result(task_id, output_dir)
+
+    if on_progress:
+        on_progress("structure", "整理章节和正文块", 70)
+    chapters = chapters_from_mineru_output(output_dir, book_name)
+    if not chapters:
+        chapters = _parse_chapters_locally(pdf_path, book_name, "")
+
+    if on_progress:
+        on_progress("indexing", "写入章节向量索引", 84)
+    indexed = build_index_from_chapters(book_name, chapters, output_dir)
+
+    return BookImportResult(
+        book_name=book_name,
+        chapters=chapters,
+        used_mineru=True,
+        indexed_chunks=indexed,
+        output_dir=str(output_dir),
+        message=f"MinerU 解析完成，已索引 {indexed} 个文本块",
+    )
+
+
+def _import_with_mineru_cli(pdf_path: Path, book_name: str, on_progress: ProgressCallback | None) -> BookImportResult:
+    output_dir = MINERU_OUTPUT_PATH / book_name / "hybrid_auto"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    command = MINERU_CLI_COMMAND.format(input=str(pdf_path), output=str(output_dir), book=book_name)
+    if on_progress:
+        on_progress("mineru_cli", "运行 MinerU CLI", 15)
+    completed = subprocess.run(shlex.split(command, posix=False), capture_output=True, text=True, timeout=MINERU_TASK_TIMEOUT_SECONDS)
+    if completed.returncode != 0:
+        err = (completed.stderr or completed.stdout or "MinerU CLI failed").strip()
+        raise RuntimeError(err[-1000:])
+    if on_progress:
+        on_progress("structure", "整理章节和正文块", 70)
+    chapters = chapters_from_mineru_output(output_dir, book_name)
+    if not chapters:
+        raise RuntimeError("MinerU CLI 未生成可识别的 content_list/middle 输出")
+    if on_progress:
+        on_progress("indexing", "写入章节向量索引", 84)
+    indexed = build_index_from_chapters(book_name, chapters, output_dir)
+    return BookImportResult(
+        book_name=book_name,
+        chapters=chapters,
+        used_mineru=True,
+        indexed_chunks=indexed,
+        output_dir=str(output_dir),
+        message=f"MinerU CLI 解析完成，已索引 {indexed} 个文本块",
+    )
+
+def _parse_chapters_locally(pdf_path: Path, book_name: str, toc_pages: str) -> list[dict]:
+    parser = PDFParser(pdf_path)
+    try:
+        chapters = parser.extract_chapters(toc_pages.strip() if toc_pages else "")
+    finally:
+        parser.close()
+    if not chapters:
+        chapters = [{"title": f"{book_name} (全文)", "page_number": 1, "end_page": 0, "text": ""}]
+    return chapters
+
+
+def chapters_from_mineru_output(output_dir: Path, book_name: str) -> list[dict]:
+    content = _load_first_json(output_dir, ["*content_list*.json", "*content-list*.json"])
+    if isinstance(content, list):
+        chapters = _chapters_from_content_list(content, book_name)
+        if chapters:
+            return chapters
+
+    middle = _load_first_json(output_dir, ["*middle*.json"])
+    if isinstance(middle, dict):
+        chapters = _chapters_from_middle_json(middle, book_name)
+        if chapters:
+            return chapters
+    return []
+
+
+def extract_text_from_mineru_output(output_dir: Path) -> str:
+    content = _load_first_json(output_dir, ["*content_list*.json", "*content-list*.json"])
+    if isinstance(content, list):
+        return _normalize_text("\n\n".join(_item_text(item) for item in content if _item_text(item)))
+    middle = _load_first_json(output_dir, ["*middle*.json"])
+    if isinstance(middle, dict):
+        parts: list[str] = []
+        for page in middle.get("pdf_info", []) or []:
+            for block in page.get("para_blocks", []) or []:
+                text = _collect_block_text(block)
+                if text:
+                    parts.append(text)
+        return _normalize_text("\n\n".join(parts))
+    markdowns = list(output_dir.rglob("*.md"))
+    if markdowns:
+        return _normalize_text("\n\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in markdowns))
+    return ""
+
+
+def _load_first_json(output_dir: Path, patterns: list[str]) -> Any:
+    for pattern in patterns:
+        for path in output_dir.rglob(pattern):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+    return None
+
+
+def _chapters_from_content_list(items: list[dict], book_name: str) -> list[dict]:
+    chapters: list[dict] = []
+    current = _new_chapter(f"{book_name} (全文)", 1)
+    saw_heading = False
+
+    for item in items:
+        text = _item_text(item)
+        if not text:
+            continue
+        page = int(item.get("page_idx", 0) or 0) + 1
+        text_level = item.get("text_level")
+        is_heading = item.get("type") == "text" and isinstance(text_level, int) and 1 <= text_level <= 2
+        if is_heading and _looks_like_chapter_heading(text):
+            if current["text"].strip():
+                current["end_page"] = max(int(current.get("end_page") or page), page)
+                chapters.append(current)
+            current = _new_chapter(text, page)
+            saw_heading = True
+            continue
+        current["text"] += text + "\n\n"
+        current["end_page"] = page
+
+    if current["text"].strip() or not chapters:
+        if not saw_heading:
+            current["title"] = f"{book_name} (全文)"
+        chapters.append(current)
+    return _clean_chapters(chapters)
+
+
+def _chapters_from_middle_json(middle: dict, book_name: str) -> list[dict]:
+    items: list[dict] = []
+    for page in middle.get("pdf_info", []) or []:
+        page_idx = page.get("page_idx", 0)
+        for block in page.get("para_blocks", []) or []:
+            text = _collect_block_text(block)
+            if text:
+                items.append({"type": "text", "text": text, "page_idx": page_idx})
+    return _chapters_from_content_list(items, book_name) if items else []
+
+
+def _new_chapter(title: str, page: int) -> dict:
+    return {"title": title.strip(), "page_number": page, "end_page": page, "text": ""}
+
+
+def _clean_chapters(chapters: list[dict]) -> list[dict]:
+    cleaned = []
+    for ch in chapters:
+        title = re.sub(r"\s+", " ", ch.get("title", "")).strip()
+        text = ch.get("text", "").strip()
+        if title:
+            cleaned.append({**ch, "title": title, "text": text})
+    return cleaned
+
+
+def _looks_like_chapter_heading(text: str) -> bool:
+    compact = text.strip()
+    if len(compact) > 80:
+        return False
+    patterns = [
+        r"^第[一二三四五六七八九十百\d]+[章节篇讲]",
+        r"^\d+(\.\d+){0,2}\s+",
+        r"^Chapter\s+\d+",
+    ]
+    return any(re.search(pattern, compact, re.IGNORECASE) for pattern in patterns)
+
+
+def _item_text(item: dict) -> str:
+    parts: list[str] = []
+    for key in ("text", "code_body", "latex"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    for key in ("table_caption", "table_footnote", "image_caption", "image_footnote"):
+        value = item.get(key)
+        if isinstance(value, list):
+            parts.extend(str(v).strip() for v in value if str(v).strip())
+        elif isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    return "\n".join(parts)
+
+
+def _collect_block_text(block: dict) -> str:
+    parts: list[str] = []
+    for line in block.get("lines", []) or []:
+        for span in line.get("spans", []) or []:
+            content = span.get("content")
+            if isinstance(content, str) and content.strip():
+                parts.append(content.strip())
+    for child in block.get("blocks", []) or []:
+        child_text = _collect_block_text(child)
+        if child_text:
+            parts.append(child_text)
+    return " ".join(parts).strip()
+
+
+def build_index_from_chapters(book_name: str, chapters: list[dict], output_dir: Path) -> int:
+    splitter = ChapterSplitter()
+    vs = get_vector_store()
+    all_chunks: list[dict] = []
+    for chapter in chapters:
+        title = chapter.get("title") or book_name
+        text = chapter.get("text", "")
+        if not text.strip():
+            continue
+        chunks = splitter.split_chapter(title, text)
+        for chunk in chunks:
+            chunk["section_title"] = title
+            chunk["page_idx"] = max(int(chapter.get("page_number", 1) or 1) - 1, 0)
+        vs.build_chapter_store(title, chunks)
+        all_chunks.extend(chunks)
+    if all_chunks:
+        (output_dir / f"{book_name}_middle_chunks.json").write_text(
+            json.dumps(all_chunks, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return len(all_chunks)
+
+
+def _normalize_text(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()

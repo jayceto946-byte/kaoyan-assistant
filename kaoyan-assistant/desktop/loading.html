@@ -1,0 +1,57 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>考研智能辅助系统</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #f4f6f1;
+        color: #1f2824;
+        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      }
+      .shell {
+        width: min(420px, calc(100vw - 48px));
+        border: 1px solid #d7ded5;
+        border-radius: 8px;
+        background: #fffefa;
+        padding: 28px;
+        box-shadow: 0 16px 44px rgba(40, 58, 48, 0.08);
+      }
+      h1 { margin: 0 0 8px; font-size: 20px; font-weight: 650; }
+      p { margin: 0; color: #65736c; line-height: 1.7; }
+      .bar {
+        height: 6px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e8ede6;
+        margin-top: 22px;
+      }
+      .bar::before {
+        content: "";
+        display: block;
+        height: 100%;
+        width: 36%;
+        border-radius: inherit;
+        background: #2f6f62;
+        animation: load 1.2s ease-in-out infinite alternate;
+      }
+      @keyframes load {
+        from { transform: translateX(0); }
+        to { transform: translateX(180%); }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <h1>考研智能辅助系统</h1>
+      <p>正在启动本地学习服务...</p>
+      <div class="bar"></div>
+    </main>
+  </body>
+</html>

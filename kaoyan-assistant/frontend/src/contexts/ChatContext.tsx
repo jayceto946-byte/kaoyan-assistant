@@ -1,0 +1,112 @@
+import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import type { ChatExerciseCard, ChatReportCard, ChatUtilityCard, ConceptCandidate } from '../types';
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  stage?: string;
+  sourceChapters?: string[];
+  linkedConcepts?: ConceptCandidate[];
+  reportCard?: ChatReportCard;
+  exerciseCard?: ChatExerciseCard;
+  utilityCard?: ChatUtilityCard;
+}
+
+interface ChatContextType {
+  messages: ChatMessage[];
+  isLoading: boolean;
+  bookName: string;
+  subject: string;
+  conversationId: string;
+  setBookName: (name: string) => void;
+  setSubject: (subject: string) => void;
+  setConversationId: (id: string) => void;
+  loadConversation: (id: string, messages: ChatMessage[], meta?: { subject?: string; bookName?: string }) => void;
+  newConversation: () => void;
+  addMessage: (msg: ChatMessage) => void;
+  updateLastMessage: (updater: (msg: ChatMessage) => ChatMessage) => void;
+  setLoading: (loading: boolean) => void;
+  clearMessages: () => void;
+}
+
+const ChatContext = createContext<ChatContextType | null>(null);
+
+function createConversationId() {
+  return `conv_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+}
+
+export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [bookName, setBookName] = useState('');
+  const [subject, setSubject] = useState(() => window.localStorage.getItem('kaoyan_subject') || '数学');
+  const [conversationId, setConversationId] = useState(() => window.localStorage.getItem('kaoyan_conversation_id') || createConversationId());
+
+  const persistSubject = useCallback((next: string) => {
+    setSubject(next);
+    window.localStorage.setItem('kaoyan_subject', next);
+  }, []);
+
+  const persistConversationId = useCallback((next: string) => {
+    setConversationId(next);
+    window.localStorage.setItem('kaoyan_conversation_id', next);
+  }, []);
+
+  const newConversation = useCallback(() => {
+    const next = createConversationId();
+    persistConversationId(next);
+    setMessages([]);
+  }, [persistConversationId]);
+
+  const loadConversation = useCallback((id: string, nextMessages: ChatMessage[], meta: { subject?: string; bookName?: string } = {}) => {
+    persistConversationId(id);
+    setMessages(nextMessages);
+    if (meta.subject !== undefined) persistSubject(meta.subject);
+    if (meta.bookName !== undefined) setBookName(meta.bookName);
+  }, [persistConversationId, persistSubject]);
+
+  const addMessage = useCallback((msg: ChatMessage) => {
+    setMessages((prev) => [...prev, msg]);
+  }, []);
+
+  const updateLastMessage = useCallback((updater: (msg: ChatMessage) => ChatMessage) => {
+    setMessages((prev) => {
+      if (prev.length === 0) return prev;
+      const newMsgs = [...prev];
+      newMsgs[newMsgs.length - 1] = updater(newMsgs[newMsgs.length - 1]);
+      return newMsgs;
+    });
+  }, []);
+
+  const clearMessages = useCallback(() => {
+    setMessages([]);
+  }, []);
+
+  const value = useMemo(
+    () => ({
+      messages,
+      isLoading,
+      bookName,
+      subject,
+      conversationId,
+      setBookName,
+      setSubject: persistSubject,
+      setConversationId: persistConversationId,
+      loadConversation,
+      newConversation,
+      addMessage,
+      updateLastMessage,
+      setLoading: setIsLoading,
+      clearMessages,
+    }),
+    [messages, isLoading, bookName, subject, conversationId, persistSubject, persistConversationId, loadConversation, newConversation, addMessage, updateLastMessage]
+  );
+
+  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
+};
+
+export function useChatContext(): ChatContextType {
+  const ctx = useContext(ChatContext);
+  if (!ctx) throw new Error('useChatContext must be used within ChatProvider');
+  return ctx;
+}

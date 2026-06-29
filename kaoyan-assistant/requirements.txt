@@ -1,32 +1,21 @@
-# 考研辅助系统依赖
-# 核心
 pydantic>=2.0.0
 python-dotenv>=1.0.0
-
-# PDF解析
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
 pymupdf>=1.23.0
-
-# LLM 与 Agent 框架
 langchain>=0.3.0
 langchain-community>=0.3.0
 langchain-openai>=0.2.0
 langchain-core>=0.3.0
 langgraph>=0.2.0
-
-# 向量存储
 chromadb>=0.5.0
 langchain-chroma>=0.1.0
-
-# 嵌入模型
 sentence-transformers>=3.0.0
 langchain-huggingface>=0.1.0
-
-# CLI
 click>=8.1.0
 rich>=13.0.0
-
-# Web UI
 gradio>=5.0.0
-
-# 工具
 tiktoken>=0.7.0
+plotly>=5.0.0
+pytest>=9.0.0  # 单元测试

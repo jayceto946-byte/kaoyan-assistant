@@ -13,7 +13,6 @@ from config import BOOKS_PATH, MULTIMODAL_ENABLED
 from ingestion.pdf_parser import PDFParser
 from ingestion.chapter_splitter import ChapterSplitter
 from ingestion.vector_store import ChapterVectorStore
-from ingestion.ocr import PDFImageExtractor, FormulaOCR
 from graph.main_graph import run_graph
 from agents.quiz import generate_quiz_from_state, check_answer
 from memory.study_memory import StudyMemory
@@ -25,10 +24,16 @@ console = Console()
 
 class StudyCLI:
     def __init__(self):
-        self.vector_store = ChapterVectorStore()
+        self._vector_store = None
         self.memory: Optional[StudyMemory] = None
         self.feedback: Optional[FeedbackLoop] = None
         self.current_book: Optional[str] = None
+
+    @property
+    def vector_store(self):
+        if self._vector_store is None:
+            self._vector_store = ChapterVectorStore()
+        return self._vector_store
 
     def show_banner(self):
         banner = """
@@ -106,6 +111,7 @@ class StudyCLI:
             kg.build_from_chapters(chapters)
 
             st.update("提取图片...")
+            from ingestion.ocr import PDFImageExtractor
             ext = PDFImageExtractor(pdf_path)
             ext.close()
 
@@ -284,6 +290,7 @@ class StudyCLI:
         if not Path(img).exists():
             console.print("[red]文件不存在[/red]"); return
 
+        from ingestion.ocr import FormulaOCR
         ocr = FormulaOCR()
         with console.status("[cyan]处理中..."):
             if cmd == "1":

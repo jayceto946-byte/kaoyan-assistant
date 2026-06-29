@@ -15,7 +15,7 @@ def generate_quiz_from_state(state: dict, count: int = 5) -> list[dict]:
     docs = vs.search_chapter(chapter, "重点 概念 例题", k=8) if chapter else []
     content = "\n\n".join(d.page_content for d in docs) if docs else teaching[:4000]
 
-    llm = get_llm(temperature=0.7)
+    llm = get_llm()
     prompt = f"""基于以下内容生成 {count} 道考研练习题（混合题型）。
 
 ## 内容
@@ -38,7 +38,7 @@ def generate_quiz_from_state(state: dict, count: int = 5) -> list[dict]:
 
 def check_answer(question: dict, user_answer: str) -> dict:
     """检查答案"""
-    llm = get_llm(temperature=0)
+    llm = get_llm()
     prompt = f"题目：{question.get('question','')}\n正确答案：{question.get('answer','')}\n用户答案：{user_answer}\n判断对错，JSON: {{\"correct\": bool, \"score\": int, \"feedback\": \"\"}}"
     resp = llm.invoke(prompt).content.strip()
     if resp.startswith("```"):

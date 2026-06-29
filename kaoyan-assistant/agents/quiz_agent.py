@@ -38,7 +38,7 @@ class QuizAgent:
 
     def __init__(self, vector_store: ChapterVectorStore):
         self.vector_store = vector_store
-        self.llm = get_llm(temperature=0.7)
+        self.llm = get_llm()
 
     def generate_quiz(
         self,
@@ -81,7 +81,7 @@ class QuizAgent:
 
     def check_answer(self, question: dict, user_answer: str) -> dict:
         """检查用户答案是否正确并给出反馈"""
-        llm = get_llm(temperature=0.1)
+        llm = get_llm()
         prompt = (
             f"题目：{question['question']}\n"
             f"正确答案：{question.get('answer', '')}\n"

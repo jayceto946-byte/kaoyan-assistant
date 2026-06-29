@@ -6,26 +6,15 @@ from pathlib import Path
 
 def _get_splitter(chunk_size: int, chunk_overlap: int):
     try:
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
-        return RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            separators=["\n\n", "\n", "。", "；", "，", " ", ""],
-        )
-    except ImportError:
-        pass
-    try:
         from langchain_text_splitters import RecursiveCharacterTextSplitter
         return RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
             separators=["\n\n", "\n", "。", "；", "，", " ", ""],
         )
     except ImportError:
-        from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
         return RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
             separators=["\n\n", "\n", "。", "；", "，", " ", ""],
         )
 
@@ -33,7 +22,7 @@ def _get_splitter(chunk_size: int, chunk_overlap: int):
 class ChapterSplitter:
     """章节文本分割器"""
 
-    def __init__(self, chunk_size: int = 800, chunk_overlap: int = 150):
+    def __init__(self, chunk_size: int = 2000, chunk_overlap: int = 100):
         self.splitter = _get_splitter(chunk_size, chunk_overlap)
 
     def split_chapter(self, title: str, text: str) -> list[dict]:

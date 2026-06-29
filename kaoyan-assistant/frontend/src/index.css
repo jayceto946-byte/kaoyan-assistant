@@ -1,0 +1,304 @@
+﻿@import "tailwindcss";
+
+@theme {
+  --color-bg-primary: #f4f6f1;
+  --color-bg-secondary: #e8ede6;
+  --color-bg-card: #fffefa;
+  --color-text-primary: #1f2824;
+  --color-text-secondary: #65736c;
+  --color-accent: #2f6f62;
+  --color-accent-hover: #24594f;
+  --color-border: #d7ded5;
+}
+
+:root {
+  --surface-raised: #fffefa;
+  --surface-muted: #eef3eb;
+  --surface-subtle: #f8faf5;
+  --text-muted: #8a968f;
+  --accent-soft: #dfece6;
+  --accent-softer: #edf6f2;
+  --success: #3f7252;
+  --warning: #9a6a20;
+  --danger: #a94c43;
+  --info: #446f86;
+  --shadow-soft: 0 16px 44px rgba(40, 58, 48, 0.08);
+  --shadow-tight: 0 8px 24px rgba(40, 58, 48, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--color-bg-primary);
+}
+
+body {
+  min-width: 320px;
+  background:
+    linear-gradient(180deg, rgba(255, 254, 250, 0.72), rgba(244, 246, 241, 0) 260px),
+    var(--color-bg-primary);
+  color: var(--color-text-primary);
+  margin: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  letter-spacing: 0;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+input,
+textarea,
+select {
+  color: var(--color-text-primary);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+}
+
+select,
+input,
+textarea {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(47, 111, 98, 0.12);
+}
+
+/* Markdown content without requiring the typography plugin. */
+.markdown-body p {
+  margin: 0.75em 0;
+  line-height: 1.75;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 1em 0 0.5em;
+  font-weight: 650;
+  line-height: 1.4;
+}
+.markdown-body h1 { font-size: 1.35em; }
+.markdown-body h2 { font-size: 1.2em; }
+.markdown-body h3 { font-size: 1.1em; }
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+.markdown-body li {
+  margin: 0.25em 0;
+}
+.markdown-body blockquote {
+  margin: 0.75em 0;
+  padding-left: 1em;
+  border-left: 3px solid var(--color-border);
+  color: var(--color-text-secondary);
+}
+.markdown-body hr {
+  margin: 1em 0;
+  border: none;
+  border-top: 1px solid var(--color-border);
+}
+
+.katex {
+  color: var(--color-text-primary) !important;
+  font-size: 1.05em;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #bfcbc3;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9eaea5;
+  background-clip: padding-box;
+}
+
+.katex-error {
+  color: inherit !important;
+  border-color: transparent !important;
+}
+
+.concept-link {
+  display: inline;
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.concept-link:hover {
+  color: var(--color-accent-hover);
+}
+
+.app-select,
+select {
+  appearance: none;
+  min-height: 40px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background-color: var(--color-bg-card);
+  color: var(--color-text-primary);
+  padding: 0.5rem 2.25rem 0.5rem 0.75rem;
+  outline: none;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--color-text-secondary) 50%),
+    linear-gradient(135deg, var(--color-text-secondary) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 13px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.app-select:focus,
+select:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(47, 111, 98, 0.12);
+}
+
+.app-select:hover,
+select:hover {
+  border-color: rgba(47, 111, 98, 0.48);
+}
+
+.app-select-plain,
+.app-select-plain:hover,
+.app-select-plain:focus {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.app-select-plain {
+  background-color: transparent;
+}
+
+.surface-panel {
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-card);
+  box-shadow: var(--shadow-tight);
+}
+
+.subtle-panel {
+  border: 1px solid var(--color-border);
+  background: var(--surface-subtle);
+}
+
+
+/* Electron frameless window chrome. Hidden in the normal browser because the component is not rendered there. */
+.electron-titlebar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 1000;
+  display: flex;
+  height: 44px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 6px 10px 6px 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 254, 250, 0.94), rgba(255, 254, 250, 0.76));
+  border-bottom: 1px solid rgba(215, 222, 213, 0.72);
+  user-select: none;
+}
+
+.electron-titlebar-drag {
+  -webkit-app-region: drag;
+  position: absolute;
+  inset: 0 104px 0 0;
+}
+
+.electron-titlebar-spacer {
+  height: 44px;
+  flex: 0 0 44px;
+}
+
+.electron-window-controls {
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 3px;
+  border: 1px solid rgba(215, 222, 213, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 254, 250, 0.9);
+  box-shadow: 0 8px 22px rgba(40, 58, 48, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px);
+}
+
+.electron-control-button {
+  display: inline-flex;
+  width: 28px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.electron-control-button:hover {
+  background: var(--accent-soft);
+  color: var(--color-accent);
+}
+
+.electron-control-button:active {
+  transform: scale(0.96);
+}
+
+.electron-control-close:hover {
+  background: #a94c43;
+  color: #fff;
+}
+
+body:has(.electron-titlebar) {
+  overflow: hidden;
+}
+
+body:has(.electron-titlebar) .app-shell {
+  height: calc(100dvh - 44px);
+}

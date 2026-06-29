@@ -1,6 +1,6 @@
 """检索Agent层 — 包装三个检索器供LangGraph调用（保持向后兼容）"""
-from ingestion.vector_store import ChapterVectorStore
-from knowledge.knowledge_graph import KnowledgeGraph
+from ingestion.vector_store import get_vector_store
+from knowledge.knowledge_graph import get_kg
 from memory.study_memory import StudyMemory
 
 
@@ -8,8 +8,8 @@ class RetrievalAgents:
     """三个检索Agent的联合访问"""
 
     def __init__(self, book_name: str):
-        self.vector_store = ChapterVectorStore()
-        self.kg = KnowledgeGraph(book_name)
+        self.vector_store = get_vector_store()
+        self.kg = get_kg(book_name)
         self.memory = StudyMemory(book_name)
 
     def search_chapter(self, chapter: str, query: str, k: int = 6) -> list[str]:

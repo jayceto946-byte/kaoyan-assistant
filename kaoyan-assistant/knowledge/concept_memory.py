@@ -1,0 +1,416 @@
+"""ConceptMemory — 概念记忆系统
+
+核心能力：
+1. 概念提取：每次回答后自动提取涉及的关键概念
+2. 接触记录：记录概念出现的时间、频率、上下文
+3. 遗忘检测：找出高频但久未接触的概念
+4. 学习提醒：在回答末尾附加遗忘提醒
+
+可扩展性（预留接口）：
+- weak_points: 关联错题/弱项标记
+- review_queue: 周期性复习队列
+- mastery_level: 概念掌握度评估
+
+存储结构（JSON）:
+{
+  "concepts": {
+    "概念名": {
+      "aliases": ["别名1"],
+      "definition": "定义文本",
+      "first_seen": "2026-06-04",
+      "exposure_count": 3,
+      "last_exposed_at": "2026-06-04T15:30:00",
+      "mastery_level": 2,        // 1-5，预留
+      "weak_flag": false,        // 是否标记为弱项，预留
+      "related_concepts": ["相关概念1"],
+      "source_chapters": ["第1章"]
+    }
+  },
+  "exposures": [
+    {"concept": "概念名", "question": "问题", "intent": "definition", "timestamp": "..."}
+  ],
+  "review_queue": []  // 预留：周期性复习队列
+}
+"""
+import json
+import re
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
+from config import get_llm, PROGRESS_PATH
+
+
+_CONCEPT_EXTRACT_PROMPT = """从以下考研问答中，提取涉及的关键数学/专业课概念。
+
+## 问题
+{question}
+
+## 回答（前1000字）
+{answer}
+
+请输出 JSON 数组（不要其他内容）：
+[
+  {{
+    "name": "概念名",
+    "type": "算法/定理/公式/概念/方法",
+    "confidence": 0.9
+  }}
+]
+要求：
+1. 只提取真正的专业概念，过滤常见词（如"我们""可以""这个"）
+2. 优先提取教材中的专有名词
+3. 置信度低于 0.5 的不要输出
+4. 最多输出 8 个概念
+"""
+
+
+
+_GENERIC_ALIAS_TERMS = {
+    "\u65b9\u6cd5", "\u6b65\u9aa4", "\u8fed\u4ee3", "\u8fed\u4ee3\u6b65\u9aa4", "\u7a0b\u5e8f\u6846\u56fe", "\u539f\u7406", "\u8fc7\u7a0b", "\u7b97\u6cd5", "\u7ea6\u675f", "\u4f18\u5316", "\u4f18\u5316\u65b9\u6cd5", "\u6700\u4f18\u5316\u65b9\u6cd5", "\u95ee\u9898", "\u6761\u4ef6",
+    "method", "step", "steps", "algorithm",
+}
+
+
+def _is_strict_confidence(value) -> bool:
+    try:
+        return float(value) >= 0.999
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_direct_question_concept(concept: dict, question: str) -> bool:
+    if str(concept.get("source", "")).startswith("mistake_"):
+        return True
+    question_text = (question or "").lower()
+    if not question_text:
+        return False
+    name = str(concept.get("name", "")).strip()
+    aliases = [str(a).strip() for a in concept.get("aliases", []) if str(a).strip()]
+    direct_terms = [name, *[a for a in aliases if a not in _GENERIC_ALIAS_TERMS]]
+    return any(term and term.lower() in question_text for term in direct_terms)
+
+
+def _merge_list(old: list, new: list, limit: int = 20) -> list:
+    result = []
+    for item in list(old or []) + list(new or []):
+        if item and item not in result:
+            result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+class ConceptMemory:
+    """概念记忆系统"""
+
+    def __init__(self, book_name: str):
+        self.book_name = book_name
+        self._file = Path(PROGRESS_PATH) / book_name / "concept_memory.json"
+        self._file.parent.mkdir(parents=True, exist_ok=True)
+        self._data = self._load()
+
+    # ── 存储 ──────────────────────────────────────────────
+
+    def _load(self) -> dict:
+        if self._file.exists():
+            try:
+                with open(self._file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
+        return {
+            "concepts": {},
+            "exposures": [],
+            "review_queue": [],
+        }
+
+    def _save(self):
+        with open(self._file, "w", encoding="utf-8") as f:
+            json.dump(self._data, f, ensure_ascii=False, indent=2)
+
+    # ── 概念提取 ──────────────────────────────────────────
+
+    def extract_concepts(self, question: str, answer: str) -> list[dict]:
+        """用 LLM 从问答中提取概念。返回 [{name, type, confidence}]。"""
+        llm = get_llm()
+        prompt = _CONCEPT_EXTRACT_PROMPT.format(
+            question=question,
+            answer=answer[:1000],
+        )
+        try:
+            resp = llm.invoke(prompt).content.strip()
+            if resp.startswith("```"):
+                resp = resp.split("\n", 1)[-1].rsplit("\n", 1)[0]
+            concepts = json.loads(resp)
+            if not isinstance(concepts, list):
+                return []
+            return [c for c in concepts if isinstance(c, dict) and c.get("confidence", 0) >= 0.5]
+        except Exception as e:
+            print(f"[ConceptMemory] 提取概念失败: {e}", flush=True)
+            return []
+
+    def _extract_concepts_local(self, question: str, answer: str, target_chapters: list[str]) -> list[dict]:
+        """本地轻量提取：从检索到的章节名和问题中提取候选概念。
+        作为 LLM 提取失败时的 fallback。
+        """
+        candidates = []
+        # 从问题中提取引号内的术语
+        quoted = re.findall(r'["""]([^"""]+)["""]', question)
+        candidates.extend(quoted)
+        # 从章节名中提取
+        for ch in target_chapters:
+            # 去掉 "第X章" 前缀
+            clean = re.sub(r'^第[一二三四五六七八九十\d]+章\s*', '', ch)
+            if clean and len(clean) > 1:
+                candidates.append(clean)
+        # 简单去重
+        seen = set()
+        result = []
+        for c in candidates:
+            c = c.strip()
+            if c and c not in seen and len(c) >= 2:
+                seen.add(c)
+                result.append({"name": c, "type": "concept", "confidence": 0.6})
+        return result[:5]
+
+    # ── 接触记录 ──────────────────────────────────────────
+
+    def log_exposure(
+        self,
+        concepts: list[dict],
+        question: str,
+        intent: str = "qa",
+        *,
+        source: str = "qa",
+        weak: bool = False,
+    ):
+        """记录一次概念接触。"""
+        concepts = [
+            c for c in concepts
+            if _is_strict_confidence(c.get("confidence"))
+            and _is_direct_question_concept(c, question)
+        ]
+        if not concepts:
+            return
+
+        now = datetime.now().isoformat()
+        for c in concepts:
+            name = c.get("name", "").strip()
+            if not name:
+                continue
+
+            # 更新概念库
+            if name not in self._data["concepts"]:
+                self._data["concepts"][name] = {
+                    "aliases": [],
+                    "definition": "",
+                    "first_seen": now[:10],
+                    "exposure_count": 0,
+                    "last_exposed_at": now,
+                    "mastery_level": 0,
+                    "weak_flag": False,
+                    "related_concepts": [],
+                    "source_chapters": [],
+                }
+
+            concept = self._data["concepts"][name]
+            concept["concept_id"] = c.get("concept_id", concept.get("concept_id", ""))
+            concept["aliases"] = _merge_list(concept.get("aliases", []), c.get("aliases", []))
+            if c.get("definition") and not concept.get("definition"):
+                concept["definition"] = c.get("definition", "")
+            concept["related_concepts"] = _merge_list(
+                concept.get("related_concepts", []),
+                c.get("related_concepts", []),
+            )
+            concept["source_chapters"] = _merge_list(
+                concept.get("source_chapters", []),
+                c.get("source_chapters", []),
+            )
+            if weak:
+                concept["weak_flag"] = True
+                concept["weak_reason"] = source
+                concept["last_weak_at"] = now
+            concept["exposure_count"] += 1
+            concept["last_exposed_at"] = now
+
+            # 记录 exposure 日志
+            self._data["exposures"].append({
+                "concept": name,
+                "concept_id": c.get("concept_id", ""),
+                "question": question[:200],
+                "intent": intent,
+                "source": source,
+                "link_source": c.get("source", ""),
+                "weak": weak,
+                "confidence": c.get("confidence", 0),
+                "evidence": c.get("evidence", "")[:200],
+                "timestamp": now,
+            })
+
+        # 控制日志大小
+        if len(self._data["exposures"]) > 500:
+            self._data["exposures"] = self._data["exposures"][-300:]
+
+        self._save()
+
+    def log_weakness(self, concepts: list[dict], question: str, intent: str = "qa", source: str = "mistake"):
+        """记录概念弱项；错题和主动问定义都走同一份记忆。"""
+        self.log_exposure(concepts, question, intent, source=source, weak=True)
+
+    # ── 遗忘检测 ──────────────────────────────────────────
+
+    def get_forgotten(self, days_threshold: int = 7, min_exposures: int = 2, limit: int = 3) -> list[dict]:
+        """获取高频但久未接触的概念（疑似遗忘点）。
+
+        Returns:
+            [{"name": str, "exposure_count": int, "last_exposed_days_ago": int, "suggestion": str}]
+        """
+        now = datetime.now()
+        results = []
+
+        for name, info in self._data["concepts"].items():
+            count = info.get("exposure_count", 0)
+            if count < min_exposures:
+                continue
+
+            last_str = info.get("last_exposed_at", "")
+            try:
+                last = datetime.fromisoformat(last_str)
+            except (ValueError, TypeError):
+                continue
+
+            days_ago = (now - last).days
+            if days_ago >= days_threshold:
+                results.append({
+                    "name": name,
+                    "exposure_count": count,
+                    "last_exposed_days_ago": days_ago,
+                    "suggestion": f"上次接触于 {days_ago} 天前，建议回顾",
+                })
+
+        # 按遗忘天数降序
+        results.sort(key=lambda x: x["last_exposed_days_ago"], reverse=True)
+        return results[:limit]
+
+    # ── 高频概念 ──────────────────────────────────────────
+
+    def get_frequent(self, limit: int = 5) -> list[dict]:
+        """获取接触频率最高的概念。"""
+        items = [
+            {"name": name, "exposure_count": info["exposure_count"]}
+            for name, info in self._data["concepts"].items()
+        ]
+        items.sort(key=lambda x: x["exposure_count"], reverse=True)
+        return items[:limit]
+
+    # ── 学习提醒 ──────────────────────────────────────────
+
+    def enrich_answer(self, answer: str, current_concepts: list[str]) -> str:
+        """在回答末尾附加学习提醒。
+
+        策略：
+        1. 如果当前涉及的概念中有高频遗忘点，提醒
+        2. 如果当前是全新概念，标记为"首次接触"
+        """
+        reminders = []
+
+        # 检查当前概念中是否有遗忘点
+        forgotten = self.get_forgotten(days_threshold=5, limit=3)
+        forgotten_names = {f["name"] for f in forgotten}
+        overlap = [c for c in current_concepts if c in forgotten_names]
+        if overlap:
+            reminders.append(f"💡 你最近较少接触：{', '.join(overlap)}，建议抽空回顾")
+
+        # 检查是否有全新概念
+        new_concepts = []
+        for c in current_concepts:
+            if c in self._data["concepts"]:
+                if self._data["concepts"][c]["exposure_count"] <= 2:
+                    new_concepts.append(c)
+        if new_concepts:
+            reminders.append(f"🌱 新概念关注：{', '.join(new_concepts)}")
+
+        if not reminders:
+            return answer
+
+        return answer + "\n\n---\n\n**📚 学习提醒**\n" + "\n".join(f"- {r}" for r in reminders)
+
+    # ── 可扩展接口（预留）────────────────────────────────
+
+    def mark_weak(self, concept_name: str, reason: str = ""):
+        """标记概念为弱项（供错题本调用）。"""
+        if concept_name in self._data["concepts"]:
+            self._data["concepts"][concept_name]["weak_flag"] = True
+            self._save()
+
+    def get_weak_points(self) -> list[dict]:
+        """获取所有标记为弱项的概念（供周期性复习调用）。"""
+        return [
+            {"name": name, **info}
+            for name, info in self._data["concepts"].items()
+            if info.get("weak_flag")
+        ]
+
+    def mark_reviewed(self, concept_name: str, quality: int = 4, note: str = "") -> dict:
+        """记录一次概念复习，供学习页的复习动作调用。"""
+        name = concept_name.strip()
+        if not name:
+            raise ValueError("concept_name is required")
+        now = datetime.now().isoformat()
+        concept = self._data["concepts"].setdefault(name, {
+            "aliases": [],
+            "definition": "",
+            "first_seen": now[:10],
+            "exposure_count": 0,
+            "last_exposed_at": now,
+            "mastery_level": 0,
+            "weak_flag": False,
+            "related_concepts": [],
+            "source_chapters": [],
+        })
+        quality = max(0, min(5, int(quality)))
+        concept["last_reviewed_at"] = now
+        concept["last_review_quality"] = quality
+        concept["review_count"] = int(concept.get("review_count", 0) or 0) + 1
+        if quality >= 4:
+            concept["mastery_level"] = min(5, max(int(concept.get("mastery_level", 0) or 0), quality))
+            if concept.get("weak_flag") and quality >= 5:
+                concept["weak_flag"] = False
+        elif quality <= 2:
+            concept["weak_flag"] = True
+            concept["weak_reason"] = "review"
+            concept["last_weak_at"] = now
+        self._data.setdefault("review_events", []).append({
+            "concept": name,
+            "quality": quality,
+            "note": note[:200],
+            "timestamp": now,
+        })
+        if len(self._data["review_events"]) > 300:
+            self._data["review_events"] = self._data["review_events"][-200:]
+        self._save()
+        return {"name": name, **concept}
+    def get_review_queue(self, limit: int = 5) -> list[dict]:
+        """获取复习队列：弱项 + 遗忘点（供周期性回顾调用）。"""
+        weak = self.get_weak_points()
+        forgotten = self.get_forgotten(days_threshold=3, limit=limit)
+
+        # 合并去重
+        seen = set()
+        queue = []
+        for item in weak + forgotten:
+            name = item["name"] if isinstance(item, dict) else item
+            if name not in seen:
+                seen.add(name)
+                queue.append({"name": name, "reason": "weak" if item in weak else "forgotten"})
+        return queue[:limit]
+
+    def get_stats(self) -> dict:
+        """获取概念记忆统计（供 UI 展示）。"""
+        concepts = self._data["concepts"]
+        return {
+            "total_concepts": len(concepts),
+            "total_exposures": len(self._data["exposures"]),
+            "weak_count": sum(1 for c in concepts.values() if c.get("weak_flag")),
+            "forgotten_count": len(self.get_forgotten(days_threshold=7)),
+            "frequent_top3": self.get_frequent(3),
+        }

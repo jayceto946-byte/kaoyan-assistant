@@ -1,0 +1,76 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m venv venv310
+          .\venv310\Scripts\python.exe -m pip install --upgrade pip
+          .\venv310\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
+
+      - name: Install frontend dependencies
+        shell: pwsh
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install desktop dependencies
+        shell: pwsh
+        working-directory: desktop
+        run: npm ci
+
+      - name: Configure GitHub update feed
+        shell: pwsh
+        run: |
+          $parts = $env:GITHUB_REPOSITORY.Split('/')
+          $owner = $parts[0]
+          $repo = $parts[1]
+
+          $updateConfig = Get-Content desktop\update-config.json -Raw | ConvertFrom-Json
+          $updateConfig.owner = $owner
+          $updateConfig.repo = $repo
+          $updateConfig | ConvertTo-Json -Depth 20 | Set-Content desktop\update-config.json -Encoding UTF8
+
+          $package = Get-Content desktop\package.json -Raw | ConvertFrom-Json
+          $package.build.publish[0].owner = $owner
+          $package.build.publish[0].repo = $repo
+          $package | ConvertTo-Json -Depth 30 | Set-Content desktop\package.json -Encoding UTF8
+
+      - name: Build backend executable
+        shell: pwsh
+        run: .\scripts\build-desktop-backend.ps1 -Python .\venv310\Scripts\python.exe
+
+      - name: Publish desktop release
+        shell: pwsh
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run publish

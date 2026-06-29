@@ -1,0 +1,6 @@
+﻿{
+  "provider": "github",
+  "owner": "YOUR_GITHUB_OWNER",
+  "repo": "kaoyan-assistant",
+  "releaseType": "release"
+}

@@ -1,4 +1,11 @@
-"""LangGraph 主图 — 总调度器，串联 Planner → Retrieval → Chapter → Generator → Feedback"""
+"""LangGraph 主图 — 总调度器，支持条件路由加速 QA
+
+2026-06-04 更新：
+- 接入细粒度意图分类器（intent_classifier）
+- Fast Path：definition/formula/property 跳过 plan LLM
+- 集成 ConceptMemory：回答后自动提取概念 + 附加学习提醒
+"""
+import threading
 from langgraph.graph import StateGraph, START, END
 from graph.state import AgentState
 from graph.planner import plan_node
@@ -8,25 +15,34 @@ from graph.generator import generate_node
 from graph.feedback_node import feedback_node
 
 
+def _route_after_retrieve(state: dict) -> str:
+    """条件路由：teach/summarize 走 chapter subgraph，其余直接 generate"""
+    intent = state.get("intent", "qa")
+    return "chapter" if intent in ("teach", "summarize") else "generate"
+
+
 def build_main_graph() -> StateGraph:
     """构建考研学习主图
 
     流程:
-      START → plan → retrieve → chapter → generate → feedback → END
+      START -> plan -> retrieve -> [chapter ->] generate -> feedback -> END
+      qa/quiz/plan/cross_chapter: 跳过 chapter，直接 generate（省 2-3 次 LLM 调用）
+      teach/summarize: 走完整 chapter subgraph
     """
     graph = StateGraph(AgentState)
 
-    # 注册节点
     graph.add_node("plan", plan_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("chapter", chapter_subgraph_run)
     graph.add_node("generate", generate_node)
     graph.add_node("feedback", feedback_node)
 
-    # 定义边
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "retrieve")
-    graph.add_edge("retrieve", "chapter")
+    graph.add_conditional_edges("retrieve", _route_after_retrieve, {
+        "chapter": "chapter",
+        "generate": "generate",
+    })
     graph.add_edge("chapter", "generate")
     graph.add_edge("generate", "feedback")
     graph.add_edge("feedback", END)
@@ -45,23 +61,15 @@ def get_graph() -> StateGraph:
     return _main_graph
 
 
-def run_graph(user_input: str, book_name: str = "default",
-              user_images: list[str] = None,
-              user_feedback: dict = None) -> dict:
-    """运行一次完整的图谱推理
-
-    Args:
-        user_input: 用户输入的问题/指令
-        book_name: 当前教材名
-        user_images: 多模态图片路径
-        user_feedback: 用户反馈（评分等）
-
-    Returns:
-        最终状态字典
-    """
-    graph = get_graph()
-
-    initial_state = {
+def build_initial_state(
+    user_input: str,
+    book_name: str = "default",
+    user_images: list[str] = None,
+    user_feedback: dict = None,
+    target_chapters: list[str] = None,
+) -> dict:
+    """构建 LangGraph 的初始状态字典。"""
+    return {
         "user_input": user_input,
         "user_images": user_images or [],
         "user_profile": {},
@@ -71,12 +79,15 @@ def run_graph(user_input: str, book_name: str = "default",
         "messages": [],
         "intent": "",
         "sub_tasks": [],
-        "target_chapters": [],
+        "target_chapters": target_chapters or [],
         "route_decision": "",
         "chapter_contents": {},
         "concept_results": [],
         "history_results": [],
         "knowledge_graph_path": [],
+        "knowledge_graph_formulas": [],
+        "matched_concepts": [],
+        "linked_concepts": [],
         "teaching_content": "",
         "key_points": [],
         "extracted_examples": [],
@@ -92,5 +103,205 @@ def run_graph(user_input: str, book_name: str = "default",
         "max_iterations": 10,
     }
 
+
+def run_graph(user_input: str, book_name: str = "default",
+              user_images: list[str] = None,
+              user_feedback: dict = None) -> dict:
+    """运行一次完整的图谱推理（同步阻塞版）。"""
+    graph = get_graph()
+    initial_state = build_initial_state(user_input, book_name, user_images, user_feedback)
     result = graph.invoke(initial_state)
     return result
+
+
+def run_graph_stream(
+    user_input: str,
+    book_name: str = "default",
+    user_images: list[str] = None,
+    user_feedback: dict = None,
+    target_chapters: list[str] = None,
+):
+    """流式运行 graph pipeline，yield 事件供 UI 消费。
+
+    事件格式:
+        {"stage": "plan",     "intent": str, "chapters": list, "fast_path": bool}
+        {"stage": "retrieve", "content_count": int}
+        {"stage": "chapter",  "has_teaching": bool}
+        {"stage": "generate", "chunk": str, "done": bool}
+        {"stage": "done",     "state": dict, "enriched": bool}
+    """
+    from graph.intent_classifier import classify_intent_local, is_fast_path_eligible
+    from graph.planner import plan_node
+    from graph.retrieval_node import retrieve_node
+    from graph.chapter_subgraph import (
+        prepare_chapter_subgraph, TEACH_PROMPT, _future_result_if_done,
+    )
+    from graph.generator import _build_generate_prompt, _format_quiz_appendix
+    from graph.feedback_node import feedback_node
+    from knowledge.concept_memory import ConceptMemory
+    from knowledge.summary_store import SummaryStore
+    from utils.latex_sanitizer import sanitize_latex
+    from utils.thinking_filter import ThinkingFilter
+    from config import get_llm
+
+    state = build_initial_state(user_input, book_name, user_images, user_feedback, target_chapters)
+
+    # ── Step 0: 本地意图分类 ──
+    local_result = classify_intent_local(user_input)
+    fast_path = is_fast_path_eligible(user_input, local_result)
+    intent = local_result["intent"]
+
+    if fast_path:
+        # Fast Path：跳过 plan LLM，直接用本地分类结果
+        state["intent"] = intent
+        # 章节如果没传，用向量检索补
+        if not state.get("target_chapters"):
+            from ingestion.vector_store import get_vector_store
+            vs = get_vector_store()
+            all_results = vs.search_all(user_input, k=1)
+            state["target_chapters"] = list(all_results.keys())[:2]
+        yield {
+            "stage": "plan",
+            "intent": intent,
+            "chapters": state.get("target_chapters", []),
+            "fast_path": True,
+        }
+    else:
+        # 正常路径：把本地分类结果作为 hint 传给 plan_node
+        state["_local_intent"] = intent
+        state["_local_intent_hint"] = local_result["hint"]
+        state.update(plan_node(state))
+        intent = state.get("intent", "qa")
+        yield {
+            "stage": "plan",
+            "intent": intent,
+            "chapters": state.get("target_chapters", []),
+            "fast_path": False,
+        }
+
+    # ── Retrieve ──
+    state.update(retrieve_node(state))
+    yield {
+        "stage": "retrieve",
+        "content_count": len(state.get("chapter_contents", {})),
+    }
+
+    # ── Chapter subgraph (条件) ──
+    if intent in ("teach", "summarize"):
+        # 获取内容 + 启动后台任务
+        content, chapter, book_name_sub, executor, futures = prepare_chapter_subgraph(state)
+
+        if content == "（无内容）":
+            # 空字符串让后续 generate 阶段 fallback 到正常 QA 流程
+            state["teaching_content"] = ""
+            yield {
+                "stage": "chapter",
+                "has_teaching": False,
+            }
+        else:
+            yield {
+                "stage": "chapter",
+                "has_teaching": True,
+            }
+
+            # 流式生成 teach 内容
+            llm = get_llm()
+            teach_prompt = TEACH_PROMPT.format(
+                chapter=chapter,
+                content=content[:6000],
+            )
+            buffer = ""
+            tf = ThinkingFilter()
+            for chunk in llm.stream(teach_prompt):
+                text = tf.filter(chunk.content)
+                if text:
+                    buffer += text
+                    yield {"stage": "generate", "chunk": text, "done": False}
+            # flush 剩余非 thinking 内容
+            final_flush = tf.flush()
+            if final_flush:
+                buffer += final_flush
+                yield {"stage": "generate", "chunk": final_flush, "done": False}
+
+            # 清洗 LaTeX 定界符，避免前端 KaTeX 报红
+            state["teaching_content"] = sanitize_latex(buffer)
+            state["chapter_summary"] = ""
+
+            # 收集后台任务结果。后台任务不阻塞主讲解；没完成就跳过。
+            kp = _future_result_if_done(futures, "keypoints", "")
+            key_points = kp.split("\n") if kp else []
+            quiz_questions = _future_result_if_done(futures, "quiz", [])
+
+            if executor:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+            state["key_points"] = key_points
+            state["quiz_questions"] = quiz_questions
+
+            # 缓存结果
+            ss = SummaryStore(book_name_sub)
+            ss.set(chapter, {
+                "summary": "",
+                "key_points": key_points,
+                "teaching": buffer[:2000],
+            })
+
+    # ── Generate (流式) ──
+    if intent in ("teach", "summarize") and state.get("teaching_content"):
+        # teach 内容已经在上面流式生成了，这里直接标记完成
+        content = state["teaching_content"]
+        chapter_summary = state.get("chapter_summary", "")
+        if chapter_summary and intent == "summarize":
+            content = chapter_summary
+        elif chapter_summary:
+            content += f"\n\n---\n\n## 章节总结\n{chapter_summary}"
+        state["final_output"] = sanitize_latex(content)
+        yield {"stage": "generate", "chunk": "", "done": True}
+    else:
+        prompt = _build_generate_prompt(state)
+        llm = get_llm()
+        buffer = ""
+        tf = ThinkingFilter()
+        for chunk in llm.stream(prompt):
+            text = tf.filter(chunk.content)
+            if text:
+                buffer += text
+                yield {"stage": "generate", "chunk": text, "done": False}
+        final_flush = tf.flush()
+        if final_flush:
+            buffer += final_flush
+            yield {"stage": "generate", "chunk": final_flush, "done": False}
+        quiz_appendix = _format_quiz_appendix(state)
+        if quiz_appendix:
+            buffer += quiz_appendix
+            yield {"stage": "generate", "chunk": quiz_appendix, "done": False}
+        state["final_output"] = sanitize_latex(buffer)
+        yield {"stage": "generate", "chunk": "", "done": True}
+
+    # ── ConceptMemory：提取概念（后台）+ enrich（同步）──
+    # 【暂时关闭学习提醒】
+    # cm = ConceptMemory(book_name)
+    # final_output = state.get("final_output", "")
+    # local_concepts = cm._extract_concepts_local(
+    #     user_input, final_output, state.get("target_chapters", [])
+    # )
+    # local_names = [c["name"] for c in local_concepts]
+    # if local_names:
+    #     enriched = cm.enrich_answer(final_output, local_names)
+    #     if enriched != final_output:
+    #         state["final_output"] = enriched
+    #         yield {"stage": "generate", "chunk": enriched[len(final_output):], "done": False}
+    # def _bg_extract_and_log():
+    #     try:
+    #         concepts = cm.extract_concepts(user_input, state["final_output"])
+    #         if not concepts:
+    #             concepts = local_concepts
+    #         cm.log_exposure(concepts, user_input, state.get("intent", "qa"))
+    #         print(f"[ConceptMemory] 记录 {len(concepts)} 个概念", flush=True)
+    #     except Exception as e:
+    #         print(f"[ConceptMemory] 后台提取失败: {e}", flush=True)
+    # threading.Thread(target=_bg_extract_and_log, daemon=True).start()
+
+    # ── Feedback ──
+    state.update(feedback_node(state))
+    yield {"stage": "done", "state": state, "enriched": False}

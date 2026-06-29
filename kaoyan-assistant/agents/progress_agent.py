@@ -27,7 +27,7 @@ class ProgressAgent:
 
     def __init__(self, study_memory: StudyMemory):
         self.memory = study_memory
-        self.llm = get_llm(temperature=0.3)
+        self.llm = get_llm()
 
     def get_analysis(self) -> str:
         """获取学习状态分析报告"""

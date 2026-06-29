@@ -1,0 +1,29 @@
+services:
+  kaoyan-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kaoyan-assistant:local
+    container_name: kaoyan-assistant
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/data
+      VECTOR_DB_PATH: /app/data/vector_db
+      BOOKS_PATH: /app/data/books
+      CHAPTERS_PATH: /app/data/chapters
+      PROGRESS_PATH: /app/data/progress
+      IMAGES_PATH: /app/data/images
+      SKIP_VECTOR_WARMUP: "1"
+      EMBEDDING_LOCAL_FILES_ONLY: "0"
+      MINERU_API_URL: ${MINERU_API_URL:-}
+      MINERU_OUTPUT_PATH: /app/mineru_output
+      MINERU_TASK_TIMEOUT_SECONDS: ${MINERU_TASK_TIMEOUT_SECONDS:-3600}
+      MINERU_TASK_POLL_SECONDS: ${MINERU_TASK_POLL_SECONDS:-2}
+      OCR_API_URL: ${OCR_API_URL:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./mineru_output:/app/mineru_output

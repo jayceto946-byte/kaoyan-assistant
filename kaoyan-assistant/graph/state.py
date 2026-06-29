@@ -28,6 +28,9 @@ class AgentState(TypedDict):
     concept_results: list[dict]  # 语义检索结果
     history_results: list[dict]  # 学习历史
     knowledge_graph_path: list[str]  # 知识图谱关联路径
+    knowledge_graph_formulas: list[dict]  # 相关公式
+    matched_concepts: list[str]  # 命中的概念名
+    linked_concepts: list[dict]  # KG 对齐后的本轮关键概念
 
     # === 章节教学输出 ===
     teaching_content: str
