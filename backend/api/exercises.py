@@ -1,4 +1,4 @@
-﻿"""Exercises API: general question bank CRUD and mistake import."""
+"""Exercises API: general question bank CRUD and mistake import."""
 from __future__ import annotations
 
 import re
@@ -19,7 +19,7 @@ from backend.schemas import (
     ExerciseRecordOut,
     ExerciseStatusRequest,
 )
-from config import BASE_DIR, PROGRESS_PATH
+from config import DATA_DIR, PROGRESS_PATH
 from memory.exercise_bank import ExerciseRecord, get_exercise_bank
 from memory.exercise_file_importer import extract_exercise_text
 from memory.exercise_importer import analyze_candidates, split_candidate_text
@@ -28,7 +28,7 @@ from utils.latex_sanitizer import sanitize_latex
 from utils.thinking_filter import strip_thinking
 
 router = APIRouter(prefix="/exercises", tags=["exercises"])
-UPLOAD_DIR = BASE_DIR / "data" / "uploads" / "exercises"
+UPLOAD_DIR = DATA_DIR / "uploads" / "exercises"
 
 
 def _safe_upload_name(filename: str) -> str:
