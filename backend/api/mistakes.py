@@ -23,7 +23,9 @@ from backend.schemas import (
 )
 from config import IMAGES_PATH, PROGRESS_PATH
 from memory.mistake_book import MistakeRecord, get_mistake_book
+from memory.learning_events import LearningEvent, concept_names, get_learning_event_store
 from utils.latex_sanitizer import sanitize_latex
+from utils.subject_catalog import normalize_subject_value
 from utils.thinking_filter import strip_thinking
 
 router = APIRouter(prefix="/mistakes", tags=["mistakes"])
@@ -33,6 +35,21 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 OCR_MAX_SIDE = int(os.getenv("MISTAKE_OCR_MAX_SIDE", "1600"))
 OCR_JPEG_QUALITY = int(os.getenv("MISTAKE_OCR_JPEG_QUALITY", "86"))
 KIMI_VISION_MODEL = os.getenv("KIMI_VISION_MODEL", "kimi-k2.5")
+
+
+def _log_learning_event(event_type: str, *, book_name: str = "default", record: MistakeRecord | None = None, payload: dict | None = None) -> None:
+    try:
+        get_learning_event_store().append(LearningEvent(
+            event_type=event_type,
+            book_name=book_name,
+            subject=record.subject if record else "",
+            source_type="mistake",
+            source_id=record.id if record else "",
+            concept_names=concept_names(record.linked_concepts if record else []),
+            payload=payload or {},
+        ))
+    except Exception as exc:
+        print(f"[LearningEvent] mistake event failed: {exc}", flush=True)
 
 
 def _mb(book_name: str = "default"):
@@ -72,7 +89,7 @@ def _record_from_request(req: MistakeAddRequest, book_name: str = "default") -> 
         user_answer=req.user_answer.strip(),
         correct_answer=req.correct_answer.strip(),
         source=req.source.strip(),
-        subject=req.subject.strip() or book_name,
+        subject=normalize_subject_value(req.subject, fallback=book_name),
         chapter=req.chapter.strip() or None,
         tags=_tags_from_text(req.tags),
         mistake_type=req.mistake_type,
@@ -199,7 +216,7 @@ def _persist_mistake_concepts(record: MistakeRecord, explanation: str = "", book
     try:
         from knowledge.concept_memory import ConceptMemory
 
-        ConceptMemory(book_name).log_weakness(concepts, record.question_text, "mistake", source="mistake")
+        ConceptMemory(book_name).log_weakness(concepts, record.question_text, "mistake", source="mistake", subject=record.subject)
     except Exception as e:
         print(f"[ConceptMemory] mistake record failed: {e}", flush=True)
     return concepts
@@ -328,6 +345,7 @@ def add_mistake(req: MistakeAddRequest, book_name: str = "default"):
         record = _record_from_request(req, book_name=book_name)
         _persist_mistake_concepts(record, explanation=record.explanation, book_name=book_name)
         mid = _mb(book_name).add(record)
+        _log_learning_event("mistake_added", book_name=book_name, record=record, payload={"difficulty": record.difficulty, "mistake_type": record.mistake_type, "tags": record.tags})
         return {"success": True, "id": mid, "data": _record_to_out(record), "message": f"已保存（{mid}）"}
     except Exception as e:
         return {
@@ -478,6 +496,7 @@ def delete_mistake(mistake_id: str, book_name: str = "default"):
 def review_mistake(req: MistakeReviewRequest, book_name: str = "default"):
     try:
         updated = _mb(book_name).review(req.id, req.quality)
+        _log_learning_event("mistake_reviewed", book_name=book_name, record=updated, payload={"quality": req.quality, "next_review": updated.sm2.get("next_review") if updated.sm2 else None})
         next_review = updated.sm2.get("next_review") if updated.sm2 else None
         interval = updated.sm2.get("interval") if updated.sm2 else None
         return {
@@ -497,22 +516,25 @@ def _record_mistake_concepts(record: MistakeRecord, explanation: str, rag_contex
 @router.post("/explain")
 def explain_mistake(req: MistakeExplainRequest, book_name: str = "default"):
     from config import get_llm
-    from ingestion.vector_store import get_vector_store
+    from graph.safe_retrieval import get_safe_vector_store
 
     mb = _mb(book_name)
     llm = get_llm()
     rag_context = {"text": ""}
+    rag_book = (req.book_name or book_name or "").strip()
 
     def rag_provider(record: MistakeRecord):
-        if not req.book_name:
+        if not rag_book:
             return ""
         try:
-            vs = get_vector_store()
+            vs, vector_error = get_safe_vector_store()
+            if vector_error:
+                return ""
             if vs and record.tags:
-                ch_docs = vs.search_all(record.tags[0], k=3)
+                ch_docs = vs.search_all(record.tags[0], k=3, book_name=rag_book)
                 texts = []
                 for chapter, docs in ch_docs.items():
-                    texts.append(f"章节：{chapter}")
+                    texts.append("章节：" + chapter)
                     for doc in docs:
                         texts.append(doc.page_content[:400])
                 rag_context["text"] = "\n".join(texts)
@@ -529,6 +551,7 @@ def explain_mistake(req: MistakeExplainRequest, book_name: str = "default"):
             record.explanation = sanitized
             _record_mistake_concepts(record, sanitized, rag_context["text"], req.book_name or book_name)
             mb.update(record)
+            _log_learning_event("mistake_explained", book_name=req.book_name or book_name, record=record, payload={"has_rag_context": bool(rag_context["text"])})
         return {"success": True, "explanation": sanitized, "data": _record_to_out(record) if record else None}
     except Exception as e:
         return {"success": False, "message": f"讲解失败: {e}"}

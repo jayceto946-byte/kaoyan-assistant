@@ -8,12 +8,13 @@ from fastapi import APIRouter
 
 from backend.schemas import KGGraphOut, KGRefreshOut
 from config import PROGRESS_PATH
+from utils.path_safety import safe_book_name, safe_child_path
 
 router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
 
 
 def _kg_html_path(book_name: str) -> Path:
-    return Path(PROGRESS_PATH) / book_name / "kg_graph.html"
+    return safe_child_path(PROGRESS_PATH, safe_book_name(book_name), "kg_graph.html")
 
 
 @router.get("/graph")
@@ -33,7 +34,7 @@ def get_kg_graph(book_name: str = ""):
             # 从 knowledge_graph.py 获取概念数
             from knowledge.knowledge_graph import get_kg
             kg = get_kg(book_name)
-            graph = kg.graph
+            graph = kg.graph()
             count = len(graph) if graph else 0
             return KGGraphOut(
                 book_name=book_name,
@@ -72,7 +73,7 @@ def refresh_kg(book_name: str = ""):
         from knowledge.kg_visualizer import KGVisualizer
 
         kg = get_kg(book_name)
-        graph = kg.graph
+        graph = kg.graph()
         if not graph:
             return KGRefreshOut(
                 success=False,

@@ -28,11 +28,14 @@ class ChatEvent(BaseModel):
     content_count: Optional[int] = None
     has_teaching: Optional[bool] = None
     chunk: Optional[str] = None
+    replace: Optional[bool] = None
     done: Optional[bool] = None
     enriched: Optional[bool] = None
     message: Optional[str] = None
     conversation_id: Optional[str] = None
     rewritten_question: Optional[str] = None
+    retrieval_status: Optional[str] = None
+    retrieval_error: Optional[str] = None
 
 
 class MistakeRecordOut(BaseModel):
@@ -230,6 +233,9 @@ class ExerciseCandidateOut(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     needs_llm: bool = False
     needs_review: bool = True
+    refined_by_llm: bool = False
+    split_confidence: float = 0.0
+    split_reasons: list[str] = Field(default_factory=list)
 
 
 class ExerciseAnalyzeRequest(BaseModel):
@@ -240,6 +246,8 @@ class ExerciseAnalyzeRequest(BaseModel):
     chapter: str = ""
     known_concepts: list[str] = Field(default_factory=list)
     limit: int = Field(default=200, ge=1, le=500)
+    use_llm: bool = False
+    llm_max_items: int = Field(default=20, ge=1, le=100)
 
 
 class ExerciseBatchAddRequest(BaseModel):

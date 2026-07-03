@@ -88,15 +88,18 @@ MULTIMODAL_ENABLED = False
 
 def _get_chat_model(model: str, temperature: float, api_key: str, base_url: str, extra_body: Optional[dict] = None):
     from langchain_openai import ChatOpenAI
-    import httpx
+
     kwargs = dict(
         model=model,
         temperature=temperature,
         api_key=api_key,
         base_url=base_url,
         streaming=True,
-        http_client=httpx.Client(trust_env=False, timeout=120),
+        timeout=120,
     )
+    if "http_socket_options" in getattr(ChatOpenAI, "model_fields", {}):
+        # Disable LangChain's custom socket transport so httpx can honor system proxies.
+        kwargs["http_socket_options"] = ()
     if extra_body:
         kwargs["extra_body"] = extra_body
     return ChatOpenAI(**kwargs)

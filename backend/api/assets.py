@@ -87,7 +87,7 @@ def _embedding_status(manifest: dict) -> dict:
     installed = bool(snapshot and snapshot.exists())
     safe_repo_id = _safe_repo_id(EMBEDDING_REPO_ID)
     safe_revision = _safe_public_text(EMBEDDING_REVISION, "main")
-    version_match = installed and item.get("repo_id") == safe_repo_id and item.get("revision") == safe_revision
+    version_match = installed and (not item or (item.get("repo_id") == safe_repo_id and item.get("revision") == safe_revision))
     return {
         "id": "embedding_model",
         "label": "Embedding model",
@@ -106,7 +106,7 @@ def _vector_status(manifest: dict) -> dict:
     item = manifest.get("assets", {}).get("vector_bundle", {})
     db_path = Path(VECTOR_DB_PATH) / "chroma.sqlite3"
     installed = db_path.exists()
-    version_match = installed and item.get("version") == VECTOR_BUNDLE_VERSION
+    version_match = installed and (not item or item.get("version") == VECTOR_BUNDLE_VERSION)
     return {
         "id": "vector_bundle",
         "label": "Example vector database",
@@ -222,6 +222,11 @@ def download_vector_bundle():
             backup = vector_target.with_name(f"{vector_target.name}.backup-{int(time.time())}")
             shutil.move(str(vector_target), str(backup))
         shutil.copytree(source, vector_target)
+        try:
+            from ingestion.vector_store import reset_vector_store
+            reset_vector_store()
+        except Exception as reset_exc:
+            print(f"[assets] vector store cache reset failed: {reset_exc}", flush=True)
 
         manifest = _read_manifest()
         manifest.setdefault("assets", {})["vector_bundle"] = {

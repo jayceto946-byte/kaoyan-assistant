@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 
 from config import PROGRESS_PATH
+from utils.json_io import atomic_write_json
+from utils.subject_catalog import normalize_subject_value, subject_matches
 
 CONV_DIR = Path(PROGRESS_PATH) / "conversations"
 
@@ -40,6 +42,7 @@ def load_history(conversation_id: str) -> list[dict]:
 
 
 def append_message(conversation_id: str, role: str, content: str, book_name: str = "", subject: str = "") -> None:
+    subject = normalize_subject_value(subject)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     payload = _read_payload(conversation_id)
     history = payload.get("messages", []) if isinstance(payload, dict) else []
@@ -58,7 +61,7 @@ def append_message(conversation_id: str, role: str, content: str, book_name: str
         "created_at": payload.get("created_at") or now,
         "updated_at": now,
     }
-    _path(conversation_id).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(_path(conversation_id), payload)
 
 
 def get_conversation(conversation_id: str) -> dict:
@@ -83,7 +86,7 @@ def list_conversations(subject: str = "", book_name: str = "", limit: int = 80) 
     for path in CONV_DIR.glob("*.json"):
         conversation_id = path.stem
         item = get_conversation(conversation_id)
-        if subject and item.get("subject") != subject:
+        if subject and not subject_matches(item.get("subject", ""), subject):
             continue
         if book_name and item.get("book_name") != book_name:
             continue

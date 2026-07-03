@@ -22,13 +22,30 @@ from backend.schemas import (
 from config import DATA_DIR, PROGRESS_PATH
 from memory.exercise_bank import ExerciseRecord, get_exercise_bank
 from memory.exercise_file_importer import extract_exercise_text
-from memory.exercise_importer import analyze_candidates, split_candidate_text
+from memory.exercise_importer import analyze_candidates, refine_low_confidence_candidates, split_candidate_blocks
 from memory.mistake_book import MistakeRecord, get_mistake_book
+from memory.learning_events import LearningEvent, concept_names, get_learning_event_store
 from utils.latex_sanitizer import sanitize_latex
+from utils.subject_catalog import normalize_subject_value
 from utils.thinking_filter import strip_thinking
 
 router = APIRouter(prefix="/exercises", tags=["exercises"])
 UPLOAD_DIR = DATA_DIR / "uploads" / "exercises"
+
+
+def _log_learning_event(event_type: str, *, book_name: str = "default", record: ExerciseRecord | None = None, source_type: str = "exercise", source_id: str = "", payload: dict | None = None) -> None:
+    try:
+        get_learning_event_store().append(LearningEvent(
+            event_type=event_type,
+            book_name=book_name,
+            subject=record.subject if record else "",
+            source_type=source_type,
+            source_id=source_id or (record.id if record else ""),
+            concept_names=concept_names(record.linked_concepts if record else []),
+            payload=payload or {},
+        ))
+    except Exception as exc:
+        print(f"[LearningEvent] exercise event failed: {exc}", flush=True)
 
 
 def _safe_upload_name(filename: str) -> str:
@@ -114,7 +131,7 @@ def _record_from_request(req: ExerciseAddRequest, book_name: str = "default") ->
         answer=req.answer.strip(),
         explanation=sanitize_latex(strip_thinking(req.explanation.strip())) if req.explanation.strip() else "",
         source=req.source.strip(),
-        subject=req.subject.strip() or book_name,
+        subject=normalize_subject_value(req.subject, fallback=book_name),
         chapter=req.chapter.strip() or None,
         tags=_tags_from_text(req.tags),
         question_type=req.question_type.strip(),
@@ -136,6 +153,7 @@ def add_exercise(req: ExerciseAddRequest, book_name: str = "default"):
     try:
         record = _record_from_request(req, book_name=book_name)
         rid = _bank(book_name).add(record)
+        _log_learning_event("exercise_added", book_name=book_name, record=record, payload={"origin_type": record.origin_type, "status": record.status})
         return {"success": True, "id": rid, "data": _record_to_out(record), "message": "已保存到习题库"}
     except Exception as e:
         return {"success": False, "message": f"保存失败：{e}"}
@@ -155,8 +173,8 @@ def list_exercises(req: ExerciseListRequest, book_name: str = "default"):
 
 
 @router.get("/stats")
-def get_exercise_stats(book_name: str = "default"):
-    return {"success": True, "data": _bank(book_name).stats()}
+def get_exercise_stats(book_name: str = "default", subject: str = ""):
+    return {"success": True, "data": _bank(book_name).stats(subject=subject or None)}
 
 
 
@@ -170,6 +188,8 @@ def upload_and_analyze_exercises(
     subject: str = Form(""),
     chapter: str = Form(""),
     limit: int = Form(200),
+    use_llm: bool = Form(False),
+    llm_max_items: int = Form(20),
     book_name: str = "default",
 ):
     try:
@@ -183,16 +203,19 @@ def upload_and_analyze_exercises(
                 "extract": extracted.to_dict(),
             }
         effective_source = source.strip() or saved_path.name
-        effective_subject = subject.strip() or book_name
+        effective_subject = normalize_subject_value(subject, fallback=book_name)
         candidates = analyze_candidates(
-            split_candidate_text(extracted.text, limit=limit),
+            split_candidate_blocks(extracted.text, limit=limit),
             source=effective_source,
             subject=effective_subject,
             chapter=chapter.strip(),
             limit=limit,
         )
+        if use_llm:
+            candidates = refine_low_confidence_candidates(candidates, max_items=llm_max_items)
         data = [ExerciseCandidateOut(**candidate.to_dict()) for candidate in candidates]
         needs_llm_count = sum(1 for candidate in candidates if candidate.needs_llm)
+        llm_refined_count = sum(1 for candidate in candidates if candidate.refined_by_llm)
         return {
             "success": True,
             "message": f"已从文件解析出 {len(data)} 道候选题",
@@ -201,6 +224,7 @@ def upload_and_analyze_exercises(
                 "total": len(data),
                 "needs_llm": needs_llm_count,
                 "auto_confident": len(data) - needs_llm_count,
+                "llm_refined": llm_refined_count,
             },
             "file": str(saved_path),
             "extract": extracted.to_dict(),
@@ -211,9 +235,9 @@ def upload_and_analyze_exercises(
 @router.post("/analyze-candidates")
 def analyze_exercise_candidates(req: ExerciseAnalyzeRequest, book_name: str = "default"):
     source = req.source.strip()
-    subject = req.subject.strip() or book_name
+    subject = normalize_subject_value(req.subject, fallback=book_name)
     chapter = req.chapter.strip()
-    raw_candidates = req.candidates or split_candidate_text(req.raw_text, limit=req.limit)
+    raw_candidates = req.candidates or split_candidate_blocks(req.raw_text, limit=req.limit)
     candidates = analyze_candidates(
         raw_candidates,
         source=source,
@@ -222,8 +246,15 @@ def analyze_exercise_candidates(req: ExerciseAnalyzeRequest, book_name: str = "d
         known_concepts=req.known_concepts,
         limit=req.limit,
     )
+    if req.use_llm:
+        candidates = refine_low_confidence_candidates(
+            candidates,
+            known_concepts=req.known_concepts,
+            max_items=req.llm_max_items,
+        )
     data = [ExerciseCandidateOut(**candidate.to_dict()) for candidate in candidates]
     needs_llm_count = sum(1 for candidate in candidates if candidate.needs_llm)
+    llm_refined_count = sum(1 for candidate in candidates if candidate.refined_by_llm)
     return {
         "success": True,
         "data": data,
@@ -231,6 +262,7 @@ def analyze_exercise_candidates(req: ExerciseAnalyzeRequest, book_name: str = "d
             "total": len(data),
             "needs_llm": needs_llm_count,
             "auto_confident": len(data) - needs_llm_count,
+            "llm_refined": llm_refined_count,
         },
     }
 
@@ -244,6 +276,7 @@ def batch_add_exercises(req: ExerciseBatchAddRequest, book_name: str = "default"
             continue
         record = _record_from_request(item, book_name=book_name)
         bank.add(record)
+        _log_learning_event("exercise_imported", book_name=book_name, record=record, payload={"origin_type": record.origin_type, "status": record.status})
         saved.append(_record_to_out(record))
     return {"success": True, "data": saved, "count": len(saved), "message": f"已导入 {len(saved)} 道候选题"}
 
@@ -265,10 +298,12 @@ def practice_exercise(req: ExercisePracticeRequest, book_name: str = "default"):
     if not record:
         return {"success": False, "message": "未找到该习题"}
 
+    _log_learning_event("exercise_practiced", book_name=book_name, record=record, payload={"quality": req.quality, "status": record.status, "add_to_mistake": req.add_to_mistake})
     mistake_id = ""
     if req.add_to_mistake:
         mb = get_mistake_book(book_name, str(PROGRESS_PATH))
         mistake_id = mb.add(_mistake_from_exercise(record, user_answer=req.user_answer))
+        _log_learning_event("exercise_to_mistake", book_name=book_name, record=record, payload={"mistake_id": mistake_id, "trigger": "practice"})
     return {"success": True, "message": "练习结果已记录", "data": _record_to_out(record), "mistake_id": mistake_id}
 
 
@@ -279,6 +314,7 @@ def exercise_to_mistake(req: ExerciseToMistakeRequest, book_name: str = "default
         return {"success": False, "message": "未找到该习题"}
     mb = get_mistake_book(book_name, str(PROGRESS_PATH))
     mistake_id = mb.add(_mistake_from_exercise(record, user_answer=req.user_answer, mistake_type=req.mistake_type))
+    _log_learning_event("exercise_to_mistake", book_name=book_name, record=record, payload={"mistake_id": mistake_id, "trigger": "manual"})
     record.status = "needs_review"
     _bank(book_name).update(record)
     return {"success": True, "message": "已转入错题本", "id": mistake_id, "data": _record_to_out(record)}
@@ -315,6 +351,7 @@ def add_from_mistake(req: ExerciseFromMistakeRequest, book_name: str = "default"
         notes="由错题本转入",
     )
     rid = bank.add(record)
+    _log_learning_event("exercise_added", book_name=book_name, record=record, payload={"origin_type": record.origin_type, "origin_id": record.origin_id})
     return {"success": True, "message": "已从错题转入习题库", "id": rid, "data": _record_to_out(record)}
 
 @router.get("/{exercise_id}")

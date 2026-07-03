@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import os
 
-from backend.api import chat, mistakes, books, kg, exercises, system, reports, assets
+from backend.api import agent, chat, mistakes, books, kg, exercises, system, reports, assets, highlights, jobs
 
 app = FastAPI(
     title="考研智能辅助系统 API",
@@ -36,6 +36,7 @@ app.add_middleware(
 
 # ── API 路由 ──────────────────────────────────────────────
 app.include_router(chat.router, prefix="/api")
+app.include_router(agent.router, prefix="/api")
 app.include_router(mistakes.router, prefix="/api")
 app.include_router(books.router, prefix="/api")
 app.include_router(kg.router, prefix="/api")
@@ -43,6 +44,8 @@ app.include_router(exercises.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(assets.router, prefix="/api/system")
+app.include_router(highlights.router, prefix="/api")
+app.include_router(jobs.router, prefix="/api")
 
 # ── 健康检查 ──────────────────────────────────────────────
 @app.get("/health")
@@ -55,7 +58,15 @@ def _warmup():
     """启动时预热：加载嵌入模型和向量库，避免首请求长时间等待。"""
     import time
     t0 = time.time()
-    if os.getenv('SKIP_EMBEDDING_WARMUP', '1') == '1':
+    try:
+        from backend.job_manager import get_job_manager
+
+        interrupted = get_job_manager().mark_running_interrupted()
+        if interrupted:
+            print(f"[jobs] marked {interrupted} unfinished jobs interrupted")
+    except Exception as e:
+        print(f"[jobs] startup recovery failed: {e}")
+    if os.getenv('SKIP_EMBEDDING_WARMUP', '0') == '1':
         print('[warmup] embeddings skipped')
     else:
         try:
@@ -66,7 +77,7 @@ def _warmup():
             print(f"[warmup] embeddings failed: {e}")
 
     t1 = time.time()
-    if os.getenv('SKIP_VECTOR_WARMUP', '1') == '1':
+    if os.getenv('SKIP_VECTOR_WARMUP', '0') == '1':
         print('[warmup] vector_store skipped')
     else:
         try:

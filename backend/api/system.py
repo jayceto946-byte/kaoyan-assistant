@@ -30,7 +30,7 @@ def _check_vector_store() -> dict:
                 collection_count=0,
                 path=str(db_path),
             )
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5) as conn:
+        with sqlite3.connect(str(db_path), timeout=10) as conn:
             integrity = conn.execute("PRAGMA quick_check").fetchone()
             collection_count = conn.execute("SELECT COUNT(*) FROM collections").fetchone()[0]
         if not integrity or integrity[0] != "ok":
@@ -100,6 +100,22 @@ def _check_sqlite(path: Path, table_name: str, label: str) -> dict:
         return _component("error", f"{label}不可用：{exc}", path=str(path), record_count=0)
 
 
+@router.post("/vector-store/reload")
+def reload_vector_store():
+    try:
+        from ingestion.vector_store import reset_vector_store
+
+        reset_vector_store()
+        status = _check_vector_store()
+        return {
+            "success": status.get("status") != "error",
+            "message": status.get("message", "向量库已重置，下一次检索会重新连接"),
+            "data": status,
+        }
+    except Exception as exc:
+        return {"success": False, "message": f"向量库重载失败：{exc}", "data": _component("error", str(exc))}
+
+
 @router.get("/health")
 def system_health(book_name: str = ""):
     safe_book_name = Path(book_name or "default").name
@@ -123,16 +139,9 @@ import subprocess
 from datetime import datetime
 
 from config import BASE_DIR
+from utils.subject_catalog import DEFAULT_SUBJECT_TREE, read_subject_tree, write_subject_tree
 
 ENV_PATH = Path(os.getenv("ENV_PATH", str(BASE_DIR / ".env")))
-SUBJECTS_PATH = Path(PROGRESS_PATH) / "subjects.json"
-
-DEFAULT_SUBJECT_TREE = [
-    {"name": "数学", "children": ["线代", "微积分", "概率论", "高数"]},
-    {"name": "英语", "children": ["阅读", "写作", "翻译", "词汇"]},
-    {"name": "政治", "children": ["马原", "毛中特", "史纲", "思修"]},
-    {"name": "专业课", "children": []},
-]
 
 ENV_KEYS = [
     "LLM_BACKEND",
@@ -145,6 +154,8 @@ ENV_KEYS = [
     "OPENAI_API_KEY",
     "OPENAI_API_BASE",
     "LLM_MODEL_NAME",
+    "MINERU_API_URL",
+    "MINERU_CLI_COMMAND",
 ]
 
 SECRET_KEYS = {"DEEPSEEK_API_KEY", "MOONSHOT_API_KEY", "OPENAI_API_KEY"}
@@ -207,30 +218,11 @@ def _env_status() -> dict:
 
 
 def _read_subject_tree() -> list[dict]:
-    try:
-        if SUBJECTS_PATH.exists():
-            data = json.loads(SUBJECTS_PATH.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                return data
-    except Exception:
-        pass
-    return DEFAULT_SUBJECT_TREE
+    return read_subject_tree()
 
 
-def _write_subject_tree(tree: list[dict]) -> None:
-    SUBJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    cleaned = []
-    for item in tree:
-        name = str(item.get("name", "")).strip()
-        if not name:
-            continue
-        children = []
-        for child in item.get("children", []) or []:
-            child_name = str(child).strip()
-            if child_name and child_name not in children:
-                children.append(child_name)
-        cleaned.append({"name": name, "children": children})
-    SUBJECTS_PATH.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), encoding="utf-8")
+def _write_subject_tree(tree: list[dict]) -> list[dict]:
+    return write_subject_tree(tree)
 
 
 @router.get("/settings")
@@ -271,8 +263,8 @@ def save_subjects(payload: dict):
     tree = payload.get("subjects", [])
     if not isinstance(tree, list):
         return {"success": False, "message": "subjects 必须是列表"}
-    _write_subject_tree(tree)
-    return {"success": True, "message": "学科设置已保存", "data": _read_subject_tree()}
+    cleaned = _write_subject_tree(tree)
+    return {"success": True, "message": "学科设置已保存", "data": cleaned}
 
 
 @router.get("/version")
