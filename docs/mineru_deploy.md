@@ -1,4 +1,4 @@
-﻿# MinerU deployment
+# MinerU deployment
 
 MinerU is treated as an external parsing service. The main `kaoyan-assistant` image does not install MinerU, Paddle, CUDA, PyTorch, or vLLM dependencies.
 

@@ -32,7 +32,7 @@ tests/        后端与核心工作流测试
 ### 后端
 
 ```powershell
-cd D:\AI\agent
+cd D:\AI\agent\kaoyan-assistant
 .\venv310\Scripts\Activate.ps1
 python -m uvicorn backend.main:app --port 8000
 ```
@@ -40,7 +40,7 @@ python -m uvicorn backend.main:app --port 8000
 ### 前端
 
 ```powershell
-cd D:\AI\agent\frontend
+cd D:\AI\agent\kaoyan-assistant\frontend
 npm install
 npm run dev
 ```
@@ -48,14 +48,14 @@ npm run dev
 ### 测试
 
 ```powershell
-cd D:\AI\agent
+cd D:\AI\agent\kaoyan-assistant
 .\venv310\Scripts\python.exe -m pytest -q
 ```
 
 ### 前端生产构建
 
 ```powershell
-cd D:\AI\agent\frontend
+cd D:\AI\agent\kaoyan-assistant\frontend
 npm run build
 ```
 

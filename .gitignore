@@ -30,11 +30,14 @@ data/
 mineru_output/
 test_mineru/
 backups/
+.migration_backup_*/
 
 # Local assistant/tool logs
 .codex_logs/
 .claude/
 .codex_desktop_smoke/
+logs/
+CODEX_REVIEW_HANDOFF.md
 
 # Local OCR/TOC samples and extracted textbook snippets
 kimi_toc.json
@@ -61,3 +64,8 @@ release/
 build/
 .codex/
 kaoyan-assistant/
+
+# Local desktop demo payloads; keep only instructions in Git.
+desktop/sample_data/**
+!desktop/sample_data/
+!desktop/sample_data/README.md
