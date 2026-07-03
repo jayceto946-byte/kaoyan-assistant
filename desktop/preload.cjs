@@ -1,10 +1,13 @@
-﻿const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('kaoyanDesktop', {
   isElectron: true,
   minimize: () => ipcRenderer.invoke('window:minimize'),
   toggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
   close: () => ipcRenderer.invoke('window:close'),
+  getStartupInfo: () => ipcRenderer.invoke('startup:info'),
+  openWebFallback: () => ipcRenderer.invoke('startup:open-web'),
+  openBackendLog: () => ipcRenderer.invoke('startup:open-log'),
   getUpdateStatus: () => ipcRenderer.invoke('updates:status'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   downloadUpdate: () => ipcRenderer.invoke('updates:download'),
@@ -15,6 +18,8 @@ contextBridge.exposeInMainWorld('kaoyanDesktop', {
     return () => ipcRenderer.removeListener('updates:status', listener);
   },
   onStartupError: (handler) => {
-    ipcRenderer.on('startup-error', (_event, message) => handler(message));
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('startup-error', listener);
+    return () => ipcRenderer.removeListener('startup-error', listener);
   },
 });

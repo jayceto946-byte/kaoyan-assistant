@@ -1,5 +1,9 @@
 param(
-    [string]$Python = ".\venv310\Scripts\python.exe"
+    [string]$Python = ".\venv310\Scripts\python.exe",
+    [string]$SampleSourceData = "",
+    [string]$SampleBookName = "优化设计",
+    [switch]$SkipSampleDataPrepare,
+    [switch]$RequireSampleData
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,6 +22,17 @@ function Invoke-CheckedCommand {
     & $Command
     if ($LASTEXITCODE -ne 0) {
         throw "$Label failed with exit code $LASTEXITCODE"
+    }
+}
+
+if (-not $SkipSampleDataPrepare) {
+    if (-not $SampleSourceData) { $SampleSourceData = Join-Path $projectRoot "kaoyan-assistant\data" }
+    if (Test-Path -LiteralPath $SampleSourceData) {
+        & (Join-Path $projectRoot "scripts\prepare-desktop-sample-data.ps1") -SourceData $SampleSourceData -TargetData $sampleData -BookName $SampleBookName
+    } elseif ($RequireSampleData) {
+        throw "Sample source data not found: $SampleSourceData"
+    } else {
+        Write-Warning "Sample source data not found: $SampleSourceData. The desktop package will not include bundled demo data/models."
     }
 }
 
@@ -49,7 +64,6 @@ Invoke-CheckedCommand "[3/3] Building backend executable..." {
       --hidden-import sentence_transformers `
       --hidden-import huggingface_hub `
       --collect-submodules backend `
-      --collect-submodules agents `
       --collect-submodules graph `
       --collect-submodules ingestion `
       --collect-submodules knowledge `
@@ -58,10 +72,32 @@ Invoke-CheckedCommand "[3/3] Building backend executable..." {
       --collect-data chromadb `
       --collect-data sentence_transformers `
       --collect-data transformers `
+      --exclude-module agents `
       --exclude-module paddle `
       --exclude-module paddleocr `
+      --exclude-module paddlex `
       --exclude-module cv2 `
+      --exclude-module mineru `
+      --exclude-module mineru_vl_utils `
+      --exclude-module marker_pdf `
+      --exclude-module marker `
+      --exclude-module surya `
+      --exclude-module nougat `
+      --exclude-module doclayout_yolo `
+      --exclude-module modelscope `
+      --exclude-module albumentations `
+      --exclude-module skimage `
       --exclude-module gradio `
+      --exclude-module gradio_client `
+      --exclude-module plotly `
+      --exclude-module coverage `
+      --exclude-module hypothesis `
+      --exclude-module pytest_cov `
+      --exclude-module notebook `
+      --exclude-module jupyter `
+      --exclude-module jupyterlab `
+      --exclude-module sphinx `
+      --exclude-module mkdocs `
       --exclude-module ultralytics `
       --exclude-module torchvision `
       --exclude-module datasets `
@@ -70,6 +106,7 @@ Invoke-CheckedCommand "[3/3] Building backend executable..." {
       --exclude-module boto3 `
       --exclude-module botocore `
       --exclude-module s3transfer `
+      --exclude-module pandas `
       --exclude-module polars `
       --exclude-module pyarrow `
       --exclude-module matplotlib `

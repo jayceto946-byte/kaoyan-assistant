@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -10,6 +10,7 @@ const FRONTEND_DEV_URL = process.env.KAOYAN_FRONTEND_DEV_URL || '';
 
 let mainWindow = null;
 let backendProcess = null;
+let backendStartError = null;
 let shuttingDown = false;
 let updaterConfigured = false;
 let updateState = {
@@ -30,12 +31,21 @@ function packagedBackendPath() {
 
 function runtimePaths() {
   const userData = app.getPath('userData');
+  const logDir = path.join(userData, 'logs');
   return {
     userData,
+    logDir,
+    backendLogPath: path.join(logDir, 'backend.log'),
     dataDir: path.join(userData, 'data'),
     envPath: path.join(userData, '.env'),
     mineruOutputPath: path.join(userData, 'mineru_output'),
   };
+}
+
+function appendBackendLog(message) {
+  const paths = runtimePaths();
+  fs.mkdirSync(paths.logDir, { recursive: true });
+  fs.appendFileSync(paths.backendLogPath, `${new Date().toISOString()} ${message}\n`, 'utf8');
 }
 
 function backendEnv() {
@@ -49,8 +59,8 @@ function backendEnv() {
     DATA_DIR: paths.dataDir,
     ENV_PATH: paths.envPath,
     MINERU_OUTPUT_PATH: paths.mineruOutputPath,
-    SKIP_VECTOR_WARMUP: process.env.SKIP_VECTOR_WARMUP || '1',
-    SKIP_EMBEDDING_WARMUP: process.env.SKIP_EMBEDDING_WARMUP || '1',
+    SKIP_VECTOR_WARMUP: process.env.SKIP_VECTOR_WARMUP || '0',
+    SKIP_EMBEDDING_WARMUP: process.env.SKIP_EMBEDDING_WARMUP || '0',
     EMBEDDING_LOCAL_FILES_ONLY: process.env.EMBEDDING_LOCAL_FILES_ONLY || '1',
   };
 }
@@ -119,36 +129,84 @@ function configureUpdater() {
   return true;
 }
 
-function startBackend() {
-  if (process.env.KAOYAN_SKIP_BACKEND === '1') return;
+function sendStartupError(message) {
+  backendStartError = message;
+  mainWindow?.webContents.send('startup-error', startupInfo(message));
+}
 
-  if (app.isPackaged) {
-    backendProcess = spawn(packagedBackendPath(), [], {
-      cwd: path.dirname(packagedBackendPath()),
-      windowsHide: true,
-      env: backendEnv(),
-    });
+function startupInfo(message = backendStartError) {
+  const paths = runtimePaths();
+  return {
+    message: message || '',
+    backendUrl: BACKEND_URL,
+    logPath: paths.backendLogPath,
+    dataDir: paths.dataDir,
+  };
+}
+
+function attachBackendLogging() {
+  if (!backendProcess) return;
+  backendProcess.stdout?.on('data', (chunk) => appendBackendLog(`[stdout] ${chunk.toString().trimEnd()}`));
+  backendProcess.stderr?.on('data', (chunk) => appendBackendLog(`[stderr] ${chunk.toString().trimEnd()}`));
+  backendProcess.on('error', (error) => {
+    const message = `后端进程启动失败：${error.message || error}`;
+    appendBackendLog(`[error] ${message}`);
+    sendStartupError(message);
+  });
+  backendProcess.on('exit', (code, signal) => {
+    const message = `后端进程退出：code=${code ?? 'null'}, signal=${signal ?? 'null'}`;
+    appendBackendLog(`[exit] ${message}`);
+    if (!shuttingDown) sendStartupError(message);
+  });
+}
+
+function startBackend() {
+  if (process.env.KAOYAN_SKIP_BACKEND === '1') {
+    appendBackendLog('[main] KAOYAN_SKIP_BACKEND=1, backend spawn skipped.');
     return;
   }
 
-  const python = process.env.KAOYAN_PYTHON || path.join(projectRoot(), 'venv310', 'Scripts', 'python.exe');
-  backendProcess = spawn(
-    python,
-    ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)],
-    {
-      cwd: projectRoot(),
-      windowsHide: true,
-      env: backendEnv(),
-    },
-  );
+  try {
+    const env = backendEnv();
+    if (app.isPackaged) {
+      const executable = packagedBackendPath();
+      appendBackendLog(`[main] starting packaged backend: ${executable}`);
+      if (!fs.existsSync(executable)) {
+        sendStartupError(`找不到后端可执行文件：${executable}`);
+        return;
+      }
+      backendProcess = spawn(executable, [], {
+        cwd: path.dirname(executable),
+        windowsHide: true,
+        env,
+      });
+      attachBackendLogging();
+      return;
+    }
 
-  backendProcess.stdout?.on('data', (chunk) => console.log(`[backend] ${chunk}`.trim()));
-  backendProcess.stderr?.on('data', (chunk) => console.error(`[backend] ${chunk}`.trim()));
+    const python = process.env.KAOYAN_PYTHON || path.join(projectRoot(), 'venv310', 'Scripts', 'python.exe');
+    appendBackendLog(`[main] starting dev backend: ${python}`);
+    backendProcess = spawn(
+      python,
+      ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)],
+      {
+        cwd: projectRoot(),
+        windowsHide: true,
+        env,
+      },
+    );
+    attachBackendLogging();
+  } catch (error) {
+    const message = `后端启动准备失败：${error.message || error}`;
+    appendBackendLog(`[error] ${message}`);
+    sendStartupError(message);
+  }
 }
 
 async function waitForBackend(timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (backendStartError) return false;
     try {
       const res = await fetch(`${BACKEND_URL}/health`);
       if (res.ok) return true;
@@ -164,8 +222,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
-    minWidth: 980,
-    minHeight: 640,
+    minWidth: 720,
+    minHeight: 560,
     frame: false,
     show: false,
     backgroundColor: '#f4f6f1',
@@ -188,7 +246,9 @@ function createWindow() {
       mainWindow.loadURL(targetUrl);
       return;
     }
-    mainWindow.webContents.send('startup-error', `后端服务启动超时：${BACKEND_URL}`);
+    const message = backendStartError || `后端服务启动超时：${BACKEND_URL}`;
+    appendBackendLog(`[timeout] ${message}`);
+    mainWindow.webContents.send('startup-error', startupInfo(message));
   });
 }
 
@@ -200,6 +260,15 @@ ipcMain.handle('window:toggle-maximize', () => {
   return mainWindow.isMaximized();
 });
 ipcMain.handle('window:close', () => mainWindow?.close());
+
+ipcMain.handle('startup:info', () => startupInfo());
+ipcMain.handle('startup:open-web', async () => shell.openExternal(BACKEND_URL));
+ipcMain.handle('startup:open-log', async () => {
+  const logPath = runtimePaths().backendLogPath;
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  if (!fs.existsSync(logPath)) fs.writeFileSync(logPath, '', 'utf8');
+  return shell.openPath(logPath);
+});
 
 ipcMain.handle('updates:status', () => updateState);
 ipcMain.handle('updates:check', async () => {

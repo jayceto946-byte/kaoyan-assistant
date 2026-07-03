@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
@@ -16,7 +16,7 @@
         font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
       }
       .shell {
-        width: min(420px, calc(100vw - 48px));
+        width: min(520px, calc(100vw - 48px));
         border: 1px solid #d7ded5;
         border-radius: 8px;
         background: #fffefa;
@@ -41,6 +41,29 @@
         background: #2f6f62;
         animation: load 1.2s ease-in-out infinite alternate;
       }
+      .error .bar::before { animation: none; width: 100%; background: #b94737; }
+      .details {
+        display: none;
+        margin-top: 18px;
+        padding: 12px;
+        border: 1px solid #ead1ca;
+        border-radius: 6px;
+        background: #fff7f4;
+        color: #7b3027;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      .actions { display: none; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+      button {
+        border: 1px solid #cbd6cc;
+        border-radius: 6px;
+        background: #ffffff;
+        color: #23332d;
+        cursor: pointer;
+        font: inherit;
+        padding: 8px 12px;
+      }
+      button.primary { border-color: #2f6f62; background: #2f6f62; color: #ffffff; }
       @keyframes load {
         from { transform: translateX(0); }
         to { transform: translateX(180%); }
@@ -48,10 +71,38 @@
     </style>
   </head>
   <body>
-    <main class="shell">
+    <main class="shell" id="shell">
       <h1>考研智能辅助系统</h1>
-      <p>正在启动本地学习服务...</p>
+      <p id="status">正在启动本地学习服务...</p>
       <div class="bar"></div>
+      <div class="details" id="details"></div>
+      <div class="actions" id="actions">
+        <button class="primary" id="openWeb">用浏览器打开 Web 端</button>
+        <button id="openLog">查看后端日志</button>
+      </div>
     </main>
+    <script>
+      const desktop = window.kaoyanDesktop;
+      const shell = document.getElementById('shell');
+      const status = document.getElementById('status');
+      const details = document.getElementById('details');
+      const actions = document.getElementById('actions');
+
+      function showStartupError(payload) {
+        const info = typeof payload === 'string' ? { message: payload } : payload || {};
+        shell.classList.add('error');
+        status.textContent = '本地学习服务启动失败。';
+        details.style.display = 'block';
+        actions.style.display = 'flex';
+        details.textContent = `${info.message || '未知错误'}\n服务地址：${info.backendUrl || 'http://127.0.0.1:8000'}\n日志：${info.logPath || '%APPDATA%\\kaoyan-assistant-desktop\\logs\\backend.log'}`;
+      }
+
+      document.getElementById('openWeb').addEventListener('click', () => desktop?.openWebFallback?.());
+      document.getElementById('openLog').addEventListener('click', () => desktop?.openBackendLog?.());
+      desktop?.onStartupError?.(showStartupError);
+      desktop?.getStartupInfo?.().then((info) => {
+        if (info?.message) showStartupError(info);
+      });
+    </script>
   </body>
 </html>

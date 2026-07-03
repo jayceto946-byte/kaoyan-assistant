@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$OutputRoot = "exports",
     [string]$BookName = "优化设计",
     [switch]$IncludeSourcePdf,

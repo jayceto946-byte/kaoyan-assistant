@@ -2,18 +2,80 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import uvicorn
+
+
+ASSET_MANIFEST_VERSION = 1
+EMBEDDING_REPO_ID = "BAAI/bge-small-zh-v1.5"
+VECTOR_BUNDLE_VERSION = "demo-v1"
 
 
 def _bundle_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
     return Path(__file__).resolve().parents[1]
+
+
+def _iter_seed_files(sample_dir: Path) -> list[Path]:
+    ignored = {".gitkeep", "README.md"}
+    return [p for p in sample_dir.rglob("*") if p.is_file() and p.name not in ignored]
+
+
+def _copy_missing_seed_files(sample_dir: Path, data_dir: Path) -> int:
+    copied = 0
+    for src in _iter_seed_files(sample_dir):
+        rel = src.relative_to(sample_dir)
+        dest = data_dir / rel
+        if dest.exists():
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        copied += 1
+    return copied
+
+
+def _write_asset_manifest(data_dir: Path) -> None:
+    manifest_path = data_dir / "desktop_assets.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    except Exception:
+        manifest = {}
+
+    manifest.setdefault("schema_version", ASSET_MANIFEST_VERSION)
+    assets = manifest.setdefault("assets", {})
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+    snapshots = data_dir / "models" / "models--BAAI--bge-small-zh-v1.5" / "snapshots"
+    snapshot_dirs = [p for p in snapshots.iterdir() if p.is_dir()] if snapshots.exists() else []
+    if snapshot_dirs:
+        snapshot = max(snapshot_dirs, key=lambda p: p.stat().st_mtime)
+        assets.setdefault("embedding_model", {
+            "repo_id": EMBEDDING_REPO_ID,
+            "revision": "main",
+            "hf_endpoint": os.getenv("HF_ENDPOINT", "https://hf-mirror.com"),
+            "path": str(snapshot),
+            "installed_at": now,
+        })
+
+    vector_db = data_dir / "vector_db"
+    if (vector_db / "chroma.sqlite3").exists():
+        assets.setdefault("vector_bundle", {
+            "version": VECTOR_BUNDLE_VERSION,
+            "url": "bundled://desktop/sample_data/vector_db",
+            "sha256": "",
+            "path": str(vector_db),
+            "installed_at": now,
+        })
+
+    if assets:
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _seed_sample_data(data_dir: Path) -> None:
@@ -23,23 +85,15 @@ def _seed_sample_data(data_dir: Path) -> None:
     if not sample_dir.exists():
         return
 
-    real_files = [p for p in sample_dir.rglob("*") if p.is_file() and p.name not in {".gitkeep", "README.md"}]
+    real_files = _iter_seed_files(sample_dir)
     if not real_files:
         return
 
-    marker = data_dir / ".sample_data_seeded"
-    if marker.exists():
-        return
-
     data_dir.mkdir(parents=True, exist_ok=True)
-    for src in real_files:
-        rel = src.relative_to(sample_dir)
-        dest = data_dir / rel
-        if dest.exists():
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
-    marker.write_text("seeded\n", encoding="utf-8")
+    copied = _copy_missing_seed_files(sample_dir, data_dir)
+    marker = data_dir / ".sample_data_seeded"
+    marker.write_text(f"seeded_at={time.strftime('%Y-%m-%dT%H:%M:%S')}\ncopied={copied}\nsource={sample_dir}\n", encoding="utf-8")
+    _write_asset_manifest(data_dir)
 
 
 def main() -> None:
@@ -50,8 +104,8 @@ def main() -> None:
     os.environ.setdefault("DATA_DIR", str(data_dir))
     os.environ.setdefault("ENV_PATH", str(data_dir.parent / ".env"))
     os.environ.setdefault("MINERU_OUTPUT_PATH", str(data_dir.parent / "mineru_output"))
-    os.environ.setdefault("SKIP_VECTOR_WARMUP", "1")
-    os.environ.setdefault("SKIP_EMBEDDING_WARMUP", "1")
+    os.environ.setdefault("SKIP_VECTOR_WARMUP", "0")
+    os.environ.setdefault("SKIP_EMBEDDING_WARMUP", "0")
     os.environ.setdefault("EMBEDDING_LOCAL_FILES_ONLY", "1")
 
     _seed_sample_data(data_dir)
