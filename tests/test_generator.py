@@ -1,5 +1,7 @@
 """生成节点相关单元测试"""
 from graph.generator import _build_generate_prompt, _has_example_marker
+from graph.chapter_subgraph import TEACH_PROMPT
+from knowledge.chapter_highlights import ChapterHighlightService, PROMPT_VERSION
 
 
 def test_build_prompt_includes_longer_context():
@@ -95,3 +97,88 @@ def test_prompt_uses_fallback_when_no_example():
     }
     prompt = _build_generate_prompt(state)
     assert "补充例题" in prompt
+
+
+def test_prompt_adds_intuitive_examples_without_losing_problem_spine():
+    """陌生概念应有直观例子，但回答仍要围绕以题讲知识点组织。"""
+    state = {
+        "intent": "definition",
+        "user_input": "什么是拉格朗日乘子法",
+        "chapter_contents": {"第三章": ["拉格朗日乘子法是处理等式约束优化问题的方法。"]},
+        "concept_results": [],
+        "history_results": [],
+        "knowledge_graph_path": [],
+        "teaching_content": "",
+    }
+    prompt = _build_generate_prompt(state)
+    assert "直观例子" in prompt
+    assert "生活化类比" in prompt
+    assert "以题讲知识点" in prompt
+    assert "概念清单" in prompt
+
+
+def test_teach_prompt_adds_intuitive_examples_and_keeps_examples_primary():
+    """章节讲解路径也应避免退化成概念罗列。"""
+    assert "直观例子" in TEACH_PROMPT
+    assert "生活化类比" in TEACH_PROMPT
+    assert "以例题为主线" in TEACH_PROMPT
+    assert "不要把讲解写成概念清单" in TEACH_PROMPT
+
+
+def test_chapter_highlight_prompt_uses_v4_and_problem_centered_examples(tmp_path):
+    """章节重点页需要生活化引入，同时保留以题讲知识点结构。"""
+    service = ChapterHighlightService(progress_path=tmp_path / "progress", mineru_output_path=tmp_path / "mineru")
+    source = {
+        "book_name": "demo-book",
+        "chapter": {"title": "第一章 测试章节", "page": 1, "end_page": 2},
+        "scope": {"title": "第一节 测试小节", "type": "section", "page": 1, "end_page": 2},
+        "image_refs": [],
+    }
+    sections = [
+        {
+            "title": "第一节 测试小节",
+            "page": 1,
+            "end_page": 2,
+            "chunks": [
+                {
+                    "text": "定义 抽象概念是测试用内容。\n例题 说明这个概念如何用于解题。",
+                    "source_ref": "p1",
+                    "chunk_id": "chunk_1",
+                    "role": "definition",
+                    "page": 1,
+                    "equations": [],
+                }
+            ],
+        }
+    ]
+
+    prompt = service._section_prompt(source, sections)
+
+    assert PROMPT_VERSION == "chapter_highlights_v4"
+    assert "直观例子" in prompt
+    assert "生活化类比" in prompt
+    assert "知识点地图”不要写成术语清单" in prompt
+    assert "以题讲知识点" in prompt
+    assert "不要把重点页主要写成概念罗列" in prompt
+
+def test_general_qa_prompt_uses_subject_without_textbook_context():
+    state = {
+        "intent": "qa",
+        "user_input": "解释一下二次型并举个例子",
+        "subject": "\u6570\u5b66",
+        "use_textbook_context": False,
+        "chapter_contents": {"should-not-appear": ["textbook context"]},
+        "concept_results": [],
+        "history_results": [],
+        "knowledge_graph_path": [],
+        "teaching_content": "",
+    }
+
+    prompt = _build_generate_prompt(state)
+
+    assert "Current subject: 数学" in prompt
+    assert "without textbook RAG context" in prompt
+    assert "life-like example" in prompt
+    assert "problem-led" in prompt
+    assert "step by step" in prompt
+    assert "textbook context" not in prompt

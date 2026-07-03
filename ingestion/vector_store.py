@@ -1,10 +1,15 @@
-"""向量存储模块 - 为每个章节创建独立的向量数据库"""
-import json, time
+"""向量存储模块 - 为每个教材章节创建独立的向量数据库"""
+import hashlib
+import json
+import time
 from pathlib import Path
+
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
 from config import VECTOR_DB_PATH, get_embeddings
+from utils.json_io import atomic_write_json
+from utils.path_safety import safe_book_name
 
 # ── 全局单例缓存 ──────────────────────────────────────────
 _chapter_vs_instance = None
@@ -18,8 +23,14 @@ def get_vector_store() -> "ChapterVectorStore":
     return _chapter_vs_instance
 
 
+def reset_vector_store() -> None:
+    """Clear cached Chroma handles after vector DB replacement/rebuild."""
+    global _chapter_vs_instance
+    _chapter_vs_instance = None
+
+
 class ChapterVectorStore:
-    """每个章节独立的向量存储管理器"""
+    """每个教材章节独立的向量存储管理器。"""
 
     def __init__(self):
         print("  [向量库] 初始化中...", flush=True)
@@ -28,7 +39,7 @@ class ChapterVectorStore:
         self.db_path.mkdir(parents=True, exist_ok=True)
         self._stores: dict[str, Chroma] = {}
         self._map_file = self.db_path / "_chapter_map.json"
-        self._map: dict[str, str] = self._load_map()
+        self._map: dict[str, dict[str, str]] = self._load_map()
         self.available = True
         # Recover mapping from existing collection metadata when Chroma is healthy.
         try:
@@ -44,19 +55,22 @@ class ChapterVectorStore:
     def _preload_all_stores(self):
         """启动时预加载所有章节的 Chroma 实例，避免冷启动延迟。"""
         import chromadb
+
         try:
             client = chromadb.PersistentClient(path=str(self.db_path))
             cols = [c for c in client.list_collections() if c.name != "_chapter_map.json"]
             for col in cols:
                 title = self._collection_to_title(col.name)
-                if title not in self._stores:
+                book_name = self._collection_to_book(col.name)
+                store_key = self._store_key(title, book_name)
+                if store_key not in self._stores:
                     try:
                         store = Chroma(
                             collection_name=col.name,
                             embedding_function=self.embeddings,
                             persist_directory=str(self.db_path),
                         )
-                        self._stores[title] = store
+                        self._stores[store_key] = store
                     except Exception:
                         pass
             if self._stores:
@@ -66,20 +80,41 @@ class ChapterVectorStore:
 
     # === 章节名 ↔ collection 名 映射 ===
 
-    def _load_map(self) -> dict[str, str]:
-        """加载映射: {collection_name: chapter_title}"""
+    def _load_map(self) -> dict[str, dict[str, str]]:
+        """加载映射: {collection_name: {chapter, book_name, schema_version}}.
+
+        兼容旧格式 {collection_name: chapter_title}，但不在加载时写回，
+        避免仅初始化就改动用户现有向量库元数据。
+        """
         if self._map_file.exists():
             with open(self._map_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                raw = json.load(f)
+            result: dict[str, dict[str, str]] = {}
+            if isinstance(raw, dict):
+                for collection_name, value in raw.items():
+                    if isinstance(value, dict):
+                        result[collection_name] = {
+                            "chapter": str(value.get("chapter") or value.get("title") or collection_name),
+                            "book_name": str(value.get("book_name") or ""),
+                            "schema_version": str(value.get("schema_version") or "2"),
+                        }
+                    else:
+                        result[collection_name] = {
+                            "chapter": str(value or collection_name),
+                            "book_name": "",
+                            "schema_version": "1",
+                        }
+            return result
         return {}
 
     def _save_map(self):
-        with open(self._map_file, "w", encoding="utf-8") as f:
-            json.dump(self._map, f, ensure_ascii=False, indent=2)
+        atomic_write_json(self._map_file, self._map)
 
     def _recover_map_from_collections(self):
-        """从已有 collection 的 metadata 恢复章节标题映射"""
+        """从已有 collection 的 metadata 恢复章节标题映射。"""
         import chromadb
+
+        changed = False
         client = chromadb.PersistentClient(path=str(self.db_path))
         for col in client.list_collections():
             if col.name in self._map or col.name == "_chapter_map.json":
@@ -90,15 +125,27 @@ class ChapterVectorStore:
                 if metas and metas[0]:
                     title = metas[0].get("chapter", "")
                     if title:
-                        self._map[col.name] = title
+                        self._map[col.name] = {
+                            "chapter": title,
+                            "book_name": str(metas[0].get("book_name") or ""),
+                            "schema_version": str(metas[0].get("collection_schema") or "2"),
+                        }
+                        changed = True
             except Exception:
                 pass
-        if self._map:
+        if changed:
             self._save_map()
 
-    def _chapter_collection_name(self, chapter_title: str) -> str:
-        """为章节生成合法的 collection 名"""
-        import hashlib
+    def _chapter_collection_name(self, chapter_title: str, book_name: str = "") -> str:
+        """为章节生成合法的 collection 名。
+
+        旧索引未记录教材名时继续使用历史规则；新索引传入 book_name 后
+        使用 book+chapter 哈希，避免多教材同名章节互相覆盖或混检。
+        """
+        normalized_book = safe_book_name(book_name) if book_name else ""
+        if normalized_book:
+            h = hashlib.md5(f"{normalized_book}\0{chapter_title}".encode("utf-8")).hexdigest()[:24]
+            return f"bk{h}"
         safe = "".join(c if c.isascii() and c.isalnum() or c in "_-" else "" for c in chapter_title)
         if len(safe) >= 3 and safe[0].isalnum() and safe[-1].isalnum():
             return safe[:63]
@@ -106,37 +153,88 @@ class ChapterVectorStore:
         return f"ch{h}"
 
     def _collection_to_title(self, collection_name: str) -> str:
-        """collection 名 -> 中文标题"""
-        return self._map.get(collection_name, collection_name)
+        """collection 名 -> 中文标题。"""
+        entry = self._map.get(collection_name)
+        return entry.get("chapter", collection_name) if entry else collection_name
 
-    def _title_to_collection(self, chapter_title: str) -> str:
-        """中文标题 -> collection 名（反向查）"""
-        for col, title in self._map.items():
-            if title == chapter_title:
+    def _collection_to_book(self, collection_name: str) -> str:
+        entry = self._map.get(collection_name)
+        return entry.get("book_name", "") if entry else ""
+
+    @staticmethod
+    def _store_key(chapter_title: str, book_name: str = "") -> str:
+        return f"{safe_book_name(book_name) if book_name else ''}\0{chapter_title}"
+
+    def _title_to_collection(self, chapter_title: str, book_name: str = "") -> str:
+        """中文标题 -> collection 名（反向查）。"""
+        normalized_book = safe_book_name(book_name) if book_name else ""
+        for col, entry in self._map.items():
+            if entry.get("chapter") == chapter_title and entry.get("book_name", "") == normalized_book:
                 return col
-        # 未命中：按旧规则计算
-        return self._chapter_collection_name(chapter_title)
+        if normalized_book:
+            for col, entry in self._map.items():
+                if entry.get("chapter") == chapter_title and not entry.get("book_name"):
+                    return col
+        return self._chapter_collection_name(chapter_title, normalized_book)
+
+    def _iter_collections_for_book(self, collections, book_name: str = ""):
+        normalized_book = safe_book_name(book_name) if book_name else ""
+        scoped = []
+        legacy = []
+        for col in collections:
+            if col.name == "_chapter_map.json":
+                continue
+            entry_book = self._collection_to_book(col.name)
+            if normalized_book:
+                if entry_book == normalized_book:
+                    scoped.append(col)
+                elif not entry_book:
+                    legacy.append(col)
+            else:
+                scoped.append(col)
+        return scoped or legacy
+
+    def _delete_collection_if_exists(self, collection_name: str) -> None:
+        import chromadb
+
+        try:
+            client = chromadb.PersistentClient(path=str(self.db_path))
+            client.delete_collection(collection_name)
+        except Exception:
+            pass
 
     # === 核心 API ===
 
-    def build_chapter_store(self, chapter_title: str, chunks: list[dict],
-                             chunk_roles: dict[str, str] | None = None):
-        """为单个章节创建向量存储
+    def build_chapter_store(
+        self,
+        chapter_title: str,
+        chunks: list[dict],
+        chunk_roles: dict[str, str] | None = None,
+        book_name: str = "",
+    ):
+        """为单个章节创建向量存储。
 
         Args:
             chunk_roles: {chunk_id: role} 映射，用于写入 metadata
+            book_name: 教材名，用于隔离同名章节索引
         """
-        collection_name = self._chapter_collection_name(chapter_title)
+        normalized_book = safe_book_name(book_name) if book_name else ""
+        collection_name = self._chapter_collection_name(chapter_title, normalized_book)
         chunk_roles = chunk_roles or {}
+        store_key = self._store_key(chapter_title, normalized_book)
+        self._stores.pop(store_key, None)
+        self._delete_collection_if_exists(collection_name)
 
         documents = [
             Document(
                 page_content=chunk["content"],
                 metadata={
                     "chapter": chunk.get("chapter", chapter_title),
+                    "book_name": normalized_book,
                     "chunk_index": chunk.get("chunk_index", 0),
                     "chunk_id": chunk.get("chunk_id", ""),
                     "role": chunk_roles.get(chunk.get("chunk_id", ""), "reference"),
+                    "collection_schema": 2,
                 },
             )
             for chunk in chunks
@@ -148,59 +246,73 @@ class ChapterVectorStore:
             collection_name=collection_name,
             persist_directory=str(self.db_path),
         )
-        self._stores[chapter_title] = store
-        # 保存映射
-        self._map[collection_name] = chapter_title
+        self._stores[store_key] = store
+        self._map[collection_name] = {
+            "chapter": chapter_title,
+            "book_name": normalized_book,
+            "schema_version": "2",
+        }
         self._save_map()
         return store
 
-    def get_chapter_store(self, chapter_title: str) -> Chroma | None:
-        """获取章节的向量存储（支持中文标题或 collection 名）"""
+    def get_chapter_store(self, chapter_title: str, book_name: str = "") -> Chroma | None:
+        """获取章节的向量存储（支持中文标题或 collection 名）。"""
         if not self.available:
             return None
-        if chapter_title in self._stores:
-            return self._stores[chapter_title]
+        normalized_book = safe_book_name(book_name) if book_name else ""
+        store_key = self._store_key(chapter_title, normalized_book)
+        if store_key in self._stores:
+            return self._stores[store_key]
 
-        # 先尝试作为中文标题查找
-        collection_name = self._title_to_collection(chapter_title)
+        collection_name = self._title_to_collection(chapter_title, normalized_book)
         try:
             store = Chroma(
                 collection_name=collection_name,
                 embedding_function=self.embeddings,
                 persist_directory=str(self.db_path),
             )
-            self._stores[chapter_title] = store
+            self._stores[store_key] = store
             return store
         except Exception:
             return None
 
-    def get_chapter_names(self) -> list[str]:
-        """获取所有已索引的章节名（返回中文标题）"""
+    def get_chapter_names(self, book_name: str = "") -> list[str]:
+        """获取所有已索引的章节名（返回中文标题）。"""
+        normalized_book = safe_book_name(book_name) if book_name else ""
+
+        def mapped_names() -> list[str]:
+            return [
+                entry.get("chapter", "")
+                for entry in self._map.values()
+                if entry.get("chapter") and (not normalized_book or entry.get("book_name") in {normalized_book, ""})
+            ]
+
         if not self.available:
-            return list(self._map.values())
+            return mapped_names()
         import chromadb
+
         try:
             client = chromadb.PersistentClient(path=str(self.db_path))
             collections = client.list_collections()
         except Exception as e:
             self.available = False
             print(f"  [vector_store] list_collections failed, using chapter map only: {e}", flush=True)
-            return list(self._map.values())
+            return mapped_names()
         names = []
-        for col in collections:
-            if col.name == "_chapter_map.json":
-                continue
+        for col in self._iter_collections_for_book(collections, normalized_book):
             names.append(self._collection_to_title(col.name))
         return names
 
-    def search_chapter(self, chapter_title: str, query: str, k: int = 5,
-                        filter: dict | None = None) -> list[Document]:
-        """在指定章节中检索相关内容
-
-        Args:
-            filter: ChromaDB where 过滤条件，如 {"role": {"$eq": "definition"}}
-        """
-        store = self.get_chapter_store(chapter_title)
+    def search_chapter(
+        self,
+        chapter_title: str,
+        query: str,
+        k: int = 5,
+        filter: dict | None = None,
+        book_name: str = "",
+    ) -> list[Document]:
+        """在指定章节中检索相关内容。"""
+        store = self.get_chapter_store(chapter_title, book_name=book_name)
         if store is None:
             return []
         kwargs = {"k": k}
@@ -209,29 +321,32 @@ class ChapterVectorStore:
         try:
             return store.similarity_search(query, **kwargs)
         except Exception as e:
-            # Chroma may keep a collection record whose HNSW segment is missing
-            # after an interrupted rebuild. Skip it so callers can fall back.
-            self._stores.pop(chapter_title, None)
+            self._stores.pop(self._store_key(chapter_title, book_name), None)
             print(f"  [向量库] 章节检索失败，已跳过 {chapter_title}: {e}", flush=True)
             return []
 
-    def search_all(self, query: str, k: int = 3, top_n: int = 3,
-                   filter: dict | None = None) -> dict[str, list[Document]]:
-        """在所有章节中检索（query 只 embed 一次，按相似度排序，只返回最相关的 top_n 章）
+    def search_all(
+        self,
+        query: str,
+        k: int = 3,
+        top_n: int = 3,
+        filter: dict | None = None,
+        book_name: str = "",
+    ) -> dict[str, list[Document]]:
+        """在所有章节中检索。
 
-        Args:
-            filter: ChromaDB where 过滤条件，如 {"role": {"$eq": "definition"}}
+        query 只 embed 一次，按相似度排序，只返回最相关的 top_n 章。
+        传入 book_name 后只检索该教材索引；若该教材没有新格式索引，则兼容旧索引。
         """
         if not self.available:
             return {}
         t0 = time.time()
-        # 1. query 只 embed 一次
         query_vec = self.embeddings.embed_query(query)
         dt_embed = time.time() - t0
 
-        # 2. 复用已有 store 实例，by_vector 搜索（带分数排序）
         scored_results: list[tuple[str, list[Document], float]] = []
         import chromadb
+
         try:
             client = chromadb.PersistentClient(path=str(self.db_path))
             collections = client.list_collections()
@@ -240,20 +355,18 @@ class ChapterVectorStore:
             print(f"  [vector_store] search_all skipped because Chroma is unavailable: {e}", flush=True)
             return {}
         searched = 0
-        for col in collections:
-            if col.name == "_chapter_map.json":
-                continue
+        for col in self._iter_collections_for_book(collections, book_name):
             title = self._collection_to_title(col.name)
             try:
-                store = self._stores.get(title)
+                store_key = self._store_key(title, self._collection_to_book(col.name))
+                store = self._stores.get(store_key)
                 if store is None:
                     store = Chroma(
                         collection_name=col.name,
                         embedding_function=self.embeddings,
                         persist_directory=str(self.db_path),
                     )
-                    self._stores[title] = store
-                # 尝试带分数的向量搜索，按相似度排序
+                    self._stores[store_key] = store
                 try:
                     kwargs = {"k": k}
                     if filter:
@@ -266,17 +379,16 @@ class ChapterVectorStore:
                     docs = store.similarity_search_by_vector(query_vec, **kwargs)
                     docs_with_scores = [(d, 1.0) for d in docs]
                 if docs_with_scores:
-                    docs = [d for d, s in docs_with_scores]
-                    best_score = min(s for d, s in docs_with_scores)
+                    docs = [d for d, _ in docs_with_scores]
+                    best_score = min(score for _, score in docs_with_scores)
                     scored_results.append((title, docs, best_score))
                 searched += 1
             except Exception:
                 pass
 
-        # 3. 按相似度分数排序（距离越低越相似），只取 top_n 章
-        scored_results.sort(key=lambda x: x[2])
+        scored_results.sort(key=lambda item: item[2])
         top_results = scored_results[:top_n]
-        results = {title: docs for title, docs, score in top_results}
+        results = {title: docs for title, docs, _ in top_results}
 
         dt_total = time.time() - t0
         print(f"  [检索] embed={dt_embed:.2f}s total={dt_total:.2f}s ({searched}章→取top{len(top_results)})", flush=True)

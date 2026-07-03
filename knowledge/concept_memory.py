@@ -38,6 +38,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from config import get_llm, PROGRESS_PATH
+from utils.json_io import atomic_write_json
+from utils.path_safety import safe_book_name, safe_child_path
+from utils.subject_catalog import normalize_subject_value
 
 
 _CONCEPT_EXTRACT_PROMPT = """从以下考研问答中，提取涉及的关键数学/专业课概念。
@@ -104,7 +107,7 @@ class ConceptMemory:
 
     def __init__(self, book_name: str):
         self.book_name = book_name
-        self._file = Path(PROGRESS_PATH) / book_name / "concept_memory.json"
+        self._file = safe_child_path(PROGRESS_PATH, safe_book_name(book_name), "concept_memory.json")
         self._file.parent.mkdir(parents=True, exist_ok=True)
         self._data = self._load()
 
@@ -114,18 +117,27 @@ class ConceptMemory:
         if self._file.exists():
             try:
                 with open(self._file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    return self._normalize_data(json.load(f))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
-        return {
+        return self._normalize_data({
             "concepts": {},
             "exposures": [],
             "review_queue": [],
-        }
+        })
+
+    def _normalize_data(self, data: dict) -> dict:
+        if not isinstance(data, dict):
+            data = {}
+        data.setdefault("concepts", {})
+        data.setdefault("exposures", [])
+        data.setdefault("review_queue", [])
+        data.setdefault("candidate_concepts", {})
+        data.setdefault("candidate_exposures", [])
+        return data
 
     def _save(self):
-        with open(self._file, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(self._file, self._data)
 
     # ── 概念提取 ──────────────────────────────────────────
 
@@ -182,8 +194,11 @@ class ConceptMemory:
         *,
         source: str = "qa",
         weak: bool = False,
+        subject: str = "",
+        conversation_id: str = "",
     ):
         """记录一次概念接触。"""
+        subject = normalize_subject_value(subject)
         concepts = [
             c for c in concepts
             if _is_strict_confidence(c.get("confidence"))
@@ -225,6 +240,9 @@ class ConceptMemory:
                 concept.get("source_chapters", []),
                 c.get("source_chapters", []),
             )
+            if subject:
+                concept["subjects"] = _merge_list(concept.get("subjects", []), [subject])
+                concept["last_subject"] = subject
             if weak:
                 concept["weak_flag"] = True
                 concept["weak_reason"] = source
@@ -239,6 +257,9 @@ class ConceptMemory:
                 "question": question[:200],
                 "intent": intent,
                 "source": source,
+                "book_name": self.book_name,
+                "subject": subject,
+                "conversation_id": conversation_id,
                 "link_source": c.get("source", ""),
                 "weak": weak,
                 "confidence": c.get("confidence", 0),
@@ -252,9 +273,77 @@ class ConceptMemory:
 
         self._save()
 
-    def log_weakness(self, concepts: list[dict], question: str, intent: str = "qa", source: str = "mistake"):
-        """记录概念弱项；错题和主动问定义都走同一份记忆。"""
-        self.log_exposure(concepts, question, intent, source=source, weak=True)
+    def log_candidates(
+        self,
+        concepts: list[dict],
+        question: str,
+        intent: str = "qa",
+        *,
+        source: str = "qa_candidate",
+        subject: str = "",
+        conversation_id: str = "",
+        answer: str = "",
+        limit: int = 12,
+    ):
+        """Store low-confidence concept candidates without affecting strict stats."""
+        subject = normalize_subject_value(subject)
+        now = datetime.now().isoformat()
+        saved = 0
+        for c in concepts or []:
+            if not isinstance(c, dict):
+                continue
+            name = str(c.get("name", "")).strip()
+            if len(name) < 2 or name in _GENERIC_ALIAS_TERMS:
+                continue
+            item = self._data["candidate_concepts"].setdefault(name, {
+                "name": name,
+                "type": c.get("type", "concept"),
+                "first_seen": now[:10],
+                "seen_count": 0,
+                "max_confidence": 0,
+                "subjects": [],
+                "sources": [],
+            })
+            confidence = c.get("confidence", 0)
+            try:
+                item["max_confidence"] = max(float(item.get("max_confidence", 0) or 0), float(confidence or 0))
+            except (TypeError, ValueError):
+                pass
+            item["seen_count"] = int(item.get("seen_count", 0) or 0) + 1
+            item["last_seen_at"] = now
+            item["last_question"] = question[:200]
+            item["last_evidence"] = str(c.get("evidence", ""))[:200]
+            item["sources"] = _merge_list(item.get("sources", []), [source])
+            if subject:
+                item["subjects"] = _merge_list(item.get("subjects", []), [subject])
+
+            self._data["candidate_exposures"].append({
+                "concept": name,
+                "question": question[:200],
+                "answer_preview": answer[:300],
+                "intent": intent,
+                "source": source,
+                "book_name": self.book_name,
+                "subject": subject,
+                "conversation_id": conversation_id,
+                "confidence": confidence,
+                "evidence": str(c.get("evidence", ""))[:200],
+                "timestamp": now,
+            })
+            saved += 1
+            if saved >= limit:
+                break
+
+        if not saved:
+            return []
+        if len(self._data["candidate_exposures"]) > 500:
+            self._data["candidate_exposures"] = self._data["candidate_exposures"][-300:]
+        self._save()
+        return list(self._data["candidate_concepts"].values())
+
+    def log_weakness(self, concepts: list[dict], question: str, intent: str = "qa", source: str = "mistake", subject: str = "", conversation_id: str = ""):
+        """记录概念弱项；错题和主动提问定义都进入同一份记忆。"""
+        self.log_exposure(concepts, question, intent, source=source, weak=True, subject=subject, conversation_id=conversation_id)
 
     # ── 遗忘检测 ──────────────────────────────────────────
 

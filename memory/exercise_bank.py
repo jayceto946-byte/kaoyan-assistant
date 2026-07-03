@@ -1,4 +1,4 @@
-﻿"""Exercise bank storage.
+"""Exercise bank storage.
 
 The exercise bank is a general question asset layer. Mistakes can be copied into
 this structure through origin_type/origin_id without changing the mistake book.
@@ -11,6 +11,8 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from utils.path_safety import safe_book_name, safe_child_path
+from utils.subject_catalog import subject_matches
 from typing import Any, Optional
 
 
@@ -163,9 +165,6 @@ class ExerciseBankStore:
     ) -> list[ExerciseRecord]:
         sql = "SELECT data FROM exercises WHERE 1=1"
         params: list[Any] = []
-        if subject:
-            sql += " AND subject = ?"
-            params.append(subject)
         if chapter:
             sql += " AND chapter = ?"
             params.append(chapter)
@@ -173,10 +172,12 @@ class ExerciseBankStore:
             sql += " AND status = ?"
             params.append(status)
         sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        params.append(limit if not subject and not tag and not search_kw.strip() else max(limit * 10, 1000))
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         records = [ExerciseRecord.from_dict(json.loads(row[0])) for row in rows]
+        if subject:
+            records = [r for r in records if subject_matches(r.subject, subject)]
         if tag:
             records = [r for r in records if tag in r.tags]
         if search_kw.strip():
@@ -189,10 +190,10 @@ class ExerciseBankStore:
                 or kw in r.source.lower()
                 or any(kw in tag.lower() for tag in r.tags)
             ]
-        return records
+        return records[:limit]
 
-    def stats(self) -> dict:
-        records = self.list_all(limit=10000)
+    def stats(self, subject: Optional[str] = None) -> dict:
+        records = self.list_all(subject=subject, limit=10000)
         by_type: dict[str, int] = {}
         by_tag: dict[str, int] = {}
         by_status: dict[str, int] = {}
@@ -252,9 +253,9 @@ class ExerciseBank:
     def list_all(self, **filters) -> list[ExerciseRecord]:
         return self.store.list_all(**filters)
 
-    def stats(self) -> dict:
-        return self.store.stats()
+    def stats(self, subject: Optional[str] = None) -> dict:
+        return self.store.stats(subject=subject)
 
 
 def get_exercise_bank(book_name: str = "default", data_dir: str = "./data/progress") -> ExerciseBank:
-    return ExerciseBank(Path(data_dir) / f"exercise_bank_{book_name}.db")
+    return ExerciseBank(safe_child_path(data_dir, f"exercise_bank_{safe_book_name(book_name)}.db"))

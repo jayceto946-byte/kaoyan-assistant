@@ -55,3 +55,13 @@ def test_strip_latex_line_spacing_option():
     output = sanitize_latex(input_text)
     assert r"[4pt]" not in output
     assert r"\\" in output
+
+def test_normalizes_fullwidth_dollar_delimiters():
+    assert sanitize_latex("\uff04x=1\uff04") == "$x=1$"
+
+
+def test_wraps_bare_aligned_environment():
+    input_text = "step\n\\begin{aligned}a&=b\\\\c&=d\\end{aligned}\ndone"
+    output = sanitize_latex(input_text)
+    assert "$$\n\\begin{aligned}" in output
+    assert "\\end{aligned}\n$$" in output

@@ -13,6 +13,9 @@ class AgentState(TypedDict):
     learning_progress: dict
     long_term_memory: dict
     book_name: str
+    subject: str
+    conversation_id: str
+    use_textbook_context: bool
 
     # === 会话上下文 ===
     messages: Annotated[list[dict], operator.add]
@@ -31,6 +34,8 @@ class AgentState(TypedDict):
     knowledge_graph_formulas: list[dict]  # 相关公式
     matched_concepts: list[str]  # 命中的概念名
     linked_concepts: list[dict]  # KG 对齐后的本轮关键概念
+    retrieval_status: str  # ok | degraded
+    retrieval_error: str
 
     # === 章节教学输出 ===
     teaching_content: str

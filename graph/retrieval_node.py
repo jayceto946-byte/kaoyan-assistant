@@ -1,7 +1,5 @@
 """检索节点 — 三层混合检索：KG精确命中 → 向量补充(role优先) → 去重重排"""
-from config import get_llm
-from ingestion.vector_store import get_vector_store
-from knowledge.knowledge_graph import get_kg
+from graph.safe_retrieval import get_safe_kg, get_safe_vector_store
 
 # intent → 优先 role 列表（越靠前越优先）
 INTENT_ROLE_PRIORITY: dict[str, list[str]] = {
@@ -27,8 +25,28 @@ def retrieve_node(state: dict) -> dict:
     book_name = state.get("book_name", "default")
     intent = state.get("intent", "qa")
 
-    vs = get_vector_store()
-    kg = get_kg(book_name)
+    if not state.get("use_textbook_context", True):
+        return {
+            "chapter_contents": {},
+            "concept_results": [],
+            "history_results": [],
+            "knowledge_graph_path": [],
+            "knowledge_graph_formulas": [],
+            "matched_concepts": [],
+            "retrieval_status": "ordinary_qa",
+            "retrieval_error": "",
+        }
+
+    retrieval_errors = []
+    if state.get("retrieval_error"):
+        retrieval_errors.append(str(state.get("retrieval_error")))
+
+    vs, vector_error = get_safe_vector_store()
+    kg, kg_error = get_safe_kg(book_name)
+    if vector_error:
+        retrieval_errors.append(f"vector_store: {vector_error}")
+    if kg_error:
+        retrieval_errors.append(f"knowledge_graph: {kg_error}")
 
     # ═══════════════════════════════════════════════════════════════
     # 第1层：KG 关键词精确命中（最高优先级）
@@ -41,7 +59,10 @@ def retrieve_node(state: dict) -> dict:
     #   - 无精确命中：全库按 role 优先级搜索
     # ═══════════════════════════════════════════════════════════════
     vector_results = _vector_retrieval(
-        vs, user_input, intent=intent,
+        vs,
+        user_input,
+        intent=intent,
+        book_name=book_name,
         target_chapters=target_chapters,
         precise_chapters=list({r["chapter"] for r in precise_results}),
         k=3,
@@ -65,15 +86,18 @@ def retrieve_node(state: dict) -> dict:
     # ═══════════════════════════════════════════════════════════════
     kg_path = []
     kg_formulas = []
-    if matched_concepts:
-        concept_name = matched_concepts[0]
-        kg_path = kg.find_path(concept_name)
-        detail = kg.get_concept_detail(concept_name)
-        if detail:
-            kg_formulas = detail.get("related_formulas", [])[:3]
-    elif target_chapters:
-        # 回退：尝试用章节名作为概念名
-        kg_path = kg.find_path(target_chapters[0])
+    try:
+        if matched_concepts:
+            concept_name = matched_concepts[0]
+            kg_path = kg.find_path(concept_name)
+            detail = kg.get_concept_detail(concept_name)
+            if detail:
+                kg_formulas = detail.get("related_formulas", [])[:3]
+        elif target_chapters:
+            # 回退：尝试用章节名作为概念名
+            kg_path = kg.find_path(target_chapters[0])
+    except Exception as exc:
+        retrieval_errors.append(f"knowledge_graph_query: {exc}")
 
     # concept_results 保持兼容格式（供下游 generator 使用）
     concept_results = []
@@ -97,6 +121,8 @@ def retrieve_node(state: dict) -> dict:
         "knowledge_graph_path": kg_path,
         "knowledge_graph_formulas": kg_formulas,
         "matched_concepts": matched_concepts,
+        "retrieval_status": "degraded" if retrieval_errors else "ok",
+        "retrieval_error": "; ".join(dict.fromkeys(retrieval_errors)),
     }
 
 
@@ -142,6 +168,7 @@ def _kg_precise_retrieval(kg, user_input: str) -> tuple[list[dict], list[str]]:
 # ── 第2层：向量检索（支持按 role 优先级过滤）──────────────────────
 
 def _vector_retrieval(vs, user_input: str, *, intent: str = "qa",
+                      book_name: str = "",
                       target_chapters: list[str],
                       precise_chapters: list[str], k: int = 3, top_n: int = 2) -> list[dict]:
     """向量语义检索。优先在精确命中的章节内搜索，按 intent → role 优先级过滤。"""
@@ -157,7 +184,7 @@ def _vector_retrieval(vs, user_input: str, *, intent: str = "qa",
 
     if search_scope:
         for ch in search_scope:
-            docs, used_role = _search_chapter_with_role(vs, ch, user_input, k, priority_roles)
+            docs, used_role = _search_chapter_with_role(vs, ch, user_input, k, priority_roles, book_name=book_name)
             for d in docs:
                 results.append({
                     "chapter": ch,
@@ -172,7 +199,7 @@ def _vector_retrieval(vs, user_input: str, *, intent: str = "qa",
             # 纯 example 过滤会漏掉题干
             if used_role == "example":
                 try:
-                    extra_docs = vs.search_chapter(ch, user_input, k=k * 2)
+                    extra_docs = vs.search_chapter(ch, user_input, k=k * 2, book_name=book_name)
                     for d in extra_docs:
                         results.append({
                             "chapter": ch,
@@ -187,7 +214,7 @@ def _vector_retrieval(vs, user_input: str, *, intent: str = "qa",
                     pass
     else:
         # 全库搜索
-        all_results, used_role = _search_all_with_role(vs, user_input, k, top_n, priority_roles)
+        all_results, used_role = _search_all_with_role(vs, user_input, k, top_n, priority_roles, book_name=book_name)
         for ch_name, docs in all_results.items():
             for d in docs:
                 results.append({
@@ -202,7 +229,7 @@ def _vector_retrieval(vs, user_input: str, *, intent: str = "qa",
         # 全库 example 也做无过滤 boost
         if used_role == "example":
             try:
-                extra_results = vs.search_all(user_input, k=k * 2, top_n=top_n)
+                extra_results = vs.search_all(user_input, k=k * 2, top_n=top_n, book_name=book_name)
                 for ch_name, docs in extra_results.items():
                     for d in docs:
                         results.append({
@@ -221,39 +248,39 @@ def _vector_retrieval(vs, user_input: str, *, intent: str = "qa",
 
 
 def _search_chapter_with_role(vs, chapter: str, query: str, k: int,
-                               priority_roles: list[str]):
+                               priority_roles: list[str], book_name: str = ""):
     """在指定章节内按 role 优先级搜索，无结果则回退到无过滤。"""
     for role in priority_roles:
         try:
             # langchain_chroma filter 格式: {"role": "definition"}
             docs = vs.search_chapter(chapter, query, k=k,
-                                      filter={"role": role})
+                                      filter={"role": role}, book_name=book_name)
             if docs:
                 return docs, role
         except Exception:
             pass
     # 回退：无过滤搜索
     try:
-        docs = vs.search_chapter(chapter, query, k=k)
+        docs = vs.search_chapter(chapter, query, k=k, book_name=book_name)
         return docs, None
     except Exception:
         return [], None
 
 
 def _search_all_with_role(vs, query: str, k: int, top_n: int,
-                          priority_roles: list[str]):
+                          priority_roles: list[str], book_name: str = ""):
     """全库按 role 优先级搜索，无结果则回退到无过滤。"""
     for role in priority_roles:
         try:
             results = vs.search_all(query, k=k, top_n=top_n,
-                                    filter={"role": role})
+                                    filter={"role": role}, book_name=book_name)
             if results:
                 return results, role
         except Exception:
             pass
     # 回退：无过滤搜索
     try:
-        results = vs.search_all(query, k=k, top_n=top_n)
+        results = vs.search_all(query, k=k, top_n=top_n, book_name=book_name)
         return results, None
     except Exception:
         return {}, None

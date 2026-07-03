@@ -1,4 +1,4 @@
-﻿from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient
 
 from backend.api import exercises
 from backend.main import app
@@ -97,3 +97,17 @@ def test_exercises_api_add_list_status_practice_and_import_mistake(monkeypatch, 
     duplicate_res = client.post("/api/exercises/from-mistake", json={"mistake_id": mistake_id}).json()
     assert duplicate_res["success"] is True
     assert duplicate_res["id"] == import_res["id"]
+
+def test_exercise_subject_hierarchy_filters_and_stats(tmp_path):
+    bank = ExerciseBank(tmp_path / "exercises.db")
+    high_math = ExerciseRecord(question_text="q1", subject="\u6570\u5b66/\u9ad8\u6570", status="new")
+    linear = ExerciseRecord(question_text="q2", subject="\u6570\u5b66/\u7ebf\u4ee3", status="needs_review")
+    english = ExerciseRecord(question_text="q3", subject="\u82f1\u8bed/\u9605\u8bfb", status="new")
+    for record in [high_math, linear, english]:
+        bank.add(record)
+
+    assert {r.id for r in bank.list_all(subject="\u6570\u5b66")} == {high_math.id, linear.id}
+    assert {r.id for r in bank.list_all(subject="\u6570\u5b66/\u9ad8\u6570")} == {high_math.id}
+    stats = bank.stats(subject="\u6570\u5b66")
+    assert stats["total"] == 2
+    assert stats["by_status"]["needs_review"] == 1

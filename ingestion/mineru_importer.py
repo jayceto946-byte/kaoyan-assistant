@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from config import MINERU_API_URL, MINERU_CLI_COMMAND, MINERU_OUTPUT_PATH, MINERU_TASK_POLL_SECONDS, MINERU_TASK_TIMEOUT_SECONDS
 from ingestion.chapter_splitter import ChapterSplitter
+from ingestion.chunk_roles import assign_chunk_roles, load_kg_chunk_roles, role_distribution
 from ingestion.mineru_client import MinerUClient
 from ingestion.pdf_parser import PDFParser
 from ingestion.vector_store import get_vector_store
@@ -61,6 +64,39 @@ def import_textbook_local(
         message="本地目录解析完成；扫描件正文未 OCR",
     )
 
+
+def import_textbook_from_mineru_output(
+    output_dir: Path,
+    book_name: str,
+    on_progress: ProgressCallback | None = None,
+) -> BookImportResult:
+    """Import an already-produced MinerU/Markdown output directory.
+
+    This path is for rented GPU or external OCR workflows: the local app does
+    not run MinerU, it only validates the produced files and builds the local
+    chapter/vector assets.
+    """
+    output_dir = Path(output_dir)
+    if not output_dir.exists() or not output_dir.is_dir():
+        raise RuntimeError(f"MinerU output directory not found: {output_dir}")
+
+    if on_progress:
+        on_progress("structure", "Reading external OCR output", 35)
+    chapters = chapters_from_mineru_output(output_dir, book_name)
+    if not chapters:
+        raise RuntimeError("No usable content_list, middle JSON, or markdown content found in OCR output")
+
+    if on_progress:
+        on_progress("indexing", "Building local chapter vector index", 70)
+    indexed = build_index_from_chapters(book_name, chapters, output_dir)
+    return BookImportResult(
+        book_name=book_name,
+        chapters=chapters,
+        used_mineru=True,
+        indexed_chunks=indexed,
+        output_dir=str(output_dir),
+        message=f"External OCR output imported; indexed {indexed} text chunks",
+    )
 
 def _import_with_mineru(pdf_path: Path, book_name: str, on_progress: ProgressCallback | None) -> BookImportResult:
     output_dir = MINERU_OUTPUT_PATH / book_name / "hybrid_auto"
@@ -158,6 +194,10 @@ def chapters_from_mineru_output(output_dir: Path, book_name: str) -> list[dict]:
         chapters = _chapters_from_middle_json(middle, book_name)
         if chapters:
             return chapters
+
+    chapters = _chapters_from_markdown_output(output_dir, book_name)
+    if chapters:
+        return chapters
     return []
 
 
@@ -179,6 +219,46 @@ def extract_text_from_mineru_output(output_dir: Path) -> str:
         return _normalize_text("\n\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in markdowns))
     return ""
 
+
+
+def _chapters_from_markdown_output(output_dir: Path, book_name: str) -> list[dict]:
+    markdowns = sorted(output_dir.rglob("*.md"), key=lambda item: str(item).lower())
+    parts: list[str] = []
+    for md_path in markdowns:
+        try:
+            text = md_path.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            continue
+        if text:
+            parts.append(text)
+    if not parts:
+        return []
+    return _chapters_from_markdown_text("\n\n".join(parts), book_name)
+
+
+def _chapters_from_markdown_text(markdown: str, book_name: str) -> list[dict]:
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    chapters: list[dict] = []
+    current = _new_chapter(f"{book_name} (full text)", 1)
+    saw_heading = False
+
+    for line in lines:
+        heading = re.match(r"^\s{0,3}(#{1,3})\s+(.+?)\s*$", line)
+        if heading:
+            title = re.sub(r"\s+", " ", heading.group(2)).strip(" #")
+            if title and len(title) <= 120:
+                if current["text"].strip():
+                    chapters.append(current)
+                current = _new_chapter(title, len(chapters) + 1)
+                saw_heading = True
+                continue
+        current["text"] += line + "\n"
+
+    if current["text"].strip() or not chapters:
+        if not saw_heading:
+            current["title"] = f"{book_name} (full text)"
+        chapters.append(current)
+    return _clean_chapters(chapters)
 
 def _load_first_json(output_dir: Path, patterns: list[str]) -> Any:
     for pattern in patterns:
@@ -288,7 +368,9 @@ def _collect_block_text(block: dict) -> str:
 def build_index_from_chapters(book_name: str, chapters: list[dict], output_dir: Path) -> int:
     splitter = ChapterSplitter()
     vs = get_vector_store()
+    kg_roles = load_kg_chunk_roles(book_name)
     all_chunks: list[dict] = []
+
     for chapter in chapters:
         title = chapter.get("title") or book_name
         text = chapter.get("text", "")
@@ -298,14 +380,23 @@ def build_index_from_chapters(book_name: str, chapters: list[dict], output_dir: 
         for chunk in chunks:
             chunk["section_title"] = title
             chunk["page_idx"] = max(int(chapter.get("page_number", 1) or 1) - 1, 0)
-        vs.build_chapter_store(title, chunks)
+
+        chunk_roles = assign_chunk_roles(chunks, kg_roles)
+        for chunk in chunks:
+            chunk_id = chunk.get("chunk_id", "")
+            chunk["role"] = chunk_roles.get(chunk_id, "reference")
+
+        vs.build_chapter_store(title, chunks, chunk_roles=chunk_roles, book_name=book_name)
+        distribution = role_distribution(chunk_roles)
+        if distribution:
+            print(f"[index] {title}: roles {distribution}", flush=True)
         all_chunks.extend(chunks)
+
     if all_chunks:
         (output_dir / f"{book_name}_middle_chunks.json").write_text(
             json.dumps(all_chunks, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     return len(all_chunks)
-
 
 def _normalize_text(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")

@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 from config import PROGRESS_PATH
+from utils.json_io import atomic_write_json
+from utils.path_safety import safe_book_name, safe_child_path
 
 
 class SummaryStore:
@@ -15,7 +17,7 @@ class SummaryStore:
     """
 
     def __init__(self, book_name: str):
-        self.file = Path(PROGRESS_PATH) / book_name / "chapter_summaries.json"
+        self.file = safe_child_path(PROGRESS_PATH, safe_book_name(book_name), "chapter_summaries.json")
         self.file.parent.mkdir(parents=True, exist_ok=True)
         self._store = self._load()
 
@@ -26,8 +28,7 @@ class SummaryStore:
         return {}
 
     def _save(self):
-        with open(self.file, "w", encoding="utf-8") as f:
-            json.dump(self._store, f, ensure_ascii=False, indent=2)
+        atomic_write_json(self.file, self._store)
 
     def get(self, chapter: str) -> dict | None:
         """获取缓存摘要"""

@@ -18,6 +18,8 @@ from graph.feedback_node import feedback_node
 def _route_after_retrieve(state: dict) -> str:
     """条件路由：teach/summarize 走 chapter subgraph，其余直接 generate"""
     intent = state.get("intent", "qa")
+    if not state.get("use_textbook_context", True):
+        return "generate"
     return "chapter" if intent in ("teach", "summarize") else "generate"
 
 
@@ -64,9 +66,12 @@ def get_graph() -> StateGraph:
 def build_initial_state(
     user_input: str,
     book_name: str = "default",
+    subject: str = "",
+    conversation_id: str = "",
     user_images: list[str] = None,
     user_feedback: dict = None,
     target_chapters: list[str] = None,
+    use_textbook_context: bool | None = None,
 ) -> dict:
     """构建 LangGraph 的初始状态字典。"""
     return {
@@ -76,6 +81,9 @@ def build_initial_state(
         "learning_progress": {},
         "long_term_memory": {},
         "book_name": book_name,
+        "subject": subject,
+        "conversation_id": conversation_id,
+        "use_textbook_context": bool(book_name) if use_textbook_context is None else use_textbook_context,
         "messages": [],
         "intent": "",
         "sub_tasks": [],
@@ -88,6 +96,8 @@ def build_initial_state(
         "knowledge_graph_formulas": [],
         "matched_concepts": [],
         "linked_concepts": [],
+        "retrieval_status": "ok",
+        "retrieval_error": "",
         "teaching_content": "",
         "key_points": [],
         "extracted_examples": [],
@@ -105,11 +115,24 @@ def build_initial_state(
 
 
 def run_graph(user_input: str, book_name: str = "default",
+              subject: str = "",
+              conversation_id: str = "",
               user_images: list[str] = None,
-              user_feedback: dict = None) -> dict:
+              user_feedback: dict = None,
+              target_chapters: list[str] = None,
+              use_textbook_context: bool | None = None) -> dict:
     """运行一次完整的图谱推理（同步阻塞版）。"""
     graph = get_graph()
-    initial_state = build_initial_state(user_input, book_name, user_images, user_feedback)
+    initial_state = build_initial_state(
+        user_input=user_input,
+        book_name=book_name,
+        subject=subject,
+        conversation_id=conversation_id,
+        user_images=user_images,
+        user_feedback=user_feedback,
+        target_chapters=target_chapters,
+        use_textbook_context=use_textbook_context,
+    )
     result = graph.invoke(initial_state)
     return result
 
@@ -117,9 +140,12 @@ def run_graph(user_input: str, book_name: str = "default",
 def run_graph_stream(
     user_input: str,
     book_name: str = "default",
+    subject: str = "",
+    conversation_id: str = "",
     user_images: list[str] = None,
     user_feedback: dict = None,
     target_chapters: list[str] = None,
+    use_textbook_context: bool | None = None,
 ):
     """流式运行 graph pipeline，yield 事件供 UI 消费。
 
@@ -144,7 +170,16 @@ def run_graph_stream(
     from utils.thinking_filter import ThinkingFilter
     from config import get_llm
 
-    state = build_initial_state(user_input, book_name, user_images, user_feedback, target_chapters)
+    state = build_initial_state(
+        user_input=user_input,
+        book_name=book_name,
+        subject=subject,
+        conversation_id=conversation_id,
+        user_images=user_images,
+        user_feedback=user_feedback,
+        target_chapters=target_chapters,
+        use_textbook_context=use_textbook_context,
+    )
 
     # ── Step 0: 本地意图分类 ──
     local_result = classify_intent_local(user_input)
@@ -155,11 +190,20 @@ def run_graph_stream(
         # Fast Path：跳过 plan LLM，直接用本地分类结果
         state["intent"] = intent
         # 章节如果没传，用向量检索补
-        if not state.get("target_chapters"):
-            from ingestion.vector_store import get_vector_store
-            vs = get_vector_store()
-            all_results = vs.search_all(user_input, k=1)
-            state["target_chapters"] = list(all_results.keys())[:2]
+        if state.get("use_textbook_context", True) and not state.get("target_chapters"):
+            from graph.safe_retrieval import get_safe_vector_store
+
+            vs, vector_error = get_safe_vector_store()
+            if vector_error:
+                state["retrieval_status"] = "degraded"
+                state["retrieval_error"] = f"vector_store: {vector_error}"
+            else:
+                try:
+                    all_results = vs.search_all(user_input, k=1, book_name=state.get("book_name", ""))
+                    state["target_chapters"] = list(all_results.keys())[:2]
+                except Exception as exc:
+                    state["retrieval_status"] = "degraded"
+                    state["retrieval_error"] = f"vector_search: {exc}"
         yield {
             "stage": "plan",
             "intent": intent,
@@ -184,10 +228,12 @@ def run_graph_stream(
     yield {
         "stage": "retrieve",
         "content_count": len(state.get("chapter_contents", {})),
+        "retrieval_status": state.get("retrieval_status", "ok"),
+        "retrieval_error": state.get("retrieval_error", ""),
     }
 
     # ── Chapter subgraph (条件) ──
-    if intent in ("teach", "summarize"):
+    if state.get("use_textbook_context", True) and intent in ("teach", "summarize"):
         # 获取内容 + 启动后台任务
         content, chapter, book_name_sub, executor, futures = prepare_chapter_subgraph(state)
 
@@ -223,8 +269,12 @@ def run_graph_stream(
                 buffer += final_flush
                 yield {"stage": "generate", "chunk": final_flush, "done": False}
 
-            # 清洗 LaTeX 定界符，避免前端 KaTeX 报红
-            state["teaching_content"] = sanitize_latex(buffer)
+            # 清洗 LaTeX 定界符，避免前端 KaTeX 报红。流式 chunk 已经发出，
+            # 若清洗结果不同，需要发 replace 事件让前端用最终全文替换。
+            sanitized_teaching = sanitize_latex(buffer)
+            if sanitized_teaching != buffer:
+                yield {"stage": "generate", "chunk": sanitized_teaching, "replace": True, "done": False}
+            state["teaching_content"] = sanitized_teaching
             state["chapter_summary"] = ""
 
             # 收集后台任务结果。后台任务不阻塞主讲解；没完成就跳过。
@@ -275,7 +325,10 @@ def run_graph_stream(
         if quiz_appendix:
             buffer += quiz_appendix
             yield {"stage": "generate", "chunk": quiz_appendix, "done": False}
-        state["final_output"] = sanitize_latex(buffer)
+        sanitized_output = sanitize_latex(buffer)
+        if sanitized_output != buffer:
+            yield {"stage": "generate", "chunk": sanitized_output, "replace": True, "done": False}
+        state["final_output"] = sanitized_output
         yield {"stage": "generate", "chunk": "", "done": True}
 
     # ── ConceptMemory：提取概念（后台）+ enrich（同步）──
@@ -303,5 +356,12 @@ def run_graph_stream(
     # threading.Thread(target=_bg_extract_and_log, daemon=True).start()
 
     # ── Feedback ──
-    state.update(feedback_node(state))
+    # Non-critical learning-memory writes should not delay or break the final SSE event.
+    def _run_feedback_background(snapshot: dict):
+        try:
+            feedback_node(snapshot)
+        except Exception as exc:
+            print(f"[Feedback] background update failed: {exc}", flush=True)
+
+    threading.Thread(target=_run_feedback_background, args=(dict(state),), daemon=True).start()
     yield {"stage": "done", "state": state, "enriched": False}

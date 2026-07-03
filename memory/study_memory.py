@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Optional
 
 from config import PROGRESS_PATH
+from utils.json_io import atomic_write_json
+from utils.path_safety import safe_book_name, safe_child_path
 from memory.spaced_repetition import SpacedRepetition
 
 
@@ -13,7 +15,7 @@ class StudyMemory:
 
     def __init__(self, book_name: str = "default"):
         self.book_name = book_name
-        self.base_path = Path(PROGRESS_PATH) / book_name
+        self.base_path = safe_child_path(PROGRESS_PATH, safe_book_name(book_name))
         self.base_path.mkdir(parents=True, exist_ok=True)
 
         self.quiz_file = self.base_path / "quiz_history.json"

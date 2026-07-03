@@ -1,4 +1,4 @@
-﻿"""HTTP client for an external MinerU 3.x API service.
+"""HTTP client for an external MinerU 3.x API service.
 
 The main app does not import MinerU runtime packages. MinerU can run on a
 local GPU box, a rented GPU machine, or another Docker service.

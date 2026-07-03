@@ -46,14 +46,35 @@ def plan_node(state: dict) -> dict:
     将其传入 LLM prompt 减少猜测。
     """
     import json
-    from ingestion.vector_store import get_vector_store
+    from graph.safe_retrieval import get_safe_vector_store
 
     user_input = state.get("user_input", "")
     if not user_input:
         return {"intent": "qa", "target_chapters": [], "sub_tasks": [], "error": "empty input"}
 
-    vs = get_vector_store()
-    chapters = vs.get_chapter_names()
+    if not state.get("use_textbook_context", True):
+        intent = state.get("_local_intent", "qa") or "qa"
+        return {
+            "intent": intent,
+            "target_chapters": [],
+            "sub_tasks": [],
+            "route_decision": intent,
+            "retrieval_status": "ordinary_qa",
+            "retrieval_error": "",
+        }
+
+    retrieval_errors = []
+    if state.get("retrieval_error"):
+        retrieval_errors.append(str(state.get("retrieval_error")))
+
+    vs, vector_error = get_safe_vector_store()
+    if vector_error:
+        retrieval_errors.append(f"vector_store: {vector_error}")
+    try:
+        chapters = vs.get_chapter_names(book_name=state.get("book_name", ""))
+    except Exception as exc:
+        chapters = []
+        retrieval_errors.append(f"chapter_names: {exc}")
 
     # 读取本地分类器 hint（如果有）
     local_hint = state.get("_local_intent_hint", "无")
@@ -86,7 +107,7 @@ def plan_node(state: dict) -> dict:
 
     # 如果 planner 没指定章节，用向量检索找
     if not target_chapters and chapters:
-        target_chapters = _find_relevant_chapters(user_input, chapters, vs)
+        target_chapters = _find_relevant_chapters(user_input, chapters, vs, book_name=state.get("book_name", ""))
 
     # 为 teach/summarize 意图构建分步任务
     if intent in ("teach", "summarize") and not sub_tasks and target_chapters:
@@ -105,10 +126,15 @@ def plan_node(state: dict) -> dict:
         "target_chapters": target_chapters,
         "sub_tasks": sub_tasks,
         "route_decision": intent,
+        "retrieval_status": "degraded" if retrieval_errors else state.get("retrieval_status", "ok"),
+        "retrieval_error": "; ".join(dict.fromkeys(retrieval_errors)),
     }
 
 
-def _find_relevant_chapters(question: str, chapters: list[str], vs) -> list[str]:
+def _find_relevant_chapters(question: str, chapters: list[str], vs, book_name: str = "") -> list[str]:
     """用向量检索找相关章节"""
-    all_results = vs.search_all(question, k=1)
+    try:
+        all_results = vs.search_all(question, k=1, book_name=book_name)
+    except Exception:
+        return []
     return list(all_results.keys())[:3]

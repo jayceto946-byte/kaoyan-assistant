@@ -1,0 +1,143 @@
+import json
+
+from fastapi.testclient import TestClient
+
+from backend.main import app
+
+
+class DummyChunk:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class DummyLLM:
+    def stream(self, prompt: str):
+        yield DummyChunk("answer")
+
+
+def test_run_graph_stream_done_survives_feedback_failure(monkeypatch):
+    import config
+    import graph.feedback_node as feedback_module
+    import graph.intent_classifier as intent_module
+    import graph.planner as planner_module
+    import graph.retrieval_node as retrieval_module
+    from graph.main_graph import run_graph_stream
+
+    monkeypatch.setattr(intent_module, "classify_intent_local", lambda text: {"intent": "qa", "hint": ""})
+    monkeypatch.setattr(intent_module, "is_fast_path_eligible", lambda text, result: False)
+    monkeypatch.setattr(planner_module, "plan_node", lambda state: {"intent": "qa", "target_chapters": ["chapter-1"]})
+    monkeypatch.setattr(retrieval_module, "retrieve_node", lambda state: {"chapter_contents": {"chapter-1": ["context"]}})
+    monkeypatch.setattr(config, "get_llm", lambda: DummyLLM())
+
+    def fail_feedback(state):
+        raise RuntimeError("feedback disk failure")
+
+    monkeypatch.setattr(feedback_module, "feedback_node", fail_feedback)
+
+    events = list(run_graph_stream("question", book_name="demo-book"))
+
+    assert events[-1]["stage"] == "done"
+    assert "error" not in [event["stage"] for event in events]
+    assert "answer" == "".join(event.get("chunk", "") for event in events if event["stage"] == "generate")
+
+
+def test_chat_stream_done_survives_assistant_persistence_failure(monkeypatch):
+    import backend.api.chat as chat_api
+    import graph.main_graph as main_graph
+
+    monkeypatch.setattr(chat_api, "ensure_conversation_id", lambda value="": "cid")
+    monkeypatch.setattr(chat_api, "load_history", lambda conversation_id: [])
+    monkeypatch.setattr(chat_api, "rewrite_followup", lambda question, history, book_name="default", subject="": question)
+
+    def fake_append_message(conversation_id, role, content, book_name="default", subject=""):
+        if role == "assistant":
+            raise RuntimeError("conversation write failed")
+
+    monkeypatch.setattr(chat_api, "append_message", fake_append_message)
+
+    def fake_run_graph_stream(**kwargs):
+        yield {"stage": "plan", "intent": "qa", "chapters": [], "fast_path": False}
+        yield {"stage": "generate", "chunk": "answer", "done": False}
+        yield {"stage": "generate", "chunk": "", "done": True}
+        yield {"stage": "done", "state": {}, "enriched": False}
+
+    monkeypatch.setattr(main_graph, "run_graph_stream", fake_run_graph_stream)
+
+    client = TestClient(app)
+    response = client.post("/api/chat/stream", json={"question": "question", "book_name": "demo-book"})
+
+    assert response.status_code == 200
+    events = []
+    for block in response.text.strip().split("\n\n"):
+        if not block.startswith("data: "):
+            continue
+        events.append(json.loads(block[6:]))
+
+    stages = [event["stage"] for event in events]
+    assert "done" in stages
+    assert "error" not in stages
+    done_event = next(event for event in events if event["stage"] == "done")
+    assert done_event["persistence_error"] == "conversation write failed"
+
+def test_chat_ask_passes_target_chapters(monkeypatch):
+    import backend.api.chat as chat_api
+    import graph.main_graph as main_graph
+
+    monkeypatch.setattr(chat_api, "ensure_conversation_id", lambda value="": "cid")
+    monkeypatch.setattr(chat_api, "load_history", lambda conversation_id: [])
+    monkeypatch.setattr(chat_api, "rewrite_followup", lambda question, history, book_name="default", subject="": question)
+    monkeypatch.setattr(chat_api, "append_message", lambda *args, **kwargs: None)
+
+    captured = {}
+
+    def fake_run_graph(**kwargs):
+        captured.update(kwargs)
+        return {
+            "final_output": "answer",
+            "intent": "qa",
+            "target_chapters": kwargs.get("target_chapters", []),
+            "linked_concepts": [],
+            "chapter_contents": {},
+        }
+
+    monkeypatch.setattr(main_graph, "run_graph", fake_run_graph)
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/chat/ask",
+        json={"question": "question", "book_name": "demo-book", "target_chapters": ["chapter-1"]},
+    )
+
+    assert response.status_code == 200
+    assert captured["target_chapters"] == ["chapter-1"]
+    assert response.json()["chapters"] == ["chapter-1"]
+
+def test_chat_stream_replace_event_overwrites_persisted_assistant_content(monkeypatch):
+    import backend.api.chat as chat_api
+    import graph.main_graph as main_graph
+
+    monkeypatch.setattr(chat_api, "ensure_conversation_id", lambda value="": "cid")
+    monkeypatch.setattr(chat_api, "load_history", lambda conversation_id: [])
+    monkeypatch.setattr(chat_api, "rewrite_followup", lambda question, history, book_name="default", subject="": question)
+
+    saved: list[tuple[str, str]] = []
+
+    def fake_append_message(conversation_id, role, content, book_name="default", subject=""):
+        saved.append((role, content))
+
+    monkeypatch.setattr(chat_api, "append_message", fake_append_message)
+
+    def fake_run_graph_stream(**kwargs):
+        yield {"stage": "generate", "chunk": "gradient $\\nabla f", "done": False}
+        yield {"stage": "generate", "chunk": "gradient $\\nabla f$", "replace": True, "done": False}
+        yield {"stage": "generate", "chunk": "", "done": True}
+        yield {"stage": "done", "state": {}, "enriched": False}
+
+    monkeypatch.setattr(main_graph, "run_graph_stream", fake_run_graph_stream)
+
+    client = TestClient(app)
+    response = client.post("/api/chat/stream", json={"question": "question", "book_name": "demo-book"})
+
+    assert response.status_code == 200
+    assistant_contents = [content for role, content in saved if role == "assistant"]
+    assert assistant_contents == ["gradient $\\nabla f$"]

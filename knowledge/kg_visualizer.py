@@ -40,8 +40,9 @@ class KGVisualizer:
         """
         from knowledge.knowledge_graph import get_kg
         kg = get_kg(self.book_name)
-        if kg.graph:
-            return kg.graph
+        graph = kg.graph()
+        if graph:
+            return graph
         # 回退
         if self.kg_path.exists():
             with open(self.kg_path, "r", encoding="utf-8") as f:

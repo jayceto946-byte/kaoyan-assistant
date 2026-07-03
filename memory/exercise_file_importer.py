@@ -1,4 +1,4 @@
-﻿"""Extract text from uploaded exercise files before rule-based candidate analysis."""
+"""Extract text from uploaded exercise files before rule-based candidate analysis."""
 from __future__ import annotations
 
 import re

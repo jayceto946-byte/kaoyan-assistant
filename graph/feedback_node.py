@@ -76,35 +76,107 @@ def _record_concept_memory(state: dict) -> list[dict]:
     try:
         from knowledge.concept_linker import ConceptLinker, is_unclear_intent
         from knowledge.concept_memory import ConceptMemory
+        from memory.learning_events import LearningEvent, concept_names, get_learning_event_store
 
         book_name = state.get("book_name", "default")
         intent = state.get("intent", "qa")
+        subject = state.get("subject", "")
+        conversation_id = state.get("conversation_id", "")
+        question = state.get("user_input", "")
+        answer = state.get("final_output", "")
         chapter_contents = state.get("chapter_contents", {}) or {}
         chunks = []
         for docs in chapter_contents.values():
             chunks.extend(docs[:2])
 
         linker = ConceptLinker(book_name)
-        concepts = linker.link(
-            question=state.get("user_input", ""),
-            answer=state.get("final_output", ""),
+        raw_concepts = linker.link(
+            question=question,
+            answer=answer,
             chunks=chunks,
             matched_concepts=state.get("matched_concepts", []),
             intent=intent,
             limit=8,
         )
-        concepts = _strict_concepts(concepts, state.get("user_input", ""))
-        if not concepts:
-            return []
 
         memory = ConceptMemory(book_name)
-        memory.log_exposure(
-            concepts,
-            state.get("user_input", ""),
-            intent,
-            source="qa",
-            weak=is_unclear_intent(intent),
-        )
+        concepts = _strict_concepts(raw_concepts, question)
+        if concepts:
+            memory.log_exposure(
+                concepts,
+                question,
+                intent,
+                source="qa",
+                weak=is_unclear_intent(intent),
+                subject=subject,
+                conversation_id=conversation_id,
+            )
+
+        candidates = [item for item in raw_concepts if item not in concepts]
+        if not raw_concepts:
+            candidates = memory.extract_concepts(question, answer)
+        if candidates:
+            memory.log_candidates(
+                candidates,
+                question,
+                intent,
+                source="qa_linker_candidate" if raw_concepts else "qa_llm_candidate",
+                subject=subject,
+                conversation_id=conversation_id,
+                answer=answer,
+            )
+
+        store = get_learning_event_store()
+        store.append(LearningEvent(
+            event_type="chat_qa",
+            book_name=book_name,
+            subject=subject,
+            conversation_id=conversation_id,
+            source_type="conversation",
+            source_id=conversation_id,
+            concept_names=concept_names(concepts),
+            payload={
+                "intent": intent,
+                "question": question[:300],
+                "answer_preview": answer[:500],
+                "target_chapters": state.get("target_chapters", []),
+                "retrieval_status": state.get("retrieval_status", ""),
+                "candidate_count": len(candidates or []),
+            },
+        ))
+        for item in concepts:
+            store.append(LearningEvent(
+                event_type="concept_exposure",
+                book_name=book_name,
+                subject=subject,
+                conversation_id=conversation_id,
+                source_type="conversation",
+                source_id=conversation_id,
+                concept_names=concept_names([item]),
+                payload={
+                    "intent": intent,
+                    "question": question[:300],
+                    "confidence": item.get("confidence", 0),
+                    "link_source": item.get("source", ""),
+                    "weak": is_unclear_intent(intent),
+                },
+            ))
+        if candidates:
+            store.append(LearningEvent(
+                event_type="concept_candidates",
+                book_name=book_name,
+                subject=subject,
+                conversation_id=conversation_id,
+                source_type="conversation",
+                source_id=conversation_id,
+                concept_names=concept_names(candidates),
+                payload={
+                    "intent": intent,
+                    "question": question[:300],
+                    "candidate_count": len(candidates),
+                },
+            ))
+
         return concepts
     except Exception as e:
         print(f"[ConceptMemory] QA record failed: {e}", flush=True)

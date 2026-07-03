@@ -9,7 +9,7 @@ import json
 import re
 from pathlib import Path
 from collections import defaultdict
-from config import BASE_DIR, PROGRESS_PATH
+from config import BASE_DIR, MINERU_OUTPUT_PATH, PROGRESS_PATH
 
 # ── 全局单例缓存（按 book_name）─────────────────────────────
 _kg_cache: dict[str, "KnowledgeGraph"] = {}
@@ -39,10 +39,21 @@ class KnowledgeGraph:
     _PREREQ_RELATIONS = {"depends_on", "derives_from", "uses"}
     _EXT_RELATIONS = {"depends_on", "derives_from", "contains", "defines", "uses", "satisfies"}
 
+    @staticmethod
+    def _resolve_local_dir(book_name: str) -> Path:
+        candidates = [
+            Path(MINERU_OUTPUT_PATH) / book_name / "hybrid_auto",
+            Path(BASE_DIR) / "mineru_output" / book_name / "hybrid_auto",
+        ]
+        for candidate in candidates:
+            if (candidate / f"{book_name}_knowledge_graph.json").exists():
+                return candidate
+        return candidates[0]
+
     def __init__(self, book_name: str):
         self.book_name = book_name
         self._is_local = False
-        self._local_dir = BASE_DIR / "mineru_output" / book_name / "hybrid_auto"
+        self._local_dir = self._resolve_local_dir(book_name)
         self._kg_file = self._local_dir / f"{book_name}_knowledge_graph.json"
         self._legacy_graph_cache: dict | None = None
 

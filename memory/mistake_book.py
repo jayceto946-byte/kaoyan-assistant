@@ -7,6 +7,8 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from utils.path_safety import safe_book_name, safe_child_path
+from utils.subject_catalog import subject_matches
 from typing import Any, Callable, Optional
 
 
@@ -154,44 +156,40 @@ class MistakeBookStore:
     ) -> list[MistakeRecord]:
         sql = "SELECT data FROM mistakes WHERE 1=1"
         params: list[Any] = []
-        if subject:
-            sql += " AND subject = ?"
-            params.append(subject)
         if chapter:
             sql += " AND chapter = ?"
             params.append(chapter)
         sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        params.append(limit if not subject and not tag else max(limit * 10, 1000))
 
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
 
         records = [MistakeRecord.from_dict(json.loads(r[0])) for r in rows]
+        if subject:
+            records = [r for r in records if subject_matches(r.subject, subject)]
         if tag:
             records = [r for r in records if tag in r.tags]
-        return records
+        return records[:limit]
 
     def get_due(self, subject: Optional[str] = None) -> list[MistakeRecord]:
         today = date.today().isoformat()
         sql = "SELECT data FROM mistakes WHERE next_review <= ?"
         params: list[Any] = [today]
-        if subject:
-            sql += " AND subject = ?"
-            params.append(subject)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [MistakeRecord.from_dict(json.loads(r[0])) for r in rows]
+        records = [MistakeRecord.from_dict(json.loads(r[0])) for r in rows]
+        return [r for r in records if subject_matches(r.subject, subject)] if subject else records
 
     def get_stats(self, subject: Optional[str] = None) -> dict:
         sql = "SELECT data FROM mistakes WHERE 1=1"
         params: list[Any] = []
-        if subject:
-            sql += " AND subject = ?"
-            params.append(subject)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
 
         records = [MistakeRecord.from_dict(json.loads(r[0])) for r in rows]
+        if subject:
+            records = [r for r in records if subject_matches(r.subject, subject)]
         total = len(records)
         if total == 0:
             return {"total": 0, "due_today": 0, "by_type": {}, "by_tag": {}, "by_difficulty": {}}
@@ -362,5 +360,5 @@ class MistakeBook:
 
 
 def get_mistake_book(book_name: str = "default", data_dir: str = "./data/progress") -> MistakeBook:
-    path = Path(data_dir) / f"mistake_book_{book_name}.db"
+    path = safe_child_path(data_dir, f"mistake_book_{safe_book_name(book_name)}.db")
     return MistakeBook(path)
