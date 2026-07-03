@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { BookOpen, ChevronRight, History, MessageSquarePlus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { BookOpen, History, MessageSquarePlus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { get } from '../api/client';
 import type { ChatMessage } from '../contexts/ChatContext';
-import SubjectInput from './SubjectInput';
+import ScopeSelector, { type ScopeBookOption } from './ScopeSelector';
 
-type BookOption = { name: string };
 type ConversationSummary = {
   id: string;
   title: string;
@@ -15,25 +14,20 @@ type ConversationSummary = {
 };
 
 const labels = {
-  uncategorized: '\u672a\u5206\u7c7b',
-  minutes: '\u5206\u949f',
-  hours: '\u5c0f\u65f6',
-  days: '\u5929',
-  expandHistory: '\u5c55\u5f00\u5386\u53f2',
-  collapseHistory: '\u6536\u8d77\u5386\u53f2',
-  scope: '\u5bf9\u8bdd\u8303\u56f4',
-  subject: '\u79d1\u76ee',
-  allSubjects: '\u5168\u90e8\u5b66\u79d1 / \u81ea\u5b9a\u4e49',
-  all: '\u5168\u90e8',
-  book: '\u6559\u6750',
-  noBook: '\u4e0d\u9650\u5b9a\u6559\u6750',
-  newConversation: '\u65b0\u4f1a\u8bdd',
-  history: '\u5386\u53f2\u8bb0\u5f55',
-  loading: '\u52a0\u8f7d\u4e2d',
-  empty: '\u6682\u65e0\u5bf9\u8bdd\u5386\u53f2',
+  uncategorized: '未分类',
+  minutes: '分钟',
+  hours: '小时',
+  days: '天',
+  expandHistory: '展开历史',
+  collapseHistory: '收起历史',
+  scope: '对话范围',
+  newConversation: '新会话',
+  history: '历史记录',
+  loading: '加载中',
+  empty: '暂无对话历史',
 };
 
-const subjectColors = ['#2f7d6d', '#3b82f6', '#b45309', '#7c3aed', '#be123c', '#0f766e', '#4f46e5', '#64748b'];
+const subjectColors = ['#0066cc', '#7a7a7a', '#2997ff'];
 
 function colorForSubject(subject = '') {
   const key = subject || labels.uncategorized;
@@ -57,7 +51,7 @@ function relativeTime(value = '') {
 
 export default function ChatHistorySidebar({
   open,
-  books,
+  embedded = false,
   subject,
   bookName,
   conversationId,
@@ -69,19 +63,42 @@ export default function ChatHistorySidebar({
   onLoadConversation,
 }: {
   open: boolean;
-  books: BookOption[];
+  embedded?: boolean;
   subject: string;
   bookName: string;
   conversationId: string;
   refreshKey: number;
   onToggle: () => void;
-  onSubjectChange: (subject: string) => void;
-  onBookChange: (bookName: string) => void;
+  onSubjectChange: (value: string) => void;
+  onBookChange: (value: string) => void;
   onNewConversation: () => void;
   onLoadConversation: (payload: { id: string; messages: ChatMessage[]; subject: string; bookName: string }) => void;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [books, setBooks] = useState<ScopeBookOption[]>([]);
   const [loading, setLoading] = useState(false);
+  const shellClass = embedded
+    ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-bg-secondary/60'
+    : 'relative flex h-full w-[294px] flex-shrink-0 flex-col border-r border-border bg-bg-secondary/90';
+  const headerClass = embedded ? 'border-b border-border px-3 py-3' : 'border-b border-border p-4';
+
+  const subjectSuggestions = useMemo(() => Array.from(new Set(books.map((book) => book.subject || '').filter(Boolean))), [books]);
+
+  const loadBooks = useCallback(async () => {
+    try {
+      const res = await get('/books/list', 20000);
+      setBooks(res?.success ? res.data || [] : []);
+    } catch {
+      setBooks([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onChanged = () => void loadBooks();
+    window.addEventListener('books:changed', onChanged);
+    void loadBooks();
+    return () => window.removeEventListener('books:changed', onChanged);
+  }, [loadBooks]);
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ limit: '80' });
@@ -120,37 +137,35 @@ export default function ChatHistorySidebar({
   };
 
   if (!open) {
+    if (embedded) return null;
     return (
-      <button type="button" onClick={onToggle} className="absolute left-3 top-4 z-20 flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-bg-card text-text-secondary shadow-sm hover:border-accent hover:text-accent" title={labels.expandHistory}>
+      <button type="button" onClick={onToggle} className="absolute left-3 top-4 z-20 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-card text-text-secondary hover:border-accent hover:text-accent" title={labels.expandHistory}>
         <PanelLeftOpen className="h-4 w-4" />
       </button>
     );
   }
 
   return (
-    <aside className="relative flex h-full w-[294px] flex-shrink-0 flex-col border-r border-border bg-bg-secondary/90">
-      <div className="border-b border-border p-4">
+    <aside className={shellClass}>
+      <div className={headerClass}>
         <div className="mb-3 flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm font-semibold text-text-primary"><BookOpen className="h-4 w-4 text-accent" />{labels.scope}</div>
-          <button type="button" onClick={onToggle} className="rounded-lg p-1.5 text-text-secondary hover:bg-bg-card hover:text-text-primary" title={labels.collapseHistory}><PanelLeftClose className="h-4 w-4" /></button>
+          {!embedded && <button type="button" onClick={onToggle} className="rounded-lg p-1.5 text-text-secondary hover:bg-bg-card hover:text-text-primary" title={labels.collapseHistory}><PanelLeftClose className="h-4 w-4" /></button>}
         </div>
         <div className="space-y-2">
-          <div className="rounded-lg border border-border bg-bg-card px-3 py-2">
-            <div className="mb-1 text-xs text-text-secondary">{labels.subject}</div>
-            <div className="flex items-center gap-2">
-              <SubjectInput value={subject} onChange={onSubjectChange} placeholder={labels.allSubjects} className="min-w-0 flex-1 border-0 bg-transparent px-0 text-sm outline-none" />
-              {subject && <button type="button" onClick={() => onSubjectChange('')} className="text-xs text-text-secondary hover:text-accent">{labels.all}</button>}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 text-text-secondary"><ChevronRight className="h-4 w-4" /><div className="h-px flex-1 bg-border" /></div>
-          <div className="rounded-lg border border-border bg-bg-card px-3 py-2">
-            <div className="mb-1 text-xs text-text-secondary">{labels.book}</div>
-            <select value={bookName} onChange={(e) => onBookChange(e.target.value)} className="app-select app-select-plain h-8 min-h-0 w-full border-0 bg-transparent px-0 pr-6 text-sm shadow-none">
-              <option value="">{labels.noBook}</option>
-              {books.map((book) => <option key={book.name} value={book.name}>{book.name}</option>)}
-            </select>
-          </div>
-          <button type="button" onClick={onNewConversation} className="mt-2 flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-border bg-bg-card text-sm text-text-primary shadow-sm hover:border-accent/50 hover:bg-[var(--accent-softer)]">
+          <ScopeSelector
+            subject={subject}
+            bookName={bookName}
+            books={books}
+            suggestions={subjectSuggestions}
+            onSubjectChange={onSubjectChange}
+            onBookChange={onBookChange}
+            allowAllSubjects
+            fullWidth
+            width="wide"
+            label={labels.scope}
+          />
+          <button type="button" onClick={onNewConversation} className="mt-2 flex h-9 w-full items-center justify-center gap-2 rounded-full border border-border bg-bg-card text-sm text-text-primary hover:border-accent/50 hover:bg-[var(--accent-softer)]">
             <MessageSquarePlus className="h-4 w-4" />{labels.newConversation}
           </button>
         </div>
@@ -165,15 +180,15 @@ export default function ChatHistorySidebar({
             const active = item.id === conversationId;
             const showColor = !subject.trim();
             return (
-              <button key={item.id} type="button" onClick={() => loadConversation(item.id)} className={`relative w-full overflow-hidden rounded-lg px-3 py-2.5 text-left transition-colors ${active ? 'bg-bg-card shadow-sm' : 'hover:bg-bg-card/80'}`}>
-                {showColor && <span className="pointer-events-none absolute inset-y-1 left-0 w-24 rounded-r-lg" style={{ background: `linear-gradient(90deg, ${color}80 0%, ${color}38 46%, transparent 100%)` }} />}
-                <div className="relative flex items-center justify-between gap-2">
-                  <div className="min-w-0 truncate text-sm font-medium text-text-primary">{item.title}</div>
-                  <div className="flex-shrink-0 text-xs text-text-secondary">{relativeTime(item.updated_at)}</div>
+              <button key={item.id} type="button" onClick={() => loadConversation(item.id)} className={`relative w-full overflow-hidden rounded-lg border px-3 py-2.5 text-left transition-colors ${active ? 'border-accent/30 bg-bg-card' : 'border-transparent hover:border-border hover:bg-bg-card/80'}`}>
+                {showColor && <span className="pointer-events-none absolute inset-y-2 left-0 w-0.5 rounded-full" style={{ backgroundColor: color }} />}
+                <div className="relative flex min-w-0 items-center justify-between gap-2 [writing-mode:horizontal-tb]">
+                  <div className="min-w-0 flex-1 truncate whitespace-nowrap text-sm font-medium text-text-primary" title={item.title}>{item.title}</div>
+                  <div className="flex-shrink-0 whitespace-nowrap text-xs text-text-secondary">{relativeTime(item.updated_at)}</div>
                 </div>
-                <div className="relative mt-1 flex min-w-0 items-center gap-1 text-xs text-text-secondary">
-                  <span className="truncate">{item.subject || labels.uncategorized}</span>
-                  {item.book_name && <><span>/</span><span className="truncate">{item.book_name}</span></>}
+                <div className="relative mt-1 flex min-w-0 items-center gap-1 whitespace-nowrap text-xs text-text-secondary [writing-mode:horizontal-tb]">
+                  <span className="min-w-0 truncate">{item.subject || labels.uncategorized}</span>
+                  {item.book_name && <><span>/</span><span className="min-w-0 truncate">{item.book_name}</span></>}
                 </div>
               </button>
             );

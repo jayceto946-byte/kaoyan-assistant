@@ -11,15 +11,17 @@ import {
   ChevronRight,
   ClipboardList,
   ExternalLink,
-  Filter,
+
   HelpCircle,
   Loader2,
   RefreshCw,
 } from 'lucide-react';
-import { get, post } from '../api/client';
+import { get, post, runReadOnlyAgent } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
+import AgentResultCard from '../components/chat/AgentResultCard';
+import ScopeSelector, { type ScopeBookOption } from '../components/ScopeSelector';
 import { useChatContext } from '../contexts/ChatContext';
-import type { ConceptCandidate, ReviewHistoryItem } from '../types';
+import type { ChatAgentCard, ConceptCandidate, ReviewHistoryItem } from '../types';
 
 interface LearningMistakeSummary {
   id: string;
@@ -94,14 +96,64 @@ interface LearningSummary {
 const mistakeHref = (id: string) => `/mistakes?mistake_id=${encodeURIComponent(id)}`;
 
 const LearningPage: React.FC = () => {
-  const { bookName } = useChatContext();
+  const { bookName, setBookName, subject, setSubject } = useChatContext();
+  const [books, setBooks] = useState<ScopeBookOption[]>([]);
   const [summary, setSummary] = useState<LearningSummary | null>(null);
-  const [subjectFilter, setSubjectFilter] = useState('');
+  const [subjectFilter, setSubjectFilter] = useState(subject || '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [reviewMessage, setReviewMessage] = useState('');
+  const [agentCard, setAgentCard] = useState<ChatAgentCard | null>(null);
+  const [agentLoading, setAgentLoading] = useState(false);
   const [expandedDueId, setExpandedDueId] = useState('');
   const [selectedActivityDate, setSelectedActivityDate] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    get('/books/list')
+      .then((res) => {
+        if (!cancelled && res?.success) setBooks(res.data || []);
+      })
+      .catch(() => {
+        if (!cancelled) setBooks([]);
+      });
+    const onChanged = () => {
+      get('/books/list')
+        .then((res) => setBooks(res?.success ? res.data || [] : []))
+        .catch(() => setBooks([]));
+    };
+    window.addEventListener('books:changed', onChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('books:changed', onChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    setSubjectFilter(subject || '');
+  }, [subject]);
+
+  const switchBook = async (name: string) => {
+    if (!name) {
+      setBookName('');
+      setSummary(null);
+      return;
+    }
+    try {
+      const res = await get(`/books/switch/${encodeURIComponent(name)}`);
+      if (res?.success) {
+        setBookName(res.data.name);
+        if (res.data.subject) setSubject(res.data.subject);
+      }
+    } catch {
+      setBookName(name);
+    }
+  };
+
+  const updateSubjectFilter = (value: string) => {
+    setSubjectFilter(value);
+    setSubject(value);
+  };
 
   const load = useCallback(async () => {
     if (!bookName) return;
@@ -141,29 +193,50 @@ const LearningPage: React.FC = () => {
     }
   };
 
+  const runLearningAgent = async () => {
+    if (!bookName || agentLoading) return;
+    const question = '生成今日复习计划并指出最近薄弱点';
+    setAgentLoading(true);
+    setReviewMessage('');
+    try {
+      const response = await runReadOnlyAgent(question, bookName, subjectFilter || subject, '', true);
+      setAgentCard({ question, response });
+    } catch (e) {
+      setReviewMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAgentLoading(false);
+    }
+  };
   const subjects = summary?.subjects || [];
+  const subjectSuggestions = Array.from(new Set([...subjects, ...books.map((book) => book.subject || '').filter(Boolean)]));
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-bg-primary px-5 py-4">
+    <div className="learning-page flex h-full min-w-0 flex-col">
+      <div className="learning-page-header flex flex-wrap items-center justify-between gap-3 border-b border-border bg-bg-primary px-5 py-4">
         <div>
           <h2 className="text-sm font-semibold text-text-primary">学习情况</h2>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="flex items-center gap-2 rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary">
-            <Filter className="h-4 w-4 text-text-secondary" />
-            <select
-              value={subjectFilter}
-              onChange={(e) => setSubjectFilter(e.target.value)}
-              className="bg-transparent text-sm outline-none"
-              disabled={loading && !subjects.length}
-            >
-              <option value="">全部学科</option>
-              {subjects.map((subject) => (
-                <option key={subject} value={subject}>{subject}</option>
-              ))}
-            </select>
-          </label>
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+          <ScopeSelector
+            subject={subjectFilter}
+            bookName={bookName}
+            books={books}
+            suggestions={subjectSuggestions}
+            onSubjectChange={updateSubjectFilter}
+            onBookChange={switchBook}
+            allowAllSubjects
+            align="right"
+            width="wide"
+            disabled={loading && !books.length}
+          />
+          <button
+            onClick={runLearningAgent}
+            disabled={agentLoading || loading || !bookName}
+            className="flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary transition-colors hover:border-accent disabled:opacity-50"
+          >
+            <BrainCircuit className={`h-4 w-4 ${agentLoading ? 'animate-pulse text-accent' : ''}`} />
+            AI 复习计划
+          </button>
           <button
             onClick={load}
             disabled={loading || !bookName}
@@ -175,7 +248,7 @@ const LearningPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="learning-page-content flex-1 overflow-y-auto p-6">
         {loading && (
           <div className="flex items-center justify-center gap-2 py-12 text-text-secondary">
             <Loader2 className="h-5 w-5 animate-spin" />
@@ -187,8 +260,16 @@ const LearningPage: React.FC = () => {
           <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-[#9f3f2e]">{error}</div>
         )}
 
-        {!loading && !error && summary && (
+        {!bookName && !loading && !error && (
+          <div className="rounded-xl border border-dashed border-border bg-bg-card px-4 py-10 text-center text-sm text-text-secondary">
+            学习情况依赖教材知识图谱。请选择一个教材后查看概念、错题和复习队列。
+          </div>
+        )}
+
+        {bookName && !loading && !error && summary && (
           <div className="space-y-6">
+            {agentCard && <AgentResultCard card={agentCard} />}
+
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
               <Metric icon={BrainCircuit} label="严格概念" value={summary.stats.total_concepts} />
               <Metric icon={Activity} label="高置信接触" value={summary.stats.total_exposures} />
@@ -216,7 +297,7 @@ const LearningPage: React.FC = () => {
             </ExpandableSection>
 
             <ExpandableSection title="今日概念复习" count={summary.concept_review_plan?.length || 0} defaultOpen>
-              <div className="grid grid-cols-1 gap-3 p-4 xl:grid-cols-2">
+              <div className="learning-concept-grid grid grid-cols-1 gap-3 p-4 xl:grid-cols-2">
                 {summary.concept_review_plan?.length ? (
                   summary.concept_review_plan.map((item) => (
                     <ConceptReviewCard key={item.name} item={item} onReview={handleConceptReview} />
@@ -282,11 +363,11 @@ const toDateKey = (date: Date) => {
 };
 
 const heatColor = (total: number) => {
-  if (total <= 0) return 'bg-[#edf3ea] border-[#d8e2d4]';
-  if (total === 1) return 'bg-[#cde9c8] border-[#b9ddb4]';
-  if (total <= 3) return 'bg-[#8fd18a] border-[#78c273]';
-  if (total <= 7) return 'bg-[#4aa85e] border-[#3f9652]';
-  return 'bg-[#216e39] border-[#1b5f30]';
+  if (total <= 0) return 'bg-[#f5f5f7] border-[#e0e0e0]';
+  if (total === 1) return 'bg-[#dceeff] border-[#b8dcff]';
+  if (total <= 3) return 'bg-[#a8d4ff] border-[#7dbdff]';
+  if (total <= 7) return 'bg-[#3f97e8] border-[#237fca]';
+  return 'bg-[#0066cc] border-[#0057ad]';
 };
 
 const ActivityHeatmap = ({ daily, selectedDate, onSelectDate }: { daily: DailyDetail[]; selectedDate: string; onSelectDate: (date: string) => void }) => {
@@ -308,7 +389,7 @@ const ActivityHeatmap = ({ daily, selectedDate, onSelectDate }: { daily: DailyDe
   const current = detailByDate.get(currentDate);
 
   return (
-    <section className="rounded-xl border border-border bg-bg-card shadow-sm">
+    <section className="rounded-[18px] border border-border bg-bg-card">
       <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
         <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
           <CalendarDays className="h-4 w-4 text-accent" /> 最近每日活动
@@ -374,21 +455,21 @@ const ConceptReviewCard = ({ item, onReview }: { item: ConceptReviewCardData; on
   const linkedMistakes = item.related_mistakes.slice(0, 4);
 
   return (
-    <article className="rounded-xl border border-border bg-bg-primary p-4">
-      <div className="flex items-start justify-between gap-3">
+    <article className="concept-review-card rounded-xl border border-border bg-bg-primary p-3 sm:p-4">
+      <div className="flex items-start justify-between gap-2 sm:gap-3">
         <button type="button" onClick={() => setOpen(!open)} className="min-w-0 flex-1 text-left">
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center justify-start gap-2">
             {open ? <ChevronDown className="h-4 w-4 text-accent" /> : <ChevronRight className="h-4 w-4 text-text-secondary" />}
             <BrainCircuit className={`h-4 w-4 ${item.weak ? 'text-[#9f3f2e]' : 'text-accent'}`} />
-            <h3 className="truncate text-sm font-semibold text-text-primary">{item.name}</h3>
+            <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">{item.name}</h3>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {item.reasons.map((reason) => (
-              <span key={reason} className="rounded border border-accent/25 bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent-hover">{reason}</span>
+              <span key={reason} className="max-w-full truncate rounded border border-accent/25 bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent-hover">{reason}</span>
             ))}
           </div>
         </button>
-        <button onClick={() => onReview(item.name, 4)} className="flex flex-shrink-0 items-center gap-1.5 rounded border border-border px-2.5 py-1 text-xs text-text-primary hover:border-accent hover:text-accent">
+        <button onClick={() => onReview(item.name, 4)} className="flex h-8 flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-border px-2.5 py-1 text-xs text-text-primary hover:border-accent hover:text-accent">
           <CheckCircle2 className="h-3.5 w-3.5" /> 已复习
         </button>
       </div>
@@ -459,8 +540,8 @@ const MistakePreview = ({ mistake, expanded, onToggle }: { mistake: LearningMist
 const Metric = ({ icon: Icon, label, value, tone = 'normal', rules }: { icon: React.ElementType; label: string; value: number; tone?: 'normal' | 'warn' | 'accent'; rules?: LearningSummary['review_rules'] }) => {
   const [open, setOpen] = useState(false);
   return (
-    <div className="relative rounded-xl border border-border bg-bg-card shadow-sm p-4">
-      <div className="flex items-start justify-between gap-3">
+    <div className="relative rounded-[18px] border border-border bg-bg-card p-4">
+      <div className="flex items-start justify-between gap-2 sm:gap-3">
         <div className="flex items-center gap-2 text-xs text-text-secondary">
           <Icon className={tone === 'warn' ? 'h-4 w-4 text-[#9f3f2e]' : tone === 'accent' ? 'h-4 w-4 text-accent' : 'h-4 w-4'} />
           {label}
@@ -473,7 +554,7 @@ const Metric = ({ icon: Icon, label, value, tone = 'normal', rules }: { icon: Re
       </div>
       <div className="mt-2 text-2xl font-semibold text-text-primary">{value ?? 0}</div>
       {rules && open && (
-        <div className="absolute right-3 top-9 z-20 w-[340px] rounded-xl border border-border bg-bg-primary p-3 text-xs shadow-lg">
+        <div className="absolute right-3 top-9 z-20 w-[min(340px,calc(100vw-88px))] rounded-xl border border-border bg-bg-primary p-3 text-xs">
           <RuleItem title="待复习错题" text={rules.mistake_due || '错题按 SM-2 的 next_review 判断，到期即进入待复习。'} />
           <RuleItem title="今日概念复习" text={rules.concept_due || '概念按薄弱、错题关联、未接触天数和未复习天数综合排序。'} />
           <RuleItem title="已复习判定" text={rules.concept_reviewed || '点击已复习后写入复习时间和质量评分，并更新掌握度。'} />
@@ -503,7 +584,7 @@ const Header = ({ title, count, open, onToggle }: { title: string; count?: numbe
 const ExpandableSection = ({ title, count, defaultOpen = false, children }: { title: string; count?: number; defaultOpen?: boolean; children: React.ReactNode }) => {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="rounded-xl border border-border bg-bg-card shadow-sm">
+    <section className="rounded-[18px] border border-border bg-bg-card">
       <Header title={title} count={count} open={open} onToggle={() => setOpen(!open)} />
       {open && children}
     </section>
@@ -511,7 +592,7 @@ const ExpandableSection = ({ title, count, defaultOpen = false, children }: { ti
 };
 
 const Panel = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <section className="rounded-xl border border-border bg-bg-card shadow-sm">
+  <section className="rounded-[18px] border border-border bg-bg-card">
     <div className="border-b border-border px-4 py-3 text-sm font-medium text-text-primary">{title}</div>
     <div className="space-y-2 p-4">{children}</div>
   </section>

@@ -1,4 +1,4 @@
-﻿/** TypeScript mapping for backend schemas.py */
+/** TypeScript mapping for backend schemas.py */
 
 export interface ChatRequest {
   question: string;
@@ -14,6 +14,7 @@ export interface ChatEvent {
   content_count?: number;
   has_teaching?: boolean;
   chunk?: string;
+  replace?: boolean;
   done?: boolean;
   enriched?: boolean;
   message?: string;
@@ -97,6 +98,7 @@ export interface WeakPoint {
 
 export interface BookInfo {
   name: string;
+  subject?: string;
   chapter_count: number;
   chapters?: { title: string; page: number }[];
 }
@@ -154,6 +156,9 @@ export interface ExerciseCandidate {
   reasons: string[];
   needs_llm: boolean;
   needs_review: boolean;
+  refined_by_llm?: boolean;
+  split_confidence?: number;
+  split_reasons?: string[];
 }
 
 export type SystemHealthStatus = 'healthy' | 'degraded' | 'error';
@@ -187,10 +192,69 @@ export interface ChatReportCard {
   report: LearningReport;
 }
 
+
+export interface ChatChapterHighlightCard {
+  book_name: string;
+  chapter_id: string;
+  chapter_title: string;
+  section_id?: string;
+  section_title?: string;
+  scope_type?: 'chapter' | 'section' | string;
+  scope_title?: string;
+  markdown: string;
+  generated_at?: string;
+}
 export interface ChatExerciseCard {
   record: ExerciseRecord;
 }
 
 export interface ChatUtilityCard {
   kind: 'mistake_quick_capture';
+}
+export interface AgentToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  read_only: boolean;
+}
+
+export interface AgentPendingAction {
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+export interface AgentToolResult {
+  success: boolean;
+  message?: string;
+  data?: unknown;
+  pending_action?: AgentPendingAction | null;
+}
+
+export interface AgentToolCall {
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+export interface AgentToolOutput {
+  tool: string;
+  args: Record<string, unknown>;
+  result: AgentToolResult;
+}
+
+export interface ReadOnlyAgentResponse {
+  success: boolean;
+  mode: 'read_only';
+  answer: string;
+  selected_tools: AgentToolCall[];
+  tool_outputs: AgentToolOutput[];
+  summary: {
+    tool_counts: Record<string, number>;
+    pending_actions: AgentPendingAction[];
+    has_textbook_evidence: boolean;
+    has_review_evidence: boolean;
+  };
+}
+export interface ChatAgentCard {
+  question: string;
+  response: ReadOnlyAgentResponse;
 }

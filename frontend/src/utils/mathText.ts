@@ -29,21 +29,19 @@ function protectMathAndCode(text: string): { text: string; tokens: string[] } {
 }
 
 function restoreProtected(text: string, tokens: string[]): string {
-  return tokens.reduce((acc, token, index) => acc.replace(`@@MATH_PROTECTED_${index}@@`, token), text);
+  return tokens.reduce((acc, token, index) => acc.replace(`@@MATH_PROTECTED_${index}@@`, () => token), text);
 }
-
 function convertTexDelimiters(text: string): string {
   return text
-    .replace(/\\\[((?:.|\n)*?)\\\]/g, '$$$$\n$1\n$$$$')
-    .replace(/\\\(((?:.|\n)*?)\\\)/g, '$$$1$$');
+    .replace(/\\\[((?:.|\n)*?)\\\]/g, (_match, body: string) => '$$\n' + body + '\n$$')
+    .replace(/\\\(((?:.|\n)*?)\\\)/g, (_match, body: string) => `$${body}$`);
 }
-
 function wrapBareMathEnvironments(text: string): string {
   const { text: unprotected, tokens } = protectMathAndCode(text);
   const envs = 'aligned|align|gathered|gather|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|array|split|equation';
   const envPattern = new RegExp(`(\\\\begin\\{(?:${envs})\\}[\\s\\S]*?\\\\end\\{(?:${envs})\\})`, 'g');
   return restoreProtected(
-    unprotected.replace(envPattern, (_match, body: string) => `$$\n${body}\n$$`),
+    unprotected.replace(envPattern, (_match, body: string) => '$$\n' + body + '\n$$'),
     tokens,
   );
 }

@@ -1,4 +1,4 @@
-﻿export {};
+export {};
 
 type DesktopUpdateStatus = {
   status: 'idle' | 'disabled' | 'checking' | 'available' | 'none' | 'downloading' | 'downloaded' | 'installing' | 'error';

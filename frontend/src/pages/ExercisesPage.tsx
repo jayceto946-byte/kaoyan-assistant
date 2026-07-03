@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Search, Sparkles, Upload } from 'lucide-react';
 import { get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
-import SubjectInput from '../components/SubjectInput';
+import ScopeSelector from '../components/ScopeSelector';
 import { useChatContext } from '../contexts/ChatContext';
+import { useVisibleList } from '../hooks/useVisibleList';
 import type { BookInfo, ExerciseCandidate, ExerciseRecord, ExerciseStats } from '../types';
 
 const statusText: Record<string, string> = {
@@ -39,11 +40,16 @@ function candidateToExercise(candidate: ExerciseCandidate) {
 }
 
 const ExercisesPage: React.FC = () => {
-  const { bookName, setBookName } = useChatContext();
+  const { bookName, setBookName, subject, setSubject } = useChatContext();
   const [books, setBooks] = useState<BookInfo[]>([]);
-  const [targetName, setTargetName] = useState(bookName || '数学');
+  const [targetName, setTargetName] = useState(bookName || '');
+  const [targetSubject, setTargetSubject] = useState(subject || '\u6570\u5b66');
   const activeName = targetName.trim() || bookName || 'default';
   const bookQuery = activeName && activeName !== 'default' ? `?book_name=${encodeURIComponent(activeName)}` : '';
+  const statsQuery = new URLSearchParams();
+  if (activeName && activeName !== 'default') statsQuery.set('book_name', activeName);
+  if (targetSubject.trim()) statsQuery.set('subject', targetSubject.trim());
+  const statsSuffix = statsQuery.toString() ? `?${statsQuery.toString()}` : '';
 
   const [records, setRecords] = useState<ExerciseRecord[]>([]);
   const [stats, setStats] = useState<ExerciseStats | null>(null);
@@ -61,13 +67,20 @@ const ExercisesPage: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importSource, setImportSource] = useState('');
   const [importChapter, setImportChapter] = useState('');
+  const [useLlmRepair, setUseLlmRepair] = useState(false);
   const [extractedPreview, setExtractedPreview] = useState('');
   const [candidates, setCandidates] = useState<ExerciseCandidate[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const searchKwRef = useRef(searchKw);
+
+  useEffect(() => {
+    searchKwRef.current = searchKw;
+  }, [searchKw]);
 
   const importSummary = useMemo(() => {
     const needsLlm = candidates.filter((item) => item.needs_llm).length;
-    return { total: candidates.length, needsLlm, confident: candidates.length - needsLlm };
+    const refined = candidates.filter((item) => item.refined_by_llm).length;
+    return { total: candidates.length, needsLlm, confident: candidates.length - needsLlm, refined };
   }, [candidates]);
 
   const practicePool = useMemo(() => {
@@ -80,48 +93,82 @@ const ExercisesPage: React.FC = () => {
     return practicePool.find((item) => item.status !== 'mastered') || practicePool[0] || null;
   }, [practiceId, practicePool, records]);
 
-  const loadBooks = async () => {
+  const recordList = useVisibleList(records, 30, `${activeName}|${targetSubject}|${statusFilter}|${searchKw}`);
+  const candidateList = useVisibleList(candidates, 20, `${activeName}|${importFile?.name || ''}|${importSummary.total}`);
+
+  const loadBooks = useCallback(async () => {
     try {
       const res = await get('/books/list');
       if (res?.success) setBooks(res.data || []);
     } catch {
       setBooks([]);
     }
-  };
+  }, []);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setMessage('');
     try {
-      const listRes = await post(`/exercises/list${bookQuery}`, { search_kw: searchKw, status: statusFilter, limit: 100 });
+      const listRes = await post(`/exercises/list${bookQuery}`, { search_kw: searchKwRef.current, subject: targetSubject, status: statusFilter, limit: 100 });
       if (listRes?.success) setRecords(listRes.data || []);
-      const statsRes = await get(`/exercises/stats${bookQuery}`);
+      const statsRes = await get(`/exercises/stats${statsSuffix}`);
       if (statsRes?.success) setStats(statsRes.data);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  };
+  }, [bookQuery, statsSuffix, statusFilter, targetSubject]);
 
   useEffect(() => {
     loadBooks();
-  }, []);
+  }, [loadBooks]);
 
   useEffect(() => {
     if (bookName) setTargetName(bookName);
   }, [bookName]);
 
   useEffect(() => {
-    load();
-  }, [bookQuery, statusFilter]);
+    if (subject) setTargetSubject(subject);
+  }, [subject]);
 
-  const updateTargetName = (value: string) => {
-    setTargetName(value);
-    if (value && books.some((book) => book.name === value)) setBookName(value);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const resetImportPreview = () => {
     setCandidates([]);
     setSelectedIds(new Set());
     setExtractedPreview('');
+  };
+
+  const updateTargetName = async (value: string) => {
+    setTargetName(value);
+    if (!value) {
+      setBookName('');
+      resetImportPreview();
+      return;
+    }
+    if (books.some((book) => book.name === value)) {
+      try {
+        const res = await get(`/books/switch/${encodeURIComponent(value)}`);
+        if (res?.success) {
+          setBookName(res.data.name);
+          if (res.data.subject) updateTargetSubject(res.data.subject);
+        } else {
+          setBookName(value);
+        }
+      } catch {
+        setBookName(value);
+      }
+    }
+    resetImportPreview();
+  };
+
+  const updateTargetSubject = (value: string) => {
+    setTargetSubject(value);
+    setSubject(value);
+    resetImportPreview();
   };
 
   const analyzeImportFile = async () => {
@@ -135,9 +182,11 @@ const ExercisesPage: React.FC = () => {
       const fd = new FormData();
       fd.append('file', importFile);
       fd.append('source', importSource || importFile.name);
-      fd.append('subject', activeName);
+      fd.append('subject', targetSubject || activeName);
       fd.append('chapter', importChapter);
       fd.append('limit', '200');
+      fd.append('use_llm', useLlmRepair ? 'true' : 'false');
+      fd.append('llm_max_items', '20');
       const res = await fetch(`/api/exercises/upload-analyze${bookQuery}`, { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok || !data?.success) {
@@ -260,24 +309,29 @@ const ExercisesPage: React.FC = () => {
         </button>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[360px_minmax(0,1fr)] overflow-hidden">
-        <aside className="overflow-y-auto border-r border-border bg-bg-secondary/95 p-4">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[340px_minmax(0,1fr)]">
+        <aside className="overflow-y-auto border-b border-border bg-bg-secondary/95 p-4 lg:border-b-0 lg:border-r">
           <div className="space-y-4">
-            <section className="space-y-3 rounded-xl border border-border bg-bg-card shadow-sm p-4">
+            <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
               <div>
-                <div className="text-sm font-medium text-text-primary">教材 / 学科</div>
-                <p className="mt-1 text-xs text-text-secondary">有教材时优先选择教材；没有教材时可输入自定义学科。</p>
+                <div className="text-sm font-medium text-text-primary">选择范围</div>
+
               </div>
-              <select value={books.some((book) => book.name === targetName) ? targetName : ''} onChange={(e) => updateTargetName(e.target.value)} className="w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent">
-                <option value="">不限定教材，使用下方学科</option>
-                {books.map((book) => <option key={book.name} value={book.name}>{book.name}</option>)}
-              </select>
-              <SubjectInput value={targetName} onChange={updateTargetName} suggestions={books.map((book) => book.name)} placeholder="如 线代 / 微积分 / 优化设计" className="w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
+              <ScopeSelector
+                subject={targetSubject}
+                bookName={books.some((book) => book.name === targetName) ? targetName : ''}
+                books={books}
+                suggestions={books.map((book) => book.subject || '').filter(Boolean)}
+                onSubjectChange={updateTargetSubject}
+                onBookChange={updateTargetName}
+                fullWidth
+                width="wide"
+              />
             </section>
 
-            <section className="space-y-3 rounded-xl border border-border bg-bg-card shadow-sm p-4">
+            <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
               <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><Sparkles className="h-4 w-4 text-accent" /> Word/PDF 导入</div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
                 <input placeholder="来源，如 2025 模拟卷" value={importSource} onChange={(e) => setImportSource(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
                 <input placeholder="章节，可留空" value={importChapter} onChange={(e) => setImportChapter(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
               </div>
@@ -285,6 +339,13 @@ const ExercisesPage: React.FC = () => {
                 <Upload className="h-4 w-4" /> {importFile ? importFile.name : '选择 Word/PDF 文件'}
               </button>
               <input ref={fileInputRef} type="file" accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(e) => setImportFile(e.target.files?.[0] || null)} className="hidden" />
+              <label className="flex items-start gap-2 rounded-xl border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary">
+                <input type="checkbox" checked={useLlmRepair} onChange={(e) => setUseLlmRepair(e.target.checked)} className="mt-0.5 h-4 w-4 flex-shrink-0 accent-accent" />
+                <span className="min-w-0 leading-5">
+                  <span className="block text-text-primary">低置信候选用文本 LLM 修复（默认 DeepSeek，不做 OCR）</span>
+                  <span className="block">Word/可复制 PDF 先规则切题；开启后仅把低置信文本片段交给当前文本推理后端。扫描 PDF 请先走 OCR/MinerU/Kimi。</span>
+                </span>
+              </label>
               <button onClick={analyzeImportFile} disabled={importing || !importFile} className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
                 {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} 分析文件
               </button>
@@ -293,7 +354,7 @@ const ExercisesPage: React.FC = () => {
             </section>
 
             {candidates.length > 0 && (
-              <section className="space-y-3 rounded-xl border border-border bg-bg-card shadow-sm p-4">
+              <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm font-medium text-text-primary">候选题确认</div>
@@ -307,19 +368,19 @@ const ExercisesPage: React.FC = () => {
           </div>
         </aside>
 
-        <main className="overflow-y-auto p-6">
+        <main className="overflow-y-auto p-4 lg:p-6">
           <div className="space-y-5">
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <Metric label="总习题" value={stats?.total || 0} />
               <Metric label="需复习" value={stats?.by_status?.needs_review || 0} />
               <Metric label="已掌握" value={stats?.by_status?.mastered || 0} />
             </div>
 
-            <section className="space-y-4 rounded-xl border border-border bg-bg-card shadow-sm p-4">
+            <section className="space-y-4 rounded-[18px] border border-border bg-bg-card p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-text-primary">练习</h3>
-                  <p className="text-xs text-text-secondary">优先抽取需复习、练习中和新题</p>
+
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button onClick={() => selectPractice()} disabled={practicePool.length === 0} className="rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-xs hover:border-accent disabled:opacity-50">换一题</button>
@@ -361,13 +422,13 @@ const ExercisesPage: React.FC = () => {
             </section>
 
             {candidates.length > 0 && (
-              <section className="space-y-3 rounded-xl border border-border bg-bg-card shadow-sm p-4">
+              <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-text-primary">待确认候选题</h3>
                   <span className="text-xs text-text-secondary">{selectedIds.size} / {candidates.length} 已选</span>
                 </div>
                 <div className="space-y-2">
-                  {candidates.map((candidate) => (
+                  {candidateList.visibleItems.map((candidate) => (
                     <article key={candidate.id} className="rounded-xl border border-border bg-bg-primary p-3">
                       <div className="flex items-start gap-3">
                         <input type="checkbox" checked={selectedIds.has(candidate.id)} onChange={() => toggleCandidate(candidate.id)} className="mt-1 h-4 w-4 accent-accent" />
@@ -386,10 +447,15 @@ const ExercisesPage: React.FC = () => {
                     </article>
                   ))}
                 </div>
+                {candidateList.hasMore && (
+                  <button onClick={candidateList.showMore} className="w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-secondary hover:border-accent hover:text-text-primary">
+                    加载更多候选题（已显示 {candidateList.visibleCount} / {candidateList.totalCount}）
+                  </button>
+                )}
               </section>
             )}
 
-            <section className="rounded-xl border border-border bg-bg-card shadow-sm p-4">
+            <section className="rounded-[18px] border border-border bg-bg-card p-4">
               <div className="mb-4 flex flex-wrap items-center gap-3">
                 <input value={searchKw} onChange={(e) => setSearchKw(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') load(); }} placeholder="搜索题干/答案/解析/标签" className="min-w-[260px] flex-1 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent">
@@ -400,7 +466,7 @@ const ExercisesPage: React.FC = () => {
               </div>
 
               <div className="space-y-3">
-                {records.map((record) => {
+                {recordList.visibleItems.map((record) => {
                   const expanded = expandedId === record.id;
                   return (
                     <article key={record.id} className="rounded-xl border border-border bg-bg-primary p-4">
@@ -411,7 +477,7 @@ const ExercisesPage: React.FC = () => {
                             <span className="truncate">{titleOf(record)}</span>
                           </div>
                           <div className="mt-2 flex flex-wrap gap-3 text-xs text-text-secondary">
-                            <span>{record.subject || activeName}</span>
+                            <span>{record.subject || targetSubject || activeName}</span>
                             {record.chapter && <span>{record.chapter}</span>}
                             <span>{record.tags.join(', ') || '无标签'}</span>
                             <span>{record.question_type || '未标题型'}</span>
@@ -424,6 +490,13 @@ const ExercisesPage: React.FC = () => {
                     </article>
                   );
                 })}
+                {recordList.hasMore && (
+                  <div className="flex justify-center pt-1">
+                    <button onClick={recordList.showMore} className="rounded-xl border border-border bg-bg-primary px-4 py-2 text-sm text-text-secondary hover:border-accent hover:text-text-primary">
+                      加载更多习题（已显示 {recordList.visibleCount} / {recordList.totalCount}）
+                    </button>
+                  </div>
+                )}
                 {records.length === 0 && <div className="py-12 text-center text-sm text-text-secondary"><ClipboardList className="mx-auto mb-2 h-6 w-6" />暂无习题，请先导入 Word/PDF</div>}
               </div>
             </section>
@@ -457,7 +530,7 @@ const Block = ({ title, children }: { title: string; children: React.ReactNode }
 );
 
 const Metric = ({ label, value }: { label: string; value: number }) => (
-  <div className="rounded-xl border border-border bg-bg-card shadow-sm p-4 text-center">
+  <div className="rounded-[18px] border border-border bg-bg-card p-4 text-center">
     <div className="text-2xl font-semibold text-text-primary">{value}</div>
     <div className="mt-1 text-xs text-text-secondary">{label}</div>
   </div>

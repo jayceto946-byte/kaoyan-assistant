@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   BookOpenCheck,
@@ -21,8 +21,9 @@ import {
 } from 'lucide-react';
 import { get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
-import SubjectInput from '../components/SubjectInput';
+import ScopeSelector, { type ScopeBookOption } from '../components/ScopeSelector';
 import { useChatContext } from '../contexts/ChatContext';
+import { useVisibleList } from '../hooks/useVisibleList';
 import type { MistakeRecord, MistakeStats, WeakPoint } from '../types';
 
 const TABS = ['录入', '列表', '今日复习', '统计'] as const;
@@ -45,6 +46,15 @@ type MistakeForm = {
 
 type CropState = { x: number; y: number; w: number; h: number };
 type ImageAdjust = { brightness: number; contrast: number; sharpen: number; grayscale: boolean };
+type CropDragMode = 'draw' | 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+type CropDragState = {
+  mode: CropDragMode;
+  originX: number;
+  originY: number;
+  startX: number;
+  startY: number;
+  startCrop: CropState;
+};
 
 const EMPTY_FORM: MistakeForm = {
   question_text: '',
@@ -62,6 +72,16 @@ const EMPTY_FORM: MistakeForm = {
 };
 
 const DEFAULT_CROP: CropState = { x: 5, y: 8, w: 90, h: 78 };
+const cropHandles: { mode: Exclude<CropDragMode, 'draw' | 'move'>; className: string; cursor: string }[] = [
+  { mode: 'nw', className: '-left-2 -top-2', cursor: 'nwse-resize' },
+  { mode: 'n', className: 'left-1/2 -top-2 -translate-x-1/2', cursor: 'ns-resize' },
+  { mode: 'ne', className: '-right-2 -top-2', cursor: 'nesw-resize' },
+  { mode: 'e', className: '-right-2 top-1/2 -translate-y-1/2', cursor: 'ew-resize' },
+  { mode: 'se', className: '-bottom-2 -right-2', cursor: 'nwse-resize' },
+  { mode: 's', className: '-bottom-2 left-1/2 -translate-x-1/2', cursor: 'ns-resize' },
+  { mode: 'sw', className: '-bottom-2 -left-2', cursor: 'nesw-resize' },
+  { mode: 'w', className: '-left-2 top-1/2 -translate-y-1/2', cursor: 'ew-resize' },
+];
 const DEFAULT_ADJUST: ImageAdjust = { brightness: 112, contrast: 138, sharpen: 35, grayscale: true };
 const MISTAKE_TYPE_OPTIONS = ['概念不清', '公式记错', '计算错误', '思路卡住', '粗心/审题错误'];
 const qualityLabels = ['完全不会', '很吃力', '勉强', '基本会', '熟练', '秒杀'];
@@ -140,7 +160,7 @@ function deriveMistakeTitle(record: MistakeRecord) {
     .replace(/\$\$[\s\S]*?\$\$/g, ' ')
     .replace(/\$(?:\\.|[^$\\])*?\$/g, ' ')
     .replace(/\\[a-zA-Z]+(?:\{[^}]*\})?/g, ' ')
-    .replace(/[\[\]{}()*_#>`~|=+\\]/g, ' ')
+    .replace(/[[\]{}()*_#>`~|=+\\]/g, ' ')
     .split('\n')
     .map((line) => line.replace(/^\s*(题目|例题|解|证明|已知|求|问)[:：、.\s]*/g, '').trim())
     .find((line) => line.length >= 6);
@@ -148,7 +168,8 @@ function deriveMistakeTitle(record: MistakeRecord) {
   return title.length > 43 ? `${title.slice(0, 43)}...` : title;
 }
 const MistakesPage: React.FC = () => {
-  const { bookName } = useChatContext();
+  const { bookName, setBookName, subject, setSubject } = useChatContext();
+  const [books, setBooks] = useState<ScopeBookOption[]>([]);
   const [searchParams] = useSearchParams();
   const focusMistakeId = searchParams.get('mistake_id') || '';
   const bookQuery = bookName ? `?book_name=${encodeURIComponent(bookName)}` : '';
@@ -159,7 +180,9 @@ const MistakesPage: React.FC = () => {
   const [weakPoints, setWeakPoints] = useState<WeakPoint[]>([]);
   const [pageLoading, setPageLoading] = useState(false);
   const [pageError, setPageError] = useState('');
-  const [subjectFilter, setSubjectFilter] = useState('');
+  const [subjectFilter, setSubjectFilter] = useState(subject || '');
+  const subjectQuery = subjectFilter.trim() ? `${bookQuery ? '&' : '?'}subject=${encodeURIComponent(subjectFilter.trim())}` : '';
+  const scopedQuery = `${bookQuery}${subjectQuery}`;
   const [form, setForm] = useState<MistakeForm>(EMPTY_FORM);
   const [rawFile, setRawFile] = useState<File | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -180,55 +203,105 @@ const MistakesPage: React.FC = () => {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editDraft, setEditDraft] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const cropStageRef = useRef<HTMLDivElement>(null);
+  const cropDragRef = useRef<CropDragState | null>(null);
   const explanationRef = useRef('');
+  const subjectSuggestions = Array.from(new Set([...records.map((item) => item.subject || '').filter(Boolean), ...books.map((book) => book.subject || '').filter(Boolean)]));
+  const mistakeList = useVisibleList(records, 30, `${bookName}|${subjectFilter}`);
+  const reviewList = useVisibleList(dueRecords, 20, `${bookName}|${subjectFilter}|review`);
+
+  useEffect(() => {
+    let cancelled = false;
+    get('/books/list')
+      .then((res) => {
+        if (!cancelled && res?.success) setBooks(res.data || []);
+      })
+      .catch(() => {
+        if (!cancelled) setBooks([]);
+      });
+    const onChanged = () => {
+      get('/books/list')
+        .then((res) => setBooks(res?.success ? res.data || [] : []))
+        .catch(() => setBooks([]));
+    };
+    window.addEventListener('books:changed', onChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('books:changed', onChanged);
+    };
+  }, []);
+
+  const switchBook = async (name: string) => {
+    if (!name) {
+      setBookName('');
+      return;
+    }
+    try {
+      const res = await get(`/books/switch/${encodeURIComponent(name)}`);
+      if (res?.success) {
+        setBookName(res.data.name);
+        if (res.data.subject) {
+          setSubject(res.data.subject);
+          setSubjectFilter(res.data.subject);
+        }
+      }
+    } catch {
+      setBookName(name);
+    }
+  };
+
+  const updateSubjectFilter = (value: string) => {
+    setSubjectFilter(value);
+    setSubject(value);
+  };
 
   const setField = <K extends keyof MistakeForm>(key: K, value: MistakeForm[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const loadList = async () => {
+  const loadList = useCallback(async () => {
     try {
-      const res = await post(`/mistakes/list${bookQuery}`, { subject: '', search_kw: '', limit: 50 });
+      const res = await post(`/mistakes/list${bookQuery}`, { subject: subjectFilter.trim(), search_kw: '', limit: 50 });
       if (res?.success) setRecords(res.data || []);
     } catch (e) {
       console.error('loadList error:', e);
     }
-  };
+  }, [bookQuery, subjectFilter]);
 
-  const loadDue = async () => {
+  const loadDue = useCallback(async () => {
     try {
-      const res = await get(`/mistakes/due${bookQuery}`);
+      const res = await get(`/mistakes/due${scopedQuery}`);
       if (res?.success) setDueRecords(res.data || []);
     } catch (e) {
       console.error('loadDue error:', e);
     }
-  };
+  }, [scopedQuery]);
 
-  const loadStats = async () => {
+  const loadStats = useCallback(async () => {
     setPageLoading(true);
     setPageError('');
     try {
-      const statsRes = await get(`/mistakes/stats${bookQuery}`);
+      const statsRes = await get(`/mistakes/stats${scopedQuery}`);
       setStats(statsRes && typeof statsRes.total === 'number' ? statsRes : null);
-      const weakRes = await get(`/mistakes/weak-points${bookQuery}`);
+      const weakRes = await get(`/mistakes/weak-points${scopedQuery}`);
       setWeakPoints(weakRes?.success ? weakRes.data || [] : []);
-    } catch (e) {
+    } catch {
       setPageError('加载统计数据失败');
       setStats(null);
       setWeakPoints([]);
     } finally {
       setPageLoading(false);
     }
-  };
+  }, [scopedQuery]);
 
   useEffect(() => {
     loadList();
     loadDue();
-  }, [bookQuery, subjectFilter]);
+  }, [loadDue, loadList]);
 
   useEffect(() => {
     if (activeTab === '统计') loadStats();
-  }, [activeTab]);
+  }, [activeTab, loadStats]);
 
   useEffect(() => {
     if (!focusMistakeId) return;
@@ -463,14 +536,22 @@ const MistakesPage: React.FC = () => {
   };
 
   const renderMetadataAndSave = () => {
-    const currentExplanation = form.explanation || explanation || explanationRef.current;
+    const currentExplanation = form.explanation || explanation;
     if (!currentExplanation && !savedRecord) return null;
     return (
-      <section className="space-y-4 rounded-xl border border-border bg-bg-card shadow-sm p-4">
+      <section className="space-y-4 rounded-xl border border-border bg-bg-card p-4">
         <div className="text-sm font-medium text-text-primary">归档信息</div>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <input placeholder="来源，如 2024 真题 / 教材 P45" value={form.source} onChange={(e) => setField('source', e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none placeholder-text-secondary focus:border-accent" />
-          <SubjectInput placeholder="学科，如 线代 / 微积分" value={form.subject} onChange={(value) => setField('subject', value)} suggestions={records.map((item) => item.subject || '')} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none placeholder-text-secondary focus:border-accent" />
+          <ScopeSelector
+            subject={form.subject}
+            onSubjectChange={(value) => setField('subject', value)}
+            suggestions={subjectSuggestions}
+            bookMode="hidden"
+            label="所属科目"
+            fullWidth
+            width="wide"
+          />
           <input placeholder="章节，可选" value={form.chapter} onChange={(e) => setField('chapter', e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none placeholder-text-secondary focus:border-accent" />
           <input placeholder="知识点标签，逗号分隔" value={form.tags} onChange={(e) => setField('tags', e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none placeholder-text-secondary focus:border-accent md:col-span-2" />
           <label className="flex items-center gap-3 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary">
@@ -550,7 +631,7 @@ const MistakesPage: React.FC = () => {
     if (!editorOpen) return null;
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-        <div className="w-full max-w-4xl rounded-xl border border-border bg-bg-primary p-4 shadow-xl">
+        <div className="w-full max-w-4xl rounded-xl border border-border bg-bg-primary p-4">
           <div className="mb-3 flex items-center justify-between">
             <div className="text-sm font-medium text-text-primary">修改 OCR 题干</div>
             <button onClick={() => setEditorOpen(false)} className="rounded p-1 text-text-secondary hover:text-text-primary"><X className="h-5 w-5" /></button>
@@ -569,28 +650,125 @@ const MistakesPage: React.FC = () => {
     );
   };
 
+
+  const pointToCropPercent = (event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = cropStageRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
+      y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100),
+    };
+  };
+
+  const startCropDrag = (mode: CropDragMode, event: React.PointerEvent<HTMLDivElement>) => {
+    const point = pointToCropPercent(event);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    cropDragRef.current = {
+      mode,
+      originX: point.x,
+      originY: point.y,
+      startX: point.x,
+      startY: point.y,
+      startCrop: crop,
+    };
+    if (mode === 'draw') {
+      setCrop({ x: point.x, y: point.y, w: 1, h: 1 });
+    }
+  };
+
+  const updateCropDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = cropDragRef.current;
+    if (!drag) return;
+    const point = pointToCropPercent(event);
+    if (!point) return;
+    event.preventDefault();
+
+    const minSize = 5;
+    const dx = point.x - drag.startX;
+    const dy = point.y - drag.startY;
+    const start = drag.startCrop;
+
+    if (drag.mode === 'draw') {
+      const left = clamp(Math.min(drag.originX, point.x), 0, 100 - minSize);
+      const top = clamp(Math.min(drag.originY, point.y), 0, 100 - minSize);
+      const right = clamp(Math.max(drag.originX, point.x), left + minSize, 100);
+      const bottom = clamp(Math.max(drag.originY, point.y), top + minSize, 100);
+      setCrop({ x: left, y: top, w: right - left, h: bottom - top });
+      return;
+    }
+
+    if (drag.mode === 'move') {
+      setCrop({
+        ...start,
+        x: clamp(start.x + dx, 0, 100 - start.w),
+        y: clamp(start.y + dy, 0, 100 - start.h),
+      });
+      return;
+    }
+
+    let left = start.x;
+    let top = start.y;
+    let right = start.x + start.w;
+    let bottom = start.y + start.h;
+
+    if (drag.mode.includes('w')) left = clamp(start.x + dx, 0, right - minSize);
+    if (drag.mode.includes('e')) right = clamp(start.x + start.w + dx, left + minSize, 100);
+    if (drag.mode.includes('n')) top = clamp(start.y + dy, 0, bottom - minSize);
+    if (drag.mode.includes('s')) bottom = clamp(start.y + start.h + dy, top + minSize, 100);
+
+    setCrop({ x: left, y: top, w: right - left, h: bottom - top });
+  };
+
+  const finishCropDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!cropDragRef.current) return;
+    event.preventDefault();
+    cropDragRef.current = null;
+  };
+
   const renderCropModal = () => {
     if (!cropOpen || !rawPreview) return null;
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-        <div className="grid max-h-[92vh] w-full max-w-6xl grid-cols-1 gap-4 overflow-y-auto rounded-xl border border-border bg-bg-primary p-4 shadow-xl lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="grid max-h-[92vh] w-full max-w-6xl grid-cols-1 gap-4 overflow-y-auto rounded-xl border border-border bg-bg-primary p-4 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><Crop className="h-4 w-4 text-accent" /> 裁剪错题区域</div>
               <button onClick={() => setCropOpen(false)} className="rounded p-1 text-text-secondary hover:text-text-primary"><X className="h-5 w-5" /></button>
             </div>
-            <div className="relative mx-auto max-h-[70vh] max-w-full overflow-hidden rounded border border-border bg-bg-secondary">
-              <img src={rawPreview} alt="原图" className="max-h-[70vh] w-full object-contain" style={{ filter: `brightness(${adjust.brightness}%) contrast(${adjust.contrast}%)${adjust.grayscale ? ' grayscale(100%)' : ''}` }} />
-              <div className="absolute border-2 border-accent bg-accent/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]" style={{ left: `${crop.x}%`, top: `${crop.y}%`, width: `${crop.w}%`, height: `${crop.h}%` }} />
+            <div
+              ref={cropStageRef}
+              className="relative mx-auto max-h-[70vh] max-w-full touch-none select-none overflow-hidden rounded border border-border bg-bg-secondary"
+              onPointerDown={(e) => startCropDrag('draw', e)}
+              onPointerMove={updateCropDrag}
+              onPointerUp={finishCropDrag}
+              onPointerCancel={finishCropDrag}
+            >
+              <img src={rawPreview} alt="原图" draggable={false} className="max-h-[70vh] w-full select-none object-contain" style={{ filter: `brightness(${adjust.brightness}%) contrast(${adjust.contrast}%)${adjust.grayscale ? ' grayscale(100%)' : ''}` }} />
+              <div
+                className="absolute cursor-move border-2 border-accent bg-accent/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]"
+                style={{ left: `${crop.x}%`, top: `${crop.y}%`, width: `${crop.w}%`, height: `${crop.h}%` }}
+                onPointerDown={(e) => startCropDrag('move', e)}
+              >
+                <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded bg-accent/85 px-2 py-1 text-[11px] font-medium text-white shadow-sm">拖动选框</div>
+                {cropHandles.map((handle) => (
+                  <div
+                    key={handle.mode}
+                    className={`absolute h-3.5 w-3.5 rounded-full border-2 border-white bg-accent shadow-sm ${handle.className}`}
+                    style={{ cursor: handle.cursor }}
+                    onPointerDown={(e) => startCropDrag(handle.mode, e)}
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border bg-bg-card px-3 py-2 text-xs leading-5 text-text-secondary">
+              拖动蓝色选框移动区域，拖拽圆点调整大小；也可以在图片上重新拖出一个新区域。
             </div>
           </div>
-          <div className="space-y-4 rounded-xl border border-border bg-bg-card shadow-sm p-4">
+          <div className="space-y-4 rounded-xl border border-border bg-bg-card p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><SlidersHorizontal className="h-4 w-4 text-accent" /> 扫描增强</div>
-            <Range label="左边界" value={crop.x} min={0} max={90} onChange={(v) => setCrop((c) => ({ ...c, x: v, w: Math.min(c.w, 100 - v) }))} />
-            <Range label="上边界" value={crop.y} min={0} max={90} onChange={(v) => setCrop((c) => ({ ...c, y: v, h: Math.min(c.h, 100 - v) }))} />
-            <Range label="宽度" value={crop.w} min={10} max={100 - crop.x} onChange={(v) => setCrop((c) => ({ ...c, w: v }))} />
-            <Range label="高度" value={crop.h} min={10} max={100 - crop.y} onChange={(v) => setCrop((c) => ({ ...c, h: v }))} />
-            <div className="border-t border-border pt-3" />
             <Range label="亮度" value={adjust.brightness} min={70} max={150} onChange={(v) => setAdjust((a) => ({ ...a, brightness: v }))} suffix="%" />
             <Range label="对比度" value={adjust.contrast} min={80} max={200} onChange={(v) => setAdjust((a) => ({ ...a, contrast: v }))} suffix="%" />
             <Range label="锐化" value={adjust.sharpen} min={0} max={100} onChange={(v) => setAdjust((a) => ({ ...a, sharpen: v }))} suffix="%" />
@@ -604,6 +782,22 @@ const MistakesPage: React.FC = () => {
 
   return (
     <div className="flex h-full flex-col">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-bg-primary px-5 py-4">
+        <div>
+          <h2 className="text-sm font-semibold text-text-primary">错题本</h2>
+        </div>
+        <ScopeSelector
+          subject={subjectFilter}
+          bookName={bookName}
+          books={books}
+          suggestions={subjectSuggestions}
+          onSubjectChange={updateSubjectFilter}
+          onBookChange={switchBook}
+          allowAllSubjects
+          align="right"
+          width="wide"
+        />
+      </div>
       <div className="flex items-center border-b border-border bg-bg-secondary px-4">
         {TABS.map((tab) => (
           <button key={tab} onClick={() => setActiveTab(tab)} className={`border-b-2 px-4 py-3 text-sm font-medium transition-colors ${activeTab === tab ? 'border-accent text-accent' : 'border-transparent text-text-secondary hover:text-text-primary'}`}>{tab}</button>
@@ -634,11 +828,11 @@ const MistakesPage: React.FC = () => {
                   <input ref={inputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} className="hidden" />
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => inputRef.current?.click()} className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-card shadow-sm px-3 py-2 text-sm text-text-primary hover:border-accent"><Camera className="h-4 w-4" /> 上传/拍照</button>
-                  <button onClick={() => rawFile && setCropOpen(true)} disabled={!rawFile} className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-card shadow-sm px-3 py-2 text-sm text-text-primary hover:border-accent disabled:opacity-45"><Crop className="h-4 w-4" /> 重新裁剪</button>
+                  <button onClick={() => inputRef.current?.click()} className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-card px-3 py-2 text-sm text-text-primary hover:border-accent"><Camera className="h-4 w-4" /> 上传/拍照</button>
+                  <button onClick={() => rawFile && setCropOpen(true)} disabled={!rawFile} className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-card px-3 py-2 text-sm text-text-primary hover:border-accent disabled:opacity-45"><Crop className="h-4 w-4" /> 重新裁剪</button>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => uploadForOcr(false)} disabled={!imageFile || ocrLoading || solveLoading} className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-card shadow-sm px-3 py-2 text-sm text-text-primary hover:border-accent disabled:opacity-45">{ocrLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} 识别题干</button>
+                  <button onClick={() => uploadForOcr(false)} disabled={!imageFile || ocrLoading || solveLoading} className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-card px-3 py-2 text-sm text-text-primary hover:border-accent disabled:opacity-45">{ocrLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} 识别题干</button>
                   <button onClick={() => uploadForOcr(true)} disabled={!imageFile || ocrLoading || solveLoading} className="flex items-center justify-center gap-2 rounded-xl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-45">{solveLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} 看图解题</button>
                 </div>
                 {uploadMessage && <div className="rounded-xl border border-border bg-bg-secondary px-3 py-2 text-sm text-text-secondary">{uploadMessage}</div>}
@@ -666,15 +860,25 @@ const MistakesPage: React.FC = () => {
             <div className="flex flex-wrap items-center justify-between gap-3 text-text-secondary">
               <div className="flex items-center gap-2"><Search className="h-4 w-4" /><span className="text-sm">共 {records.length} 条错题</span></div>
               <div className="flex flex-wrap items-center gap-2">
-                <SubjectInput value={subjectFilter} onChange={setSubjectFilter} suggestions={records.map((item) => item.subject || '')} placeholder="全部学科" className="h-9 rounded-xl border border-border bg-bg-primary px-3 text-sm text-text-primary outline-none focus:border-accent" />
-                {subjectFilter && <button onClick={() => setSubjectFilter('')} className="rounded-xl border border-border px-3 py-1.5 text-sm hover:border-accent hover:text-text-primary">全部</button>}
+                <ScopeSelector
+                  subject={subjectFilter}
+                  onSubjectChange={updateSubjectFilter}
+                  suggestions={subjectSuggestions}
+                  bookMode="hidden"
+                  label="筛选科目"
+                  allowAllSubjects
+                  align="right"
+                  width="compact"
+                />
+                {subjectFilter && <button onClick={() => updateSubjectFilter('')} className="rounded-xl border border-border px-3 py-1.5 text-sm hover:border-accent hover:text-text-primary">全部</button>}
                 <button onClick={() => setActiveTab('录入')} className="flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-sm hover:border-accent hover:text-text-primary"><Plus className="h-4 w-4" /> 新增</button>
               </div>
-            </div>            <div className="space-y-3">
-              {records.map((record) => {
+            </div>
+            <div className="space-y-3">
+              {mistakeList.visibleItems.map((record) => {
                 const expanded = expandedId === record.id;
                 return (
-                  <div key={record.id} className="rounded-xl border border-border bg-bg-card shadow-sm p-4 transition-colors hover:border-accent/50">
+                  <div key={record.id} className="rounded-xl border border-border bg-bg-card p-4 transition-colors hover:border-accent/50">
                     <button type="button" onClick={() => setExpandedId(expanded ? '' : record.id)} className="flex w-full items-start justify-between gap-3 text-left">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
@@ -694,6 +898,13 @@ const MistakesPage: React.FC = () => {
                   </div>
                 );
               })}
+              {mistakeList.hasMore && (
+                <div className="flex justify-center pt-1">
+                  <button onClick={mistakeList.showMore} className="rounded-xl border border-border bg-bg-primary px-4 py-2 text-sm text-text-secondary hover:border-accent hover:text-text-primary">
+                    加载更多错题（已显示 {mistakeList.visibleCount} / {mistakeList.totalCount}）
+                  </button>
+                </div>
+              )}
               {records.length === 0 && <div className="py-12 text-center text-text-secondary">还没有错题，先上传或手动录入一题。</div>}
             </div>
           </div>
@@ -703,10 +914,10 @@ const MistakesPage: React.FC = () => {
             <div className="flex items-center gap-2 text-text-secondary"><BookOpenCheck className="h-4 w-4" /><span className="text-sm">今日待复习 {dueRecords.length} 道</span></div>
             {reviewMessage && <div className="rounded-lg border border-[#c9d8bd] bg-[#eef5e8] px-3 py-2 text-sm text-[var(--success)]">{reviewMessage}</div>}
             <div className="space-y-3">
-              {dueRecords.map((record) => {
+              {reviewList.visibleItems.map((record) => {
                 const expanded = expandedReviewId === record.id;
                 return (
-                  <div key={record.id} className="rounded-xl border border-border bg-bg-card shadow-sm p-4 transition-colors hover:border-accent/50">
+                  <div key={record.id} className="rounded-xl border border-border bg-bg-card p-4 transition-colors hover:border-accent/50">
                     <button type="button" onClick={() => setExpandedReviewId(expanded ? '' : record.id)} className="flex w-full items-start justify-between gap-3 text-left">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
@@ -733,6 +944,13 @@ const MistakesPage: React.FC = () => {
                   </div>
                 );
               })}
+              {reviewList.hasMore && (
+                <div className="flex justify-center pt-1">
+                  <button onClick={reviewList.showMore} className="rounded-xl border border-border bg-bg-primary px-4 py-2 text-sm text-text-secondary hover:border-accent hover:text-text-primary">
+                    加载更多复习题（已显示 {reviewList.visibleCount} / {reviewList.totalCount}）
+                  </button>
+                </div>
+              )}
               {dueRecords.length === 0 && <div className="py-12 text-center text-text-secondary">今日暂无待复习错题</div>}
             </div>
           </div>
@@ -742,7 +960,7 @@ const MistakesPage: React.FC = () => {
           <div className="max-w-3xl space-y-6">
             {pageLoading && <div className="flex items-center justify-center gap-2 py-8 text-text-secondary"><Loader2 className="h-5 w-5 animate-spin" /> 加载统计中...</div>}
             {pageError && <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-[var(--danger)]">{pageError}</div>}
-            {!pageLoading && !pageError && stats && <><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><Metric label="总错题数" value={stats.total ?? 0} tone="text-accent" /><Metric label="今日待复习" value={stats.due_today ?? 0} tone="text-[var(--danger)]" /><Metric label="错因类型" value={stats.by_type ? Object.keys(stats.by_type).length : 0} tone="text-[var(--success)]" /></div><div className="rounded-xl border border-border bg-bg-card shadow-sm p-4"><h3 className="mb-3 flex items-center gap-2 text-sm font-medium"><TrendingUp className="h-4 w-4 text-accent" /> 薄弱点 TOP 列表</h3><div className="space-y-2">{weakPoints.map((w, i) => <div key={`${w.type}-${w.name}`} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate text-text-primary">{i + 1}. <strong>{w.name || '未命名'}</strong><span className="ml-1 text-text-secondary">({w.type || '类型未知'})</span></span><span className="flex-shrink-0 font-medium text-accent">{w.count ?? 0} 次</span></div>)}{weakPoints.length === 0 && <div className="text-sm text-text-secondary">暂无薄弱点数据</div>}</div></div></>}
+            {!pageLoading && !pageError && stats && <><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><Metric label="总错题数" value={stats.total ?? 0} tone="text-accent" /><Metric label="今日待复习" value={stats.due_today ?? 0} tone="text-[var(--danger)]" /><Metric label="错因类型" value={stats.by_type ? Object.keys(stats.by_type).length : 0} tone="text-[var(--success)]" /></div><div className="rounded-xl border border-border bg-bg-card p-4"><h3 className="mb-3 flex items-center gap-2 text-sm font-medium"><TrendingUp className="h-4 w-4 text-accent" /> 薄弱点 TOP 列表</h3><div className="space-y-2">{weakPoints.map((w, i) => <div key={`${w.type}-${w.name}`} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate text-text-primary">{i + 1}. <strong>{w.name || '未命名'}</strong><span className="ml-1 text-text-secondary">({w.type || '类型未知'})</span></span><span className="flex-shrink-0 font-medium text-accent">{w.count ?? 0} 次</span></div>)}{weakPoints.length === 0 && <div className="text-sm text-text-secondary">暂无薄弱点数据</div>}</div></div></>}
             {!pageLoading && !pageError && !stats && <div className="py-12 text-center text-text-secondary">暂无统计数据</div>}
           </div>
         )}
@@ -763,7 +981,7 @@ function Range({ label, value, min, max, suffix = '%', onChange }: { label: stri
 }
 
 function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {
-  return <div className="rounded-xl border border-border bg-bg-card shadow-sm p-4 text-center"><div className={`text-2xl font-bold ${tone}`}>{value}</div><div className="mt-1 text-xs text-text-secondary">{label}</div></div>;
+  return <div className="rounded-xl border border-border bg-bg-card p-4 text-center"><div className={`text-2xl font-bold ${tone}`}>{value}</div><div className="mt-1 text-xs text-text-secondary">{label}</div></div>;
 }
 
 export default MistakesPage;

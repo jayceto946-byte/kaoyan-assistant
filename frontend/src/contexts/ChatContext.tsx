@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
-import type { ChatExerciseCard, ChatReportCard, ChatUtilityCard, ConceptCandidate } from '../types';
+import type { ChatAgentCard, ChatChapterHighlightCard, ChatExerciseCard, ChatReportCard, ChatUtilityCard, ConceptCandidate } from '../types';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -9,7 +9,9 @@ export interface ChatMessage {
   linkedConcepts?: ConceptCandidate[];
   reportCard?: ChatReportCard;
   exerciseCard?: ChatExerciseCard;
+  chapterHighlightCard?: ChatChapterHighlightCard;
   utilityCard?: ChatUtilityCard;
+  agentCard?: ChatAgentCard;
 }
 
 interface ChatContextType {
@@ -55,11 +57,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const newConversation = useCallback(() => {
     const next = createConversationId();
     persistConversationId(next);
+    setIsLoading(false);
     setMessages([]);
   }, [persistConversationId]);
 
   const loadConversation = useCallback((id: string, nextMessages: ChatMessage[], meta: { subject?: string; bookName?: string } = {}) => {
     persistConversationId(id);
+    setIsLoading(false);
     setMessages(nextMessages);
     if (meta.subject !== undefined) persistSubject(meta.subject);
     if (meta.bookName !== undefined) setBookName(meta.bookName);
@@ -99,7 +103,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading: setIsLoading,
       clearMessages,
     }),
-    [messages, isLoading, bookName, subject, conversationId, persistSubject, persistConversationId, loadConversation, newConversation, addMessage, updateLastMessage]
+    [messages, isLoading, bookName, subject, conversationId, persistSubject, persistConversationId, loadConversation, newConversation, addMessage, updateLastMessage, clearMessages]
   );
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;

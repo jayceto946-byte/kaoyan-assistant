@@ -41,6 +41,8 @@ const defaultEnvDraft = {
   OPENAI_API_BASE: 'https://api.openai.com/v1',
   OPENAI_API_KEY: '',
   LLM_MODEL_NAME: '',
+  MINERU_API_URL: '',
+  MINERU_CLI_COMMAND: '',
 };
 
 export default function FirstRunGuide() {
@@ -71,6 +73,8 @@ export default function FirstRunGuide() {
           KIMI_VISION_MODEL: env.KIMI_VISION_MODEL?.value || defaultEnvDraft.KIMI_VISION_MODEL,
           OPENAI_API_BASE: env.OPENAI_API_BASE?.value || defaultEnvDraft.OPENAI_API_BASE,
           LLM_MODEL_NAME: env.LLM_MODEL_NAME?.value || '',
+          MINERU_API_URL: env.MINERU_API_URL?.value || '',
+          MINERU_CLI_COMMAND: env.MINERU_CLI_COMMAND?.value || '',
           DEEPSEEK_API_KEY: '',
           MOONSHOT_API_KEY: '',
           OPENAI_API_KEY: '',
@@ -132,7 +136,7 @@ export default function FirstRunGuide() {
 
   return (
     <div className="fixed inset-0 z-[1300] flex items-center justify-center bg-[#1f2824]/45 p-4">
-      <section className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-bg-primary shadow-2xl">
+      <section className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-[18px] border border-border bg-bg-primary">
         <header className="flex items-center justify-between border-b border-border bg-bg-card px-5 py-4">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-bg-secondary">
@@ -140,7 +144,7 @@ export default function FirstRunGuide() {
             </div>
             <div>
               <h2 className="text-base font-semibold text-text-primary">首次打开考研助手</h2>
-              <p className="mt-0.5 text-xs text-text-secondary">先花一分钟确认本地资源和模型配置，之后也可以在设置里调整。</p>
+
             </div>
           </div>
           <button type="button" onClick={finish} className="rounded-lg p-1.5 text-text-secondary hover:bg-bg-secondary hover:text-text-primary" aria-label="关闭">
@@ -168,7 +172,7 @@ export default function FirstRunGuide() {
 
             {step === 0 && (
               <section className="space-y-4">
-                <div className="rounded-xl border border-border bg-bg-card p-5">
+                <div className="rounded-[18px] border border-border bg-bg-card p-5">
                   <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary"><BookOpen className="h-5 w-5 text-accent" />你会用到的几个入口</div>
                   <div className="grid gap-3 md:grid-cols-2">
                     <GuidePoint title="对话" text="围绕教材、错题和知识点提问，系统会优先走本地教材检索。" />
@@ -177,7 +181,7 @@ export default function FirstRunGuide() {
                     <GuidePoint title="设置" text="左上角扳手可以管理服务器状态、版本更新、学科和模型配置。" />
                   </div>
                 </div>
-                <div className="rounded-xl border border-border bg-bg-card p-4 text-sm leading-6 text-text-secondary">
+                <div className="rounded-[18px] border border-border bg-bg-card p-4 text-sm leading-6 text-text-secondary">
                   本地嵌入模型用于教材语义检索，不走 API 计费。LLM 和图片 OCR 仍需要你自己的 API Key。
                 </div>
               </section>
@@ -208,7 +212,7 @@ export default function FirstRunGuide() {
                     onAction={() => download('vector-bundle')}
                   />
                 </div>
-                <div className="rounded-xl border border-border bg-bg-card p-4 text-sm leading-6 text-text-secondary">
+                <div className="rounded-[18px] border border-border bg-bg-card p-4 text-sm leading-6 text-text-secondary">
                   模型和向量库会保存到用户数据目录，软件更新不会覆盖你的教材、错题和个人索引。
                 </div>
               </section>
@@ -216,8 +220,11 @@ export default function FirstRunGuide() {
 
             {step === 2 && (
               <section className="space-y-4">
-                <div className="rounded-xl border border-border bg-bg-card p-4 text-sm leading-6 text-text-secondary">
+                <div className="rounded-[18px] border border-border bg-bg-card p-4 text-sm leading-6 text-text-secondary">
                   API Key 只写入本机 .env。后端状态接口只返回“是否已配置”，不会把已有密钥回显到前端。
+                </div>
+                <div className="rounded-[18px] border border-border bg-bg-card p-4 text-sm leading-6 text-text-secondary">
+                  Recommended OCR path: run MinerU 3.x on a rented GPU or external service, then import the output zip. Local MinerU CLI is optional and should live in a separate Python 3.10 environment with MinerU/Paddle/CUDA dependencies.
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <Field label="推理后端">
@@ -233,6 +240,8 @@ export default function FirstRunGuide() {
                   <Field label="DeepSeek Base URL"><input value={envDraft.DEEPSEEK_API_BASE} onChange={(e) => setEnvDraft({ ...envDraft, DEEPSEEK_API_BASE: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
                   <Field label={`Kimi/OCR API Key（${envStatus.MOONSHOT_API_KEY?.configured ? '已配置' : '未配置'}）`}><input type="password" autoComplete="off" value={envDraft.MOONSHOT_API_KEY} onChange={(e) => setEnvDraft({ ...envDraft, MOONSHOT_API_KEY: e.target.value })} placeholder="留空则不修改" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
                   <Field label="Kimi/OCR 模型"><input value={envDraft.KIMI_VISION_MODEL} onChange={(e) => setEnvDraft({ ...envDraft, KIMI_VISION_MODEL: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+                  <Field label="MinerU API URL (recommended external service)"><input value={envDraft.MINERU_API_URL} onChange={(e) => setEnvDraft({ ...envDraft, MINERU_API_URL: e.target.value })} placeholder="Example: http://gpu-host:8000" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+                  <Field label="Local MinerU CLI (advanced, optional)"><input value={envDraft.MINERU_CLI_COMMAND} onChange={(e) => setEnvDraft({ ...envDraft, MINERU_CLI_COMMAND: e.target.value })} placeholder="Example: mineru -p {input} -o {output}" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${hasPrimaryKey ? 'bg-[#edf6f0] text-[var(--success)]' : 'bg-[#fff7de] text-[var(--warning)]'}`}>
@@ -290,7 +299,7 @@ function AssetPanel({
   onAction: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-bg-card p-4">
+    <div className="rounded-[18px] border border-border bg-bg-card p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary"><span className="text-accent">{icon}</span>{title}</div>
       <div className="text-xs leading-5 text-text-secondary">{subtitle}</div>
       <div className="mt-1 text-xs leading-5 text-text-secondary">{detail}</div>

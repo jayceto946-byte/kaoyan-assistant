@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { BarChart3, BookOpen, ClipboardCheck, HelpCircle, Loader2, RefreshCw } from 'lucide-react';
 import { get } from '../api/client';
 import { useChatContext } from '../contexts/ChatContext';
@@ -30,7 +30,7 @@ export const LearningReportPanel: React.FC<{ days?: number; compact?: boolean }>
   const title = days <= 1 ? '学习日报' : '学习周报';
   const suggestionTitle = days <= 1 ? '今日建议' : '下周建议';
 
-  const loadReport = async () => {
+  const loadReport = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -43,9 +43,9 @@ export const LearningReportPanel: React.FC<{ days?: number; compact?: boolean }>
     } finally {
       setLoading(false);
     }
-  };
+  }, [bookName, days, subject, title]);
 
-  useEffect(() => { loadReport(); }, [bookName, subject, days]);
+  useEffect(() => { loadReport(); }, [loadReport]);
 
   const summary = report?.summary || {};
 

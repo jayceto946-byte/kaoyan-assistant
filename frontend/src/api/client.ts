@@ -1,11 +1,12 @@
-import type { ConceptCandidate } from '../types';
+import type { AgentToolResult, AgentToolSpec, ReadOnlyAgentResponse, ConceptCandidate } from '../types';
 
 const API_BASE = '/api';
 const DEFAULT_TIMEOUT_MS = 20000;
 
-type ChatEvent = {
+export type ChatEvent = {
   stage: string;
   chunk?: string;
+  replace?: boolean;
   done?: boolean;
   intent?: string;
   chapters?: string[];
@@ -14,6 +15,8 @@ type ChatEvent = {
   message?: string;
   conversation_id?: string;
   rewritten_question?: string;
+  retrieval_status?: string;
+  retrieval_error?: string;
   state?: { linked_concepts?: ConceptCandidate[] };
 };
 
@@ -42,6 +45,71 @@ export async function post(path: string, body: unknown, timeoutMs = DEFAULT_TIME
   if (!res.ok) throw new Error(`POST ${path} failed: ${res.status}`);
   return res.json();
 }
+
+export async function patch(path: string, body: unknown, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<any> {
+  const res = await fetchWithTimeout(`${API_BASE}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, timeoutMs);
+  if (!res.ok) throw new Error(`PATCH ${path} failed: ${res.status}`);
+  return res.json();
+}
+
+export async function del(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<any> {
+  const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: 'DELETE' }, timeoutMs);
+  if (!res.ok) throw new Error(`DELETE ${path} failed: ${res.status}`);
+  return res.json();
+}
+
+function warnMalformedSse(payload: string, err: unknown) {
+  if (import.meta.env.DEV) {
+    console.warn('Malformed SSE data:', payload, err);
+  } else {
+    console.warn('Malformed SSE data');
+  }
+}
+
+export function consumeSseLine(line: string, onEvent: (event: ChatEvent) => void): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('data: ')) return false;
+
+  const payload = trimmed.slice(6);
+  if (payload === '[DONE]') return true;
+
+  try {
+    const event = JSON.parse(payload) as ChatEvent;
+    onEvent(event);
+    return event.stage === 'done' || event.stage === 'error';
+  } catch (err) {
+    warnMalformedSse(payload, err);
+    return false;
+  }
+}
+
+export function consumeSseChunk(
+  chunk: string,
+  buffer: string,
+  onEvent: (event: ChatEvent) => void,
+): { buffer: string; sawTerminalEvent: boolean } {
+  const lines = `${buffer}${chunk}`.split('\n');
+  const nextBuffer = lines.pop() || '';
+  let sawTerminalEvent = false;
+  for (const line of lines) {
+    sawTerminalEvent = consumeSseLine(line, onEvent) || sawTerminalEvent;
+  }
+  return { buffer: nextBuffer, sawTerminalEvent };
+}
+
+export function flushSseBuffer(buffer: string, onEvent: (event: ChatEvent) => void): boolean {
+  if (!buffer.trim()) return false;
+  let sawTerminalEvent = false;
+  for (const line of buffer.split('\n')) {
+    sawTerminalEvent = consumeSseLine(line, onEvent) || sawTerminalEvent;
+  }
+  return sawTerminalEvent;
+}
+
 export function chatStream(
   question: string,
   bookName: string = '',
@@ -66,24 +134,21 @@ export function chatStream(
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let sawTerminalEvent = false;
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data: ')) continue;
-          const json = trimmed.slice(6);
-          if (json === '[DONE]') continue;
-          try {
-            onEvent(JSON.parse(json));
-          } catch {
-            // ignore malformed SSE data
-          }
-        }
+        const parsed = consumeSseChunk(decoder.decode(value, { stream: true }), buffer, onEvent);
+        buffer = parsed.buffer;
+        sawTerminalEvent = parsed.sawTerminalEvent || sawTerminalEvent;
+      }
+
+      buffer += decoder.decode();
+      sawTerminalEvent = flushSseBuffer(buffer, onEvent) || sawTerminalEvent;
+
+      if (!sawTerminalEvent && !ctrl.signal.aborted) {
+        throw new Error('stream ended without terminal event');
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -108,4 +173,40 @@ export async function chatAsk(
   });
   if (!res.ok) throw new Error(`chatAsk failed: ${res.status}`);
   return res.json();
+}
+export async function listAgentTools(includeWrite = false): Promise<AgentToolSpec[]> {
+  const res = await get(`/agent/tools?include_write=${includeWrite ? 'true' : 'false'}`);
+  return res.data || [];
+}
+
+export async function callAgentTool(
+  tool: string,
+  args: Record<string, unknown> = {},
+  bookName = '',
+  subject = '',
+  conversationId = '',
+): Promise<{ success: boolean; tool: string; result: AgentToolResult }> {
+  return post('/agent/tools/call', {
+    tool,
+    args,
+    book_name: bookName,
+    subject,
+    conversation_id: conversationId,
+  });
+}
+
+export async function runReadOnlyAgent(
+  question: string,
+  bookName = '',
+  subject = '',
+  conversationId = '',
+  synthesize = true,
+): Promise<ReadOnlyAgentResponse> {
+  return post('/agent/read-only', {
+    question,
+    book_name: bookName,
+    subject,
+    conversation_id: conversationId,
+    synthesize,
+  }, 60000);
 }

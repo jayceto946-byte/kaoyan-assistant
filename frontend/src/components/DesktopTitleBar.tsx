@@ -1,4 +1,4 @@
-﻿import { Maximize2, X } from 'lucide-react';
+import { Maximize2, X } from 'lucide-react';
 
 const desktopApi = window.kaoyanDesktop;
 

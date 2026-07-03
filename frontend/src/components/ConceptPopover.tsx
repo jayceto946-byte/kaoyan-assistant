@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { BookOpen, Loader2 } from 'lucide-react';
 import { get } from '../api/client';
 import type { ConceptCandidate, ConceptWiki } from '../types';
@@ -49,7 +49,7 @@ const ConceptPopover: React.FC<ConceptPopoverProps> = ({ concept, bookName, onCl
     <div className="fixed inset-0 z-40" onClick={onClose}>
       <div className="absolute inset-0 bg-black/20" />
       <div
-        className="absolute right-6 top-20 w-[min(420px,calc(100vw-2rem))] max-h-[75vh] overflow-y-auto rounded-lg border border-border bg-bg-secondary shadow-2xl"
+        className="absolute right-6 top-20 w-[min(420px,calc(100vw-2rem))] max-h-[75vh] overflow-y-auto rounded-lg border border-border bg-bg-secondary"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
