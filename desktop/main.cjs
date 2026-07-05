@@ -218,6 +218,21 @@ async function waitForBackend(timeoutMs = 60000) {
   return false;
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function loadAppUrl(targetUrl) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    await mainWindow.webContents.executeJavaScript("document.body.classList.add('is-leaving')", true);
+    await delay(180);
+  } catch {
+    // The loading document may already be gone; continue into the app.
+  }
+  if (!mainWindow || mainWindow.isDestroyed() || shuttingDown) return;
+  mainWindow.loadURL(targetUrl);
+}
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -226,7 +241,7 @@ function createWindow() {
     minHeight: 560,
     frame: false,
     show: false,
-    backgroundColor: '#f4f6f1',
+    backgroundColor: '#f5f5f7',
     title: '考研智能辅助系统',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -243,7 +258,7 @@ function createWindow() {
   waitForBackend().then((ready) => {
     if (shuttingDown || !mainWindow) return;
     if (ready || FRONTEND_DEV_URL) {
-      mainWindow.loadURL(targetUrl);
+      void loadAppUrl(targetUrl);
       return;
     }
     const message = backendStartError || `后端服务启动超时：${BACKEND_URL}`;

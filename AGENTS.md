@@ -17,6 +17,7 @@
 ## 技术约束
 
 - Python 使用 `venv310`，解释器必须是 Python 3.10。若出现二进制扩展导入异常，先检查 `venv310\pyvenv.cfg` 是否误指向其他 Python 版本。
+- 默认以 Electron 桌面端作为优先交付入口。涉及前端、后端 API、路径、数据目录、构建或运行方式的改动，应优先确认桌面端开发/打包路径是否受影响；功能验证也应优先覆盖 Electron 端，除非用户明确只要求 Web/CLI。
 - 主要 LLM 使用 DeepSeek V4 Pro 思考模式，正式展示给用户前必须过滤 thinking 内容。
 - 扫描件 PDF 正文录入优先使用 MinerU，目录/TOC 检测可使用 Kimi Vision。
 - 公式、矩阵、推导过程使用 LaTeX。前端对话渲染走 `react-markdown` + `remark-math` + `rehype-katex`。

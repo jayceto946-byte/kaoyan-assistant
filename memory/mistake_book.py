@@ -71,16 +71,36 @@ class MistakeBookStore:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._force_delete_journal = False
         self._init_db()
 
     def _connect(self):
         conn = sqlite3.connect(self.db_path, timeout=15)
         conn.execute("PRAGMA busy_timeout = 15000")
-        conn.execute("PRAGMA journal_mode = WAL")
+        if self._force_delete_journal:
+            conn.execute("PRAGMA journal_mode = DELETE")
+        else:
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError as exc:
+                if not _is_sqlite_storage_error(exc):
+                    raise
+                self._force_delete_journal = True
+                conn.execute("PRAGMA journal_mode = DELETE")
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def _init_db(self):
+        try:
+            self._init_db_once()
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_storage_error(exc):
+                raise
+            self._force_delete_journal = True
+            self._prepare_retry_db_files()
+            self._init_db_once()
+
+    def _init_db_once(self):
         with self._connect() as conn:
             conn.execute(
                 """
@@ -98,6 +118,18 @@ class MistakeBookStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_next_review ON mistakes(next_review)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chapter ON mistakes(chapter)")
             conn.commit()
+
+    def _prepare_retry_db_files(self) -> None:
+        for suffix in ("-wal", "-shm", "-journal"):
+            try:
+                Path(f"{self.db_path}{suffix}").unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            if self.db_path.exists() and self.db_path.stat().st_size == 0:
+                self.db_path.unlink()
+        except OSError:
+            pass
 
     def add(self, record: MistakeRecord) -> str:
         if not record.sm2:
@@ -357,6 +389,15 @@ class MistakeBook:
             record.explanation = result
             self.store.update(record)
         return result
+
+
+def _is_sqlite_storage_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return (
+        "disk i/o" in message
+        or "readonly" in message
+        or "unable to open database file" in message
+    )
 
 
 def get_mistake_book(book_name: str = "default", data_dir: str = "./data/progress") -> MistakeBook:

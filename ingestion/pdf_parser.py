@@ -65,7 +65,7 @@ class PDFParser:
         from dotenv import load_dotenv
         load_dotenv()
 
-        key = os.getenv("MOONSHOT_API_KEY")
+        key = os.getenv("MOONSHOT_API_KEY", os.getenv("KIMI_API_KEY", os.getenv("OPENAI_API_KEY", "")))
         if not key:
             return self._fallback_single_chapter()
 
@@ -80,7 +80,7 @@ class PDFParser:
             images.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
         resp = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL_NAME", "kimi-k2.6"),
+            model=os.getenv("KIMI_VISION_MODEL", "kimi-k2.5"),
             messages=[{"role": "user", "content": [{
                 "type": "text",
                 "text": "Find the TOC pages. Return JSON: {\"toc_start\": int, \"toc_end\": int}"
@@ -107,7 +107,7 @@ class PDFParser:
         from dotenv import load_dotenv
         load_dotenv()
 
-        key = os.getenv("MOONSHOT_API_KEY")
+        key = os.getenv("MOONSHOT_API_KEY", os.getenv("KIMI_API_KEY", os.getenv("OPENAI_API_KEY", "")))
         if not key:
             return self._fallback_single_chapter()
 
@@ -121,7 +121,7 @@ class PDFParser:
             toc_imgs.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
 
         resp = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL_NAME", "kimi-k2.6"),
+            model=os.getenv("KIMI_VISION_MODEL", "kimi-k2.5"),
             messages=[{"role": "user", "content": [{
                 "type": "text",
                 "text": (

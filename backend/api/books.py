@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.job_manager import JobCancelled, get_job_manager
@@ -72,8 +73,96 @@ def _load_chapters(name: str) -> list[dict]:
     path = safe_child_path(PROGRESS_PATH, safe_book_name(name), "_chapters.json")
     if path.exists():
         with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            data = json.load(fh)
+        return _normalize_loaded_chapters(name, data if isinstance(data, list) else [])
     return []
+
+
+def _normalize_loaded_chapters(name: str, chapters: list[dict]) -> list[dict]:
+    if not _looks_like_external_ocr_chunk_titles(chapters):
+        return chapters
+    toc = _chapters_from_embedded_toc(chapters)
+    return toc or _chapters_from_ocr_headings(chapters) or chapters
+
+
+def _looks_like_external_ocr_chunk_titles(chapters: list[dict]) -> bool:
+    if len(chapters) < 80:
+        return False
+    external = sum(1 for ch in chapters[:120] if ch.get("source") == "external_ocr_jsonl")
+    one_chunk = sum(1 for ch in chapters[:120] if int(ch.get("chunk_count") or 0) <= 1)
+    return external >= 20 and one_chunk >= 60
+
+
+def _chapters_from_ocr_headings(chapters: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    current: dict | None = None
+    chapter_re = re.compile(r"^第\s*[一二三四五六七八九十百千0-9]+\s*章")
+    section_re = re.compile(r"^第\s*[一二三四五六七八九十百千0-9]+\s*节")
+    for ch in chapters:
+        title = re.sub(r"\s+", " ", str(ch.get("title") or "")).strip()
+        compact = title.replace(" ", "")
+        if chapter_re.match(compact):
+            current = {"title": title, "page_number": _positive_int(ch.get("page_number") or ch.get("page")) or 1, "end_page": ch.get("end_page"), "text": "", "subsections": []}
+            result.append(current)
+            continue
+        if current is not None and section_re.match(compact):
+            current.setdefault("subsections", []).append({"title": title, "page": _positive_int(ch.get("page_number") or ch.get("page")) or current.get("page_number", 1)})
+    return result if len(result) >= 2 else []
+
+def _chapters_from_embedded_toc(chapters: list[dict]) -> list[dict]:
+    toc_index = -1
+    for index, ch in enumerate(chapters[:120]):
+        title = str(ch.get("title") or "")
+        text = str(ch.get("text") or "")
+        if "目录" in title.replace(" ", "") or "目录" in text[:80].replace(" ", ""):
+            toc_index = index
+            break
+    if toc_index < 0:
+        return []
+    toc_parts: list[str] = []
+    for ch in chapters[toc_index: min(len(chapters), toc_index + 18)]:
+        title = str(ch.get("title") or "")
+        text = str(ch.get("text") or "")
+        if toc_parts and re.match(r"^第[一二三四五六七八九十百千0-9]+章", title.replace(" ", "")) and "目录" not in text[:80].replace(" ", ""):
+            break
+        toc_parts.append(text or title)
+    toc_text = "\n".join(toc_parts)
+    if not toc_text:
+        return []
+
+    chapter_pattern = re.compile(r"^\s*(第\s*[一二三四五六七八九十百千0-9]+\s*章\s*.+?)\s*[\.·…\s]*(\d{1,4})?\s*$")
+    section_pattern = re.compile(r"^\s*(第\s*[一二三四五六七八九十百千0-9]+\s*节\s*.+?)\s*[\.·…\s]*(\d{1,4})?\s*$")
+    result: list[dict] = []
+    current: dict | None = None
+    for raw in toc_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = re.sub(r"[#`*_]+", "", raw).strip()
+        if not line or "目录" in line.replace(" ", ""):
+            continue
+        chapter_match = chapter_pattern.match(line)
+        if chapter_match:
+            title = re.sub(r"[\.·…\s\d]+$", "", chapter_match.group(1)).strip()
+            page = _positive_int(chapter_match.group(2)) or 1
+            current = {"title": title, "page_number": page, "end_page": None, "text": "", "subsections": []}
+            result.append(current)
+            continue
+        section_match = section_pattern.match(line)
+        if section_match and current is not None:
+            title = re.sub(r"[\.·…\s\d]+$", "", section_match.group(1)).strip()
+            current.setdefault("subsections", []).append({"title": title, "page": _positive_int(section_match.group(2)) or current.get("page_number", 1)})
+
+    for index, chapter in enumerate(result):
+        next_page = _positive_int(result[index + 1].get("page_number")) if index + 1 < len(result) else None
+        if next_page:
+            chapter["end_page"] = max(_positive_int(chapter.get("page_number")) or 1, next_page - 1)
+    return result
+
+
+def _positive_int(value) -> int | None:
+    try:
+        parsed = int(value)
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _format_chapter(ch: dict) -> dict:
@@ -211,7 +300,7 @@ def list_books():
             "path": str(pdf_path) if pdf_path else "",
             "size": pdf_path.stat().st_size if pdf_path else 0,
             "subject": _book_subject(name),
-            "has_pdf": bool(pdf_path),
+            "has_pdf": bool(pdf_path or _source_pdf_path(name)),
             "chapter_count": len(_load_chapters(name)),
         })
     return {"success": True, "data": data}
@@ -224,6 +313,45 @@ def get_current_book():
         return {"success": False, "message": "\u672a\u9009\u62e9\u6559\u6750"}
     chapters = _book_state.get("chapters", [])
     return {"success": True, "data": {"name": name, "subject": _book_subject(name), "chapter_count": len(chapters), "chapters": [_format_chapter(c) for c in chapters]}}
+
+def _source_pdf_path(book_name: str) -> Path | None:
+    safe = safe_book_name(book_name)
+    candidates: list[Path] = []
+    direct = _book_pdf_path(safe)
+    if direct:
+        candidates.append(direct)
+
+    ocr_needed_aliases = {
+        "传感器短书": "CGQ_1.pdf",
+        "传感器长书": "CGQ_2.pdf",
+        "误差理论与数据处理": "WC.pdf",
+    }
+    alias_file = ocr_needed_aliases.get(safe)
+    if alias_file:
+        candidates.append(Path("D:/OCR_NEEDED") / alias_file)
+
+    meta = _read_book_meta(safe)
+    output_dir = meta.get("mineru_output_dir")
+    if output_dir:
+        root = Path(str(output_dir))
+        candidates.extend(sorted(root.rglob("origin.pdf"), key=lambda item: len(str(item))))
+        candidates.extend(sorted(root.rglob("*.pdf"), key=lambda item: ("origin" not in item.name.lower(), len(str(item)))))
+    candidates.extend(sorted((MINERU_OUTPUT_PATH / safe).rglob("origin.pdf")) if (MINERU_OUTPUT_PATH / safe).exists() else [])
+    for path in candidates:
+        try:
+            if path.exists() and path.is_file() and path.suffix.lower() == ".pdf":
+                return path
+        except Exception:
+            continue
+    return None
+
+
+@router.get("/{book_name}/source-pdf")
+def source_pdf(book_name: str):
+    pdf_path = _source_pdf_path(book_name)
+    if not pdf_path:
+        return {"success": False, "message": "未找到该教材对应的 origin.pdf 或源 PDF"}
+    return FileResponse(pdf_path, media_type="application/pdf", filename=pdf_path.name)
 
 
 @router.patch("/{book_name}")
@@ -246,7 +374,7 @@ def update_book(book_name: str, req: BookUpdateRequest):
             "path": str(pdf_path) if pdf_path else "",
             "size": pdf_path.stat().st_size if pdf_path else 0,
             "subject": str(meta.get("subject", "")).strip(),
-            "has_pdf": bool(pdf_path),
+            "has_pdf": bool(pdf_path or _source_pdf_path(book_name)),
             "chapter_count": len(chapters),
         },
     }
@@ -399,7 +527,7 @@ def _run_output_import_job(job_id: str, archive_path: Path, book_name: str, subj
                 "indexed_chunks": result.indexed_chunks,
                 "output_dir": result.output_dir,
                 "subject": _book_subject(book_name),
-                "has_pdf": bool(pdf_path),
+                "has_pdf": bool(pdf_path or _source_pdf_path(book_name)),
             },
         )
     except JobCancelled as exc:

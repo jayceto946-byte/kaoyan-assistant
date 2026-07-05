@@ -3,13 +3,14 @@ param(
     [string]$SampleSourceData = "",
     [string]$SampleBookName = "优化设计",
     [switch]$SkipSampleDataPrepare,
-    [switch]$RequireSampleData
+    [switch]$RequireSampleData,
+    [string]$SampleDataDir = ""
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $frontendDist = Join-Path $projectRoot "frontend\dist"
-$sampleData = Join-Path $projectRoot "desktop\sample_data"
+$sampleData = if ($SampleDataDir) { [System.IO.Path]::GetFullPath((Join-Path $projectRoot $SampleDataDir)) } else { Join-Path $projectRoot "desktop\sample_data" }
 Set-Location $projectRoot
 
 function Invoke-CheckedCommand {

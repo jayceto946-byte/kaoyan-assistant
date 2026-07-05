@@ -6,97 +6,325 @@
     <title>考研智能辅助系统</title>
     <style>
       * { box-sizing: border-box; }
+      :root {
+        --bg: #f5f5f7;
+        --panel-strong: rgba(255, 255, 255, 0.86);
+        --text: #1d1d1f;
+        --muted: #6e6e73;
+        --line: rgba(0, 0, 0, 0.10);
+        --accent: #0066cc;
+        --accent-soft: #7bb8ff;
+        --danger: #b42318;
+      }
+      html, body { min-height: 100%; }
       body {
         margin: 0;
         min-height: 100vh;
         display: grid;
         place-items: center;
-        background: #f4f6f1;
-        color: #1f2824;
-        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 50% 0%, rgba(255,255,255,0.96), rgba(255,255,255,0.28) 36%, transparent 62%),
+          linear-gradient(180deg, #fbfbfd 0%, var(--bg) 48%, #ececf0 100%);
+        color: var(--text);
+        font-family: "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background:
+          linear-gradient(115deg, rgba(255,255,255,0.36), transparent 34%, rgba(255,255,255,0.24) 68%, transparent),
+          radial-gradient(circle at 18% 24%, rgba(0,102,204,0.08), transparent 24%),
+          radial-gradient(circle at 82% 76%, rgba(0,0,0,0.045), transparent 28%);
+        filter: blur(0.2px);
+        pointer-events: none;
+      }
+      body.is-leaving .stage {
+        animation: stage-out 220ms cubic-bezier(.35,0,.2,1) both;
+      }
+      .stage {
+        position: relative;
+        width: min(560px, calc(100vw - 40px));
+        animation: stage-in 560ms cubic-bezier(.2,.82,.2,1) both;
       }
       .shell {
-        width: min(520px, calc(100vw - 48px));
-        border: 1px solid #d7ded5;
-        border-radius: 8px;
-        background: #fffefa;
-        padding: 28px;
-        box-shadow: 0 16px 44px rgba(40, 58, 48, 0.08);
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(255,255,255,0.72);
+        border-radius: 24px;
+        background: linear-gradient(145deg, rgba(255,255,255,0.78), rgba(255,255,255,0.46));
+        padding: 42px 36px 32px;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,0.86),
+          0 24px 90px rgba(0,0,0,0.12);
+        backdrop-filter: blur(28px) saturate(180%);
+        -webkit-backdrop-filter: blur(28px) saturate(180%);
       }
-      h1 { margin: 0 0 8px; font-size: 20px; font-weight: 650; }
-      p { margin: 0; color: #65736c; line-height: 1.7; }
+      .shell::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, rgba(255,255,255,0.48), transparent 42%, rgba(255,255,255,0.22));
+        pointer-events: none;
+      }
+      .content {
+        position: relative;
+        z-index: 1;
+        text-align: center;
+      }
+      .book-logo {
+        display: grid;
+        place-items: center;
+        width: 82px;
+        height: 82px;
+        margin: 0 auto 34px;
+        color: var(--accent-soft);
+        filter: drop-shadow(0 10px 24px rgba(0,102,204,0.18));
+      }
+      .book-logo svg {
+        width: 76px;
+        height: 76px;
+        stroke: currentColor;
+        stroke-width: 3.3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      h1 {
+        min-height: 36px;
+        max-width: 430px;
+        margin: 0 auto;
+        font-size: clamp(20px, 4vw, 25px);
+        font-weight: 760;
+        line-height: 1.36;
+        letter-spacing: 0;
+        text-wrap: balance;
+      }
+      .status-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin-top: 26px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .pulse {
+        width: 9px;
+        height: 9px;
+        flex: 0 0 auto;
+        border-radius: 999px;
+        background: var(--accent);
+        box-shadow: 0 0 0 0 rgba(0,102,204,0.28);
+        animation: pulse 1.45s ease-out infinite;
+      }
       .bar {
-        height: 6px;
+        position: relative;
+        height: 3px;
         overflow: hidden;
         border-radius: 999px;
-        background: #e8ede6;
-        margin-top: 22px;
+        background: rgba(0,0,0,0.08);
+        margin-top: 18px;
       }
       .bar::before {
         content: "";
-        display: block;
-        height: 100%;
-        width: 36%;
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 42%;
         border-radius: inherit;
-        background: #2f6f62;
-        animation: load 1.2s ease-in-out infinite alternate;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        animation: load 1.2s cubic-bezier(.45,0,.2,1) infinite;
       }
-      .error .bar::before { animation: none; width: 100%; background: #b94737; }
       .details {
         display: none;
         margin-top: 18px;
-        padding: 12px;
-        border: 1px solid #ead1ca;
-        border-radius: 6px;
-        background: #fff7f4;
-        color: #7b3027;
+        padding: 12px 14px;
+        border: 1px solid rgba(180,35,24,0.18);
+        border-radius: 14px;
+        background: rgba(255,255,255,0.62);
+        color: #7a271a;
         font-size: 13px;
+        line-height: 1.55;
+        text-align: left;
+        white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
-      .actions { display: none; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+      .actions {
+        display: none;
+        justify-content: center;
+        gap: 10px;
+        margin-top: 18px;
+        flex-wrap: wrap;
+      }
       button {
-        border: 1px solid #cbd6cc;
-        border-radius: 6px;
-        background: #ffffff;
-        color: #23332d;
+        min-height: 36px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255,255,255,0.72);
+        color: var(--text);
         cursor: pointer;
         font: inherit;
-        padding: 8px 12px;
+        padding: 8px 14px;
+        transition: transform 140ms ease, border-color 160ms ease, background-color 160ms ease;
       }
-      button.primary { border-color: #2f6f62; background: #2f6f62; color: #ffffff; }
+      button:hover { border-color: rgba(0,102,204,0.34); background: rgba(255,255,255,0.92); }
+      button:active { transform: scale(0.97); }
+      button.primary { border-color: transparent; background: #000; color: #fff; }
+      .error .pulse { background: var(--danger); animation: none; box-shadow: none; }
+      .error .bar::before { animation: none; width: 100%; background: var(--danger); }
+      .error .details { display: block; }
+      .error .actions { display: flex; }
+      @keyframes stage-in {
+        from { opacity: 0; transform: translateY(18px) scale(.985); filter: blur(10px); }
+        to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+      }
+      @keyframes stage-out {
+        from { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+        to { opacity: 0; transform: translateY(-10px) scale(.985); filter: blur(8px); }
+      }
+      @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(0,102,204,0.28); }
+        70% { box-shadow: 0 0 0 12px rgba(0,102,204,0); }
+        100% { box-shadow: 0 0 0 0 rgba(0,102,204,0); }
+      }
       @keyframes load {
-        from { transform: translateX(0); }
-        to { transform: translateX(180%); }
+        from { transform: translateX(-110%); }
+        to { transform: translateX(240%); }
+      }
+      @media (max-width: 520px) {
+        .shell { padding: 36px 24px 28px; }
+        .book-logo { margin-bottom: 28px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .stage, body.is-leaving .stage, .pulse, .bar::before { animation: none; }
+      }
+      @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+        .shell { background: var(--panel-strong); }
       }
     </style>
   </head>
   <body>
-    <main class="shell" id="shell">
-      <h1>考研智能辅助系统</h1>
-      <p id="status">正在启动本地学习服务...</p>
-      <div class="bar"></div>
-      <div class="details" id="details"></div>
-      <div class="actions" id="actions">
-        <button class="primary" id="openWeb">用浏览器打开 Web 端</button>
-        <button id="openLog">查看后端日志</button>
-      </div>
+    <main class="stage">
+      <section class="shell" id="shell">
+        <div class="content">
+          <div class="book-logo" aria-hidden="true">
+            <svg viewBox="0 0 64 64" fill="none">
+              <path d="M32 17.5c-3.7-3.4-8.1-5.1-13.2-5.1h-5.1c-2.6 0-4.7 2.1-4.7 4.7v30.1c0 1.7 1.4 3.1 3.1 3.1h6.7c5.1 0 9.5 1.4 13.2 4.2" />
+              <path d="M32 17.5c3.7-3.4 8.1-5.1 13.2-5.1h5.1c2.6 0 4.7 2.1 4.7 4.7v30.1c0 1.7-1.4 3.1-3.1 3.1h-6.7c-5.1 0-9.5 1.4-13.2 4.2" />
+              <path d="M32 17.5v37" />
+              <path d="M17.4 21.5h3.3c2.7 0 5.2.6 7.4 1.9" />
+              <path d="M46.6 21.5h-3.3c-2.7 0-5.2.6-7.4 1.9" />
+            </svg>
+          </div>
+          <h1 id="greeting">早上好，有吃早饭吗</h1>
+          <div class="status-row"><span class="pulse"></span><span id="statusText">初始化中</span></div>
+          <div class="bar"></div>
+          <div class="details" id="details"></div>
+          <div class="actions" id="actions">
+            <button class="primary" id="openWeb">用浏览器打开 Web 端</button>
+            <button id="openLog">查看后端日志</button>
+          </div>
+        </div>
+      </section>
     </main>
     <script>
       const desktop = window.kaoyanDesktop;
       const shell = document.getElementById('shell');
-      const status = document.getElementById('status');
+      const greeting = document.getElementById('greeting');
+      const statusText = document.getElementById('statusText');
       const details = document.getElementById('details');
       const actions = document.getElementById('actions');
+
+      const greetings = {
+        earlyMorning: [
+          '早上好，有吃早饭吗',
+          '早上好，先把状态打开',
+          '早上好，今天慢慢来',
+          '早上好，先喝口水',
+          '早上好，给大脑开机',
+          '早上好，先做一道热身题',
+          '早上好，从简单题开始',
+          '早上好，今天也稳住',
+          '早上好，别空腹硬学',
+          '早上好，把计划接上',
+        ],
+        morning: [
+          '上午好，进入学习状态',
+          '上午好，先抓一个重点',
+          '上午好，趁清醒多推进',
+          '上午好，今天从哪章开始',
+          '上午好，把思路理顺',
+          '上午好，先复盘昨天',
+          '上午好，做题前先看概念',
+          '上午好，保持一点节奏',
+          '上午好，别急，先定位',
+          '上午好，开始今天的主线',
+        ],
+        noon: [
+          '中午好，先别太用力',
+          '中午好，吃饭了吗',
+          '中午好，轻一点复盘',
+          '中午好，适合整理错题',
+          '中午好，给上午收个尾',
+          '中午好，短复习也算数',
+          '中午好，先看一个概念',
+          '中午好，别让节奏断掉',
+          '中午好，慢慢接上学习',
+          '中午好，休息后再冲',
+        ],
+        afternoon: [
+          '下午好，清醒一下开始吧',
+          '下午好，把注意力拉回来',
+          '下午好，先做一道题',
+          '下午好，继续推进主线',
+          '下午好，错题本可以打开',
+          '下午好，先从薄弱点开始',
+          '下午好，给自己十分钟',
+          '下午好，稳住下午节奏',
+          '下午好，别被困意带走',
+          '下午好，继续往前走',
+        ],
+        evening: [
+          '晚上好，收一收今天',
+          '晚上好，适合复盘错题',
+          '晚上好，今天辛苦了',
+          '晚上好，做个轻量总结',
+          '晚上好，把遗漏补上',
+          '晚上好，别熬太狠',
+          '晚上好，整理一下思路',
+          '晚上好，留一点余量',
+          '晚上好，最后看一个点',
+          '晚上好，复盘比硬冲重要',
+        ],
+      };
+
+      function getGreetingBucket(hour) {
+        if (hour >= 5 && hour < 9) return 'earlyMorning';
+        if (hour >= 9 && hour < 12) return 'morning';
+        if (hour >= 12 && hour < 14) return 'noon';
+        if (hour >= 14 && hour < 18) return 'afternoon';
+        return 'evening';
+      }
+
+      function setTimeGreeting() {
+        const now = new Date();
+        const list = greetings[getGreetingBucket(now.getHours())];
+        const index = (now.getDate() + now.getHours()) % list.length;
+        greeting.textContent = list[index];
+      }
 
       function showStartupError(payload) {
         const info = typeof payload === 'string' ? { message: payload } : payload || {};
         shell.classList.add('error');
-        status.textContent = '本地学习服务启动失败。';
+        greeting.textContent = '本地服务启动失败';
+        statusText.textContent = '需要处理';
         details.style.display = 'block';
         actions.style.display = 'flex';
         details.textContent = `${info.message || '未知错误'}\n服务地址：${info.backendUrl || 'http://127.0.0.1:8000'}\n日志：${info.logPath || '%APPDATA%\\kaoyan-assistant-desktop\\logs\\backend.log'}`;
       }
 
+      setTimeGreeting();
       document.getElementById('openWeb').addEventListener('click', () => desktop?.openWebFallback?.());
       document.getElementById('openLog').addEventListener('click', () => desktop?.openBackendLog?.());
       desktop?.onStartupError?.(showStartupError);

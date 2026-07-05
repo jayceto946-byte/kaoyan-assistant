@@ -333,7 +333,7 @@ const ChatPage: React.FC = () => {
                 <GraduationCap className="h-4.5 w-4.5 text-white" />
               </div>
               <div>
-                <h2 className="text-base font-semibold text-text-primary">学习对话</h2>
+                <h2 className="type-title text-text-primary">学习对话</h2>
               </div>
             </div>
           </div>
@@ -375,7 +375,7 @@ const ChatPage: React.FC = () => {
               onKeyDown={handleKeyDown}
               placeholder="输入问题..."
               disabled={isLoading}
-              className="max-h-[108px] min-h-[40px] flex-1 resize-none overflow-y-auto rounded-[22px] border border-border bg-bg-card px-4 py-2 text-sm text-text-primary outline-none transition-colors placeholder-text-secondary focus:border-accent sm:max-h-[160px] sm:min-h-[48px] sm:rounded-[24px] sm:px-5 sm:py-3"
+              className="max-h-[108px] min-h-[40px] flex-1 resize-none overflow-y-auto rounded-[22px] border border-border bg-bg-card px-4 py-2 type-body text-text-primary outline-none transition-colors placeholder-text-secondary focus:border-accent sm:max-h-[160px] sm:min-h-[48px] sm:rounded-[24px] sm:px-5 sm:py-3"
             />
             {isLoading ? (
               <button type="button" onClick={stop} className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full border border-red-300 bg-red-50 text-red-700 transition-colors hover:bg-red-100">
@@ -403,23 +403,23 @@ const ChatPage: React.FC = () => {
               />
             </div>
             <div className="mobile-action-row flex flex-wrap items-center gap-1.5 overflow-visible pb-0 sm:inline-flex sm:gap-2 sm:pl-2">
-              <button type="button" onClick={() => showReport('daily')} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${actionLoading === 'daily' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
+              <button type="button" onClick={() => showReport('daily')} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border px-3 type-control transition-colors ${actionLoading === 'daily' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
                 <CalendarDays className="h-3.5 w-3.5" />
                 {actionLoading === 'daily' ? '整理日报' : '学习日报'}
               </button>
-              <button type="button" onClick={() => showReport('weekly')} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${actionLoading === 'weekly' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
+              <button type="button" onClick={() => showReport('weekly')} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border px-3 type-control transition-colors ${actionLoading === 'weekly' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
                 <CalendarDays className="h-3.5 w-3.5" />
                 {actionLoading === 'weekly' ? '整理周报' : '学习周报'}
               </button>
-              <button type="button" onClick={pickRandomExercise} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border px-3 text-xs transition-colors ${actionLoading === 'exercise' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
+              <button type="button" onClick={pickRandomExercise} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border px-3 type-control transition-colors ${actionLoading === 'exercise' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
                 <Shuffle className="h-3.5 w-3.5" />
                 {actionLoading === 'exercise' ? '抽题中' : '随机抽题'}
               </button>
-              <button type="button" onClick={openHighlightDialog} disabled={Boolean(actionLoading)} className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border border-border bg-bg-card px-3 text-xs text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary disabled:opacity-60">
+              <button type="button" onClick={openHighlightDialog} disabled={Boolean(actionLoading)} className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border border-border bg-bg-card px-3 type-control text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary disabled:opacity-60">
                 <BookMarked className="h-3.5 w-3.5" />
                 查看/生成重点
               </button>
-              <button type="button" onClick={openMistakeQuickCapture} className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border border-border bg-bg-card px-3 text-xs text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary">
+              <button type="button" onClick={openMistakeQuickCapture} className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border border-border bg-bg-card px-3 type-control text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary">
                 <ImagePlus className="h-3.5 w-3.5" />
                 错题速录
               </button>

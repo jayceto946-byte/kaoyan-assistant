@@ -18,6 +18,7 @@ deepseek-api.txt
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.eval_deps/
 *.pyc
 
 # Frontend build/dependency artifacts
@@ -41,6 +42,7 @@ CODEX_REVIEW_HANDOFF.md
 
 # Local OCR/TOC samples and extracted textbook snippets
 kimi_toc.json
+Chapter.md
 ocr_*.json
 ocr_*.txt
 
@@ -62,10 +64,12 @@ desktop/node_modules/
 desktop/dist/
 release/
 build/
+tmp_seed_runtime/
 .codex/
 kaoyan-assistant/
 
 # Local desktop demo payloads; keep only instructions in Git.
 desktop/sample_data/**
+desktop/sample_data_three_books/**
 !desktop/sample_data/
 !desktop/sample_data/README.md

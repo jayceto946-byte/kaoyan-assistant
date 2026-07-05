@@ -40,16 +40,36 @@ class LearningEventStore:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._force_delete_journal = False
         self._init_db()
 
     def _connect(self):
         conn = sqlite3.connect(self.db_path, timeout=15)
         conn.execute("PRAGMA busy_timeout = 15000")
-        conn.execute("PRAGMA journal_mode = WAL")
+        if self._force_delete_journal:
+            conn.execute("PRAGMA journal_mode = DELETE")
+        else:
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError as exc:
+                if not _is_sqlite_storage_error(exc):
+                    raise
+                self._force_delete_journal = True
+                conn.execute("PRAGMA journal_mode = DELETE")
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def _init_db(self) -> None:
+        try:
+            self._init_db_once()
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_storage_error(exc):
+                raise
+            self._force_delete_journal = True
+            self._prepare_retry_db_files()
+            self._init_db_once()
+
+    def _init_db_once(self) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -72,6 +92,18 @@ class LearningEventStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_learning_events_subject_time ON learning_events(subject, timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_learning_events_source ON learning_events(source_type, source_id)")
             conn.commit()
+
+    def _prepare_retry_db_files(self) -> None:
+        for suffix in ("-wal", "-shm", "-journal"):
+            try:
+                Path(f"{self.db_path}{suffix}").unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            if self.db_path.exists() and self.db_path.stat().st_size == 0:
+                self.db_path.unlink()
+        except OSError:
+            pass
 
     def append(self, event: LearningEvent) -> str:
         event.subject = normalize_subject_value(event.subject)
@@ -157,6 +189,15 @@ def _dedupe_names(names: list[str]) -> list[str]:
 
 def concept_names(concepts: list[dict]) -> list[str]:
     return _dedupe_names([str(item.get("name", "")) for item in concepts or [] if isinstance(item, dict)])
+
+
+def _is_sqlite_storage_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return (
+        "disk i/o" in message
+        or "readonly" in message
+        or "unable to open database file" in message
+    )
 
 
 def get_learning_event_store(data_dir: str | Path = PROGRESS_PATH) -> LearningEventStore:

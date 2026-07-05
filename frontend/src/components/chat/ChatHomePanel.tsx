@@ -153,16 +153,16 @@ export default function ChatHomePanel({
           <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--surface-black)]">
             <Sparkles className="h-5 w-5 text-white" />
           </div>
-          <div className="min-w-0 text-[28px] font-semibold leading-tight tracking-[-0.01em] text-text-primary sm:text-[34px]">{greeting()}</div>
+          <div className="type-hero min-w-0 text-text-primary">{greeting()}</div>
         </div>
-        <div className="max-w-full truncate rounded-full border border-border bg-bg-card px-3 py-1.5 text-xs text-text-secondary">{scopeLabel}</div>
+        <div className="type-caption max-w-full truncate rounded-full border border-border bg-bg-card px-3 py-1.5 text-text-secondary">{scopeLabel}</div>
       </div>
 
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.75fr)]">
         <section className="rounded-[18px] border border-border bg-bg-card p-4">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-semibold text-text-primary">{labels.continueTitle}</div>
+              <div className="type-section-title text-text-primary">{labels.continueTitle}</div>
 
             </div>
             {loading && <Loader2 className="h-4 w-4 animate-spin text-accent" />}
@@ -175,7 +175,7 @@ export default function ChatHomePanel({
               description={firstMistake ? firstLine(firstMistake.question_text) : labels.mistakeFallback}
               disabled={!dueMistakes.length || isLoading}
               onClick={() => firstMistake && onReviewMistake(firstMistake)}
-              secondary={firstMistake ? <Link to={`/mistakes?mistake_id=${encodeURIComponent(firstMistake.id)}`} className="text-xs text-accent hover:underline">{labels.openMistakeBook}</Link> : undefined}
+              secondary={firstMistake ? <Link to={`/mistakes?mistake_id=${encodeURIComponent(firstMistake.id)}`} className="type-caption text-accent hover:underline">{labels.openMistakeBook}</Link> : undefined}
             />
             <ActionCard
               icon={<BrainCircuit className="h-4 w-4" />}
@@ -183,7 +183,7 @@ export default function ChatHomePanel({
               description={firstConcept?.reasons?.[0] || labels.conceptFallbackDesc}
               disabled={!firstConcept || isLoading}
               onClick={() => firstConcept && onReviewConcept(firstConcept, summary)}
-              secondary={<Link to="/learning" className="text-xs text-accent hover:underline">{labels.learning}</Link>}
+              secondary={<Link to="/learning" className="type-caption text-accent hover:underline">{labels.learning}</Link>}
             />
             <ActionCard
               icon={<Shuffle className="h-4 w-4" />}
@@ -204,15 +204,15 @@ export default function ChatHomePanel({
         </section>
 
         <section className="rounded-[18px] border border-border bg-bg-card p-4">
-          <div className="text-sm font-semibold text-text-primary">{labels.directTitle}</div>
+          <div className="type-section-title text-text-primary">{labels.directTitle}</div>
           <div className="mt-3 space-y-2">
             <QuickAction icon={<ListChecks className="h-3.5 w-3.5" />} title={labels.reviewPlan} description={labels.reviewPlanDesc} disabled={isLoading} onClick={() => onShowReviewPlan(summary)} />
             <QuickAction icon={<MessageSquareText className="h-3.5 w-3.5" />} title={labels.practiceMemory} description={labels.practiceMemoryDesc} disabled={isLoading} onClick={() => onPracticeFromMemory(summary)} />
             <QuickAction icon={<ClipboardList className="h-3.5 w-3.5" />} title={labels.mistakeDigest} description={labels.mistakeDigestDesc} disabled={isLoading} onClick={() => onSummarizeMistakes(summary)} />
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => onShowReport('daily')} disabled={isLoading} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary hover:border-accent/45 hover:text-text-primary disabled:opacity-55"><CalendarDays className="h-3.5 w-3.5" />{labels.daily}</button>
-            <button type="button" onClick={onOpenMistakeQuickCapture} disabled={isLoading} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary hover:border-accent/45 hover:text-text-primary disabled:opacity-55"><ClipboardList className="h-3.5 w-3.5" />{labels.quickMistake}</button>
+            <button type="button" onClick={() => onShowReport('daily')} disabled={isLoading} className="type-control inline-flex items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-primary px-3 py-2 text-text-secondary hover:border-accent/45 hover:text-text-primary disabled:opacity-55"><CalendarDays className="h-3.5 w-3.5" />{labels.daily}</button>
+            <button type="button" onClick={onOpenMistakeQuickCapture} disabled={isLoading} className="type-control inline-flex items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-primary px-3 py-2 text-text-secondary hover:border-accent/45 hover:text-text-primary disabled:opacity-55"><ClipboardList className="h-3.5 w-3.5" />{labels.quickMistake}</button>
           </div>
         </section>
       </div>
@@ -222,10 +222,10 @@ export default function ChatHomePanel({
 
 function QuickAction({ icon, title, description, disabled, onClick }: { icon: React.ReactNode; title: string; description: string; disabled?: boolean; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} disabled={disabled} className="flex w-full items-start gap-2 rounded-lg border border-border bg-bg-card px-3 py-2 text-left text-xs leading-5 text-text-secondary transition-colors hover:border-accent/45 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-55">
+    <button type="button" onClick={onClick} disabled={disabled} className="type-body flex w-full items-start gap-2 rounded-lg border border-border bg-bg-card px-3 py-2 text-left text-text-secondary transition-colors hover:border-accent/45 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-55">
       <span className="mt-0.5 flex-shrink-0 text-accent">{icon}</span>
       <span className="min-w-0">
-        <span className="block font-medium text-text-primary">{title}</span>
+        <span className="type-control block text-text-primary">{title}</span>
         <span className="mt-0.5 block">{description}</span>
       </span>
     </button>
@@ -238,8 +238,8 @@ function ActionCard({ icon, title, description, disabled, onClick, secondary }: 
       <button type="button" onClick={onClick} disabled={disabled} className="flex w-full items-start gap-3 text-left disabled:cursor-not-allowed disabled:opacity-45">
         <span className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border border-accent/20 bg-[var(--accent-softer)] text-accent">{icon}</span>
         <span className="min-w-0 flex-1">
-          <span className="block text-sm font-medium text-text-primary">{title}</span>
-          <span className="mt-1 block text-xs leading-5 text-text-secondary">{description}</span>
+          <span className="type-section-title block text-text-primary">{title}</span>
+          <span className="type-body mt-1 block text-text-secondary">{description}</span>
         </span>
       </button>
       {secondary && <div className="mt-2 pl-11">{secondary}</div>}

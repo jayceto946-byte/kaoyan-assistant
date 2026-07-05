@@ -149,7 +149,7 @@ export default function ChatHistorySidebar({
     <aside className={shellClass}>
       <div className={headerClass}>
         <div className="mb-3 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm font-semibold text-text-primary"><BookOpen className="h-4 w-4 text-accent" />{labels.scope}</div>
+          <div className="flex items-center gap-2 type-section-title text-text-primary"><BookOpen className="h-4 w-4 text-accent" />{labels.scope}</div>
           {!embedded && <button type="button" onClick={onToggle} className="rounded-lg p-1.5 text-text-secondary hover:bg-bg-card hover:text-text-primary" title={labels.collapseHistory}><PanelLeftClose className="h-4 w-4" /></button>}
         </div>
         <div className="space-y-2">
@@ -165,16 +165,16 @@ export default function ChatHistorySidebar({
             width="wide"
             label={labels.scope}
           />
-          <button type="button" onClick={onNewConversation} className="mt-2 flex h-9 w-full items-center justify-center gap-2 rounded-full border border-border bg-bg-card text-sm text-text-primary hover:border-accent/50 hover:bg-[var(--accent-softer)]">
+          <button type="button" onClick={onNewConversation} className="mt-2 flex h-9 w-full items-center justify-center gap-2 rounded-full border border-border bg-bg-card type-control text-text-primary hover:border-accent/50 hover:bg-[var(--accent-softer)]">
             <MessageSquarePlus className="h-4 w-4" />{labels.newConversation}
           </button>
         </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col p-3">
-        <div className="mb-2 flex items-center justify-between px-1 text-sm font-semibold text-text-primary"><span className="flex items-center gap-2"><History className="h-4 w-4 text-accent" />{labels.history}</span><span className="text-xs font-normal text-text-secondary">{loading ? labels.loading : `${conversations.length}`}</span></div>
+        <div className="mb-2 flex items-center justify-between px-1 type-section-title text-text-primary"><span className="flex items-center gap-2"><History className="h-4 w-4 text-accent" />{labels.history}</span><span className="type-caption font-normal text-text-secondary">{loading ? labels.loading : `${conversations.length}`}</span></div>
         <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-          {conversations.length === 0 && <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-text-secondary">{labels.empty}</div>}
+          {conversations.length === 0 && <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center type-body text-text-secondary">{labels.empty}</div>}
           {conversations.map((item) => {
             const color = colorForSubject(item.subject);
             const active = item.id === conversationId;
@@ -183,10 +183,10 @@ export default function ChatHistorySidebar({
               <button key={item.id} type="button" onClick={() => loadConversation(item.id)} className={`relative w-full overflow-hidden rounded-lg border px-3 py-2.5 text-left transition-colors ${active ? 'border-accent/30 bg-bg-card' : 'border-transparent hover:border-border hover:bg-bg-card/80'}`}>
                 {showColor && <span className="pointer-events-none absolute inset-y-2 left-0 w-0.5 rounded-full" style={{ backgroundColor: color }} />}
                 <div className="relative flex min-w-0 items-center justify-between gap-2 [writing-mode:horizontal-tb]">
-                  <div className="min-w-0 flex-1 truncate whitespace-nowrap text-sm font-medium text-text-primary" title={item.title}>{item.title}</div>
-                  <div className="flex-shrink-0 whitespace-nowrap text-xs text-text-secondary">{relativeTime(item.updated_at)}</div>
+                  <div className="min-w-0 flex-1 truncate whitespace-nowrap type-control text-text-primary" title={item.title}>{item.title}</div>
+                  <div className="flex-shrink-0 whitespace-nowrap type-caption text-text-secondary">{relativeTime(item.updated_at)}</div>
                 </div>
-                <div className="relative mt-1 flex min-w-0 items-center gap-1 whitespace-nowrap text-xs text-text-secondary [writing-mode:horizontal-tb]">
+                <div className="relative mt-1 flex min-w-0 items-center gap-1 whitespace-nowrap type-caption text-text-secondary [writing-mode:horizontal-tb]">
                   <span className="min-w-0 truncate">{item.subject || labels.uncategorized}</span>
                   {item.book_name && <><span>/</span><span className="min-w-0 truncate">{item.book_name}</span></>}
                 </div>

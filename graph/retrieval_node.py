@@ -1,25 +1,58 @@
-"""检索节点 — 三层混合检索：KG精确命中 → 向量补充(role优先) → 去重重排"""
+"""Hybrid retrieval node: KG exact hits, role-aware vector search, rerank, and debug metadata."""
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from config import PROGRESS_PATH
 from graph.safe_retrieval import get_safe_kg, get_safe_vector_store
 
-# intent → 优先 role 列表（越靠前越优先）
 INTENT_ROLE_PRIORITY: dict[str, list[str]] = {
-    "definition":   ["definition", "theorem", "property", "example", "derivation"],
-    "formula":      ["definition", "property", "derivation", "example"],
-    "property":     ["property", "theorem", "definition", "example"],
-    "derivation":   ["derivation", "theorem", "proof", "definition"],
-    "comparison":   ["definition", "property", "example"],
-    "application":  ["example", "algorithm", "exercise", "derivation"],
-    "teach":        ["definition", "example", "algorithm", "property", "derivation"],
-    "summarize":    ["definition", "property", "theorem", "derivation"],
-    "quiz":         ["example", "exercise", "derivation"],
-    "plan":         ["definition", "algorithm", "property"],
-    "cross_chapter":["definition", "property", "theorem"],
-    "qa":           ["definition", "theorem", "property", "example", "derivation"],
+    "definition": ["definition", "theorem", "property", "example", "derivation"],
+    "formula": ["definition", "property", "derivation", "example"],
+    "property": ["property", "theorem", "definition", "example"],
+    "derivation": ["derivation", "theorem", "proof", "definition"],
+    "comparison": ["definition", "property", "example"],
+    "application": ["example", "algorithm", "exercise", "derivation"],
+    "teach": ["definition", "example", "algorithm", "property", "derivation"],
+    "summarize": ["definition", "property", "theorem", "derivation"],
+    "quiz": ["example", "exercise", "derivation"],
+    "plan": ["definition", "algorithm", "property"],
+    "cross_chapter": ["definition", "property", "theorem"],
+    "qa": ["definition", "theorem", "property", "example", "derivation"],
+}
+
+BOOK_ROLE_RANK = {"core": 0, "reference": 1, "": 2}
+
+ROLE_RANK = {
+    "definition": 0,
+    "theorem": 1,
+    "property": 2,
+    "derivation": 3,
+    "proof": 4,
+    "algorithm": 5,
+    "example": 6,
+    "exercise": 7,
+    "reference": 8,
+    "": 9,
+}
+
+TOC_SECTION_MARKERS = {
+    "(no title)",
+    "\u76ee\u5f55",
+    "\u672c\u7ae0\u5b66\u4e60\u8981\u70b9",
+    "\u4e60\u9898",
+    "\u601d\u8003\u9898",
+    "\u53c2\u8003\u6587\u732e",
+    "\u9644\u5f55",
+    "table of contents",
+    "toc",
 }
 
 
 def retrieve_node(state: dict) -> dict:
-    """检索节点：三层混合检索（KG精确 → 向量补充(role优先) → 去重重排）"""
     target_chapters = state.get("target_chapters", [])
     user_input = state.get("user_input", "")
     book_name = state.get("book_name", "default")
@@ -28,6 +61,7 @@ def retrieve_node(state: dict) -> dict:
     if not state.get("use_textbook_context", True):
         return {
             "chapter_contents": {},
+            "retrieval_debug_items": [],
             "concept_results": [],
             "history_results": [],
             "knowledge_graph_path": [],
@@ -37,7 +71,7 @@ def retrieve_node(state: dict) -> dict:
             "retrieval_error": "",
         }
 
-    retrieval_errors = []
+    retrieval_errors: list[str] = []
     if state.get("retrieval_error"):
         retrieval_errors.append(str(state.get("retrieval_error")))
 
@@ -48,44 +82,27 @@ def retrieve_node(state: dict) -> dict:
     if kg_error:
         retrieval_errors.append(f"knowledge_graph: {kg_error}")
 
-    # ═══════════════════════════════════════════════════════════════
-    # 第1层：KG 关键词精确命中（最高优先级）
-    # ═══════════════════════════════════════════════════════════════
-    precise_results, matched_concepts = _kg_precise_retrieval(kg, user_input)
-
-    # ═══════════════════════════════════════════════════════════════
-    # 第2层：向量检索（按 intent → role 优先级过滤）
-    #   - 有精确命中章节：在该章节内按 role 优先级搜索
-    #   - 无精确命中：全库按 role 优先级搜索
-    # ═══════════════════════════════════════════════════════════════
+    precise_results, matched_concepts = _kg_precise_retrieval(kg, user_input, intent=intent)
     vector_results = _vector_retrieval(
         vs,
         user_input,
         intent=intent,
         book_name=book_name,
         target_chapters=target_chapters,
-        precise_chapters=list({r["chapter"] for r in precise_results}),
+        precise_chapters=list({r["chapter"] for r in precise_results if r.get("chapter")}),
         k=3,
         top_n=2,
     )
-
-    # ═══════════════════════════════════════════════════════════════
-    # 第3层：合并去重 + 重排序
-    #   - 精确命中 chunk 排最前（带上下文窗口）
-    #   - 向量结果去重后接在后面
-    #   - 同一章节最多保留 5 个 chunk，避免 prompt 膨胀
-    # ═══════════════════════════════════════════════════════════════
-    chapter_contents = _merge_and_rerank(
-        precise_results, vector_results,
+    chapter_contents, retrieval_debug_items = _merge_and_rerank(
+        precise_results,
+        vector_results,
         max_chunks_per_chapter=6,
         max_total_chunks=10,
+        include_metadata=True,
     )
 
-    # ═══════════════════════════════════════════════════════════════
-    # 知识图谱关联：前置知识 + 相关公式
-    # ═══════════════════════════════════════════════════════════════
-    kg_path = []
-    kg_formulas = []
+    kg_path: list[str] = []
+    kg_formulas: list[dict] = []
     try:
         if matched_concepts:
             concept_name = matched_concepts[0]
@@ -94,28 +111,26 @@ def retrieve_node(state: dict) -> dict:
             if detail:
                 kg_formulas = detail.get("related_formulas", [])[:3]
         elif target_chapters:
-            # 回退：尝试用章节名作为概念名
             kg_path = kg.find_path(target_chapters[0])
     except Exception as exc:
         retrieval_errors.append(f"knowledge_graph_query: {exc}")
 
-    # concept_results 保持兼容格式（供下游 generator 使用）
     concept_results = []
+    debug_by_text = {item.get("preview", ""): item for item in retrieval_debug_items}
     for ch_name, contents in chapter_contents.items():
         for content in contents[:2]:
+            debug = _find_debug_for_content(content, debug_by_text)
             concept_results.append({
                 "chapter": ch_name,
                 "content": content[:150],
-                "chunk_id": "",
+                "chunk_id": debug.get("chunk_id", "") if debug else "",
             })
 
-    # ═══════════════════════════════════════════════════════════════
-    # 历史记忆
-    # ═══════════════════════════════════════════════════════════════
     history_results = _load_history(book_name, target_chapters)
 
     return {
         "chapter_contents": chapter_contents,
+        "retrieval_debug_items": retrieval_debug_items,
         "concept_results": concept_results,
         "history_results": history_results,
         "knowledge_graph_path": kg_path,
@@ -126,32 +141,98 @@ def retrieve_node(state: dict) -> dict:
     }
 
 
-# ── 第1层：KG 精确检索 ──────────────────────────────────────────
+def _find_debug_for_content(content: str, debug_by_preview: dict[str, dict]) -> dict | None:
+    for preview, item in debug_by_preview.items():
+        if preview and content.startswith(preview):
+            return item
+    return None
 
-def _kg_precise_retrieval(kg, user_input: str) -> tuple[list[dict], list[str]]:
-    """通过知识图谱精确命中概念，并提取其所在 chunk 及上下文窗口。
 
-    返回: (precise_results, matched_concept_names)
-    precise_results: [{chapter, chunk_id, text, is_direct_hit, source}]
-    """
-    if not kg._is_local:
+def _core_query_terms(user_input: str) -> list[str]:
+    text = user_input.strip()
+    for suffix in (
+        "\u662f\u4ec0\u4e48",
+        "\u662f\u4ec0\u4e48\u610f\u601d",
+        "\u7684\u5b9a\u4e49",
+        "\u5b9a\u4e49",
+        "\u6709\u4ec0\u4e48\u6027\u8d28",
+        "\u57fa\u672c\u601d\u60f3\u662f\u4ec0\u4e48",
+        "\u8bb2\u4e00\u4e0b",
+        "\u8bf7\u89e3\u91ca",
+        "\uff1f",
+        "?",
+        "\u3002",
+    ):
+        text = text.replace(suffix, " ")
+    parts = re.findall(r"[A-Za-z0-9_.+-]+|[\u4e00-\u9fff]{2,}", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _rank_concept_matches(matches: list[tuple[float, dict]], user_input: str, intent: str = "qa") -> list[tuple[float, dict]]:
+    q = user_input.strip().lower()
+    terms = _core_query_terms(user_input)
+    role_boost = set(INTENT_ROLE_PRIORITY.get(intent, []))
+
+    def score(item: tuple[float, dict]) -> tuple[float, int, int]:
+        base, concept = item
+        name = str(concept.get("canonical_name") or "")
+        aliases = [str(a) for a in concept.get("aliases", [])]
+        names = [name] + aliases
+        adjusted = float(base)
+        if any(q == n.lower() for n in names):
+            adjusted += 60
+        if any(n and n.lower() in q for n in names):
+            adjusted += 35
+        if any(term == name for term in terms):
+            adjusted += 40
+        partial_terms = [term for term in terms if term and term in name and term != name]
+        if partial_terms:
+            best_partial = max(partial_terms, key=len)
+            adjusted -= max(0, len(name) - len(best_partial)) * 1.5
+        if role_boost and role_boost.intersection(set(concept.get("roles", []))):
+            adjusted += 12
+        return adjusted, -len(name), int(concept.get("occurrence_count", 0))
+
+    return sorted(matches, key=score, reverse=True)
+
+
+def _looks_like_toc_chunk(item: dict) -> bool:
+    section = str(item.get("section_title") or "")
+    section_lc = section.strip().lower()
+    text = str(item.get("text") or "")
+    if section_lc in TOC_SECTION_MARKERS:
+        return True
+    if any(marker in section_lc for marker in ("\u76ee\u5f55", "\u672c\u7ae0\u5b66\u4e60\u8981\u70b9", "\u4e60\u9898", "table of contents")):
+        return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    joined = " ".join(lines[:8])
+    chapter_markers = sum(1 for line in lines[:14] if "\u7b2c" in line and ("\u7ae0" in line or "\u8282" in line))
+    page_number_markers = len(re.findall(r"\s\d{1,3}(\s|$)", joined))
+    return chapter_markers >= 3 and page_number_markers >= 3
+
+
+def _kg_precise_retrieval(kg, user_input: str, intent: str = "qa") -> tuple[list[dict], list[str]]:
+    if not getattr(kg, "_is_local", False):
         return [], []
 
-    # Step 1: 从 query 中匹配概念（search_concept 已做模糊匹配）
-    matched = kg.search_concept(user_input, k=3)
+    matched = _rank_concept_matches(kg.search_concept(user_input, k=8), user_input, intent=intent)[:3]
     if not matched:
         return [], []
 
-    results = []
-    matched_names = []
+    results: list[dict] = []
+    matched_names: list[str] = []
     for score, concept in matched:
-        if score < 30:  # 置信度阈值，过滤弱匹配
+        if score < 30:
             continue
         name = concept["canonical_name"]
         matched_names.append(name)
-        # 取该概念出现的 chunk + 前后1个 chunk 窗口（最多3个命中位置）
         chunks = kg.get_concept_chunks(name, window=1, max_hits=3)
+        chunks = sorted(chunks, key=lambda ch: (_looks_like_toc_chunk(ch), not ch.get("is_direct_hit", False), ROLE_RANK.get(ch.get("role", ""), 9)))
         for ch in chunks:
+            if _looks_like_toc_chunk(ch) and not ch.get("is_direct_hit", False):
+                continue
             results.append({
                 "chapter": ch.get("chapter", ""),
                 "chunk_id": ch.get("chunk_id", ""),
@@ -159,24 +240,17 @@ def _kg_precise_retrieval(kg, user_input: str) -> tuple[list[dict], list[str]]:
                 "section_title": ch.get("section_title", ""),
                 "page_idx": ch.get("page_idx", -1),
                 "is_direct_hit": ch.get("is_direct_hit", False),
+                "role": ch.get("role", ""),
                 "source": "kg_precise",
             })
 
     return results, matched_names
 
 
-# ── 第2层：向量检索（支持按 role 优先级过滤）──────────────────────
-
-def _vector_retrieval(vs, user_input: str, *, intent: str = "qa",
-                      book_name: str = "",
-                      target_chapters: list[str],
-                      precise_chapters: list[str], k: int = 3, top_n: int = 2) -> list[dict]:
-    """向量语义检索。优先在精确命中的章节内搜索，按 intent → role 优先级过滤。"""
-    results = []
+def _vector_retrieval(vs, user_input: str, *, intent: str = "qa", book_name: str = "", target_chapters: list[str], precise_chapters: list[str], k: int = 3, top_n: int = 2) -> list[dict]:
+    results: list[dict] = []
     priority_roles = INTENT_ROLE_PRIORITY.get(intent, [])
-
-    # 优先搜索范围：精确命中章节 > 用户指定章节 > 全库
-    search_scope = []
+    search_scope: list[str] = []
     if precise_chapters:
         search_scope = [ch for ch in precise_chapters if ch]
     elif target_chapters:
@@ -186,191 +260,153 @@ def _vector_retrieval(vs, user_input: str, *, intent: str = "qa",
         for ch in search_scope:
             docs, used_role = _search_chapter_with_role(vs, ch, user_input, k, priority_roles, book_name=book_name)
             for d in docs:
-                results.append({
-                    "chapter": ch,
-                    "chunk_id": d.metadata.get("chunk_id", ""),
-                    "text": d.page_content,
-                    "section_title": "",
-                    "page_idx": -1,
-                    "is_direct_hit": False,
-                    "source": f"vector({used_role})" if used_role else "vector",
-                })
-            # 例题额外做无过滤搜索：题干 chunk 可能被标为 reference/definition，
-            # 纯 example 过滤会漏掉题干
+                results.append(_doc_to_item(d, ch, f"vector({used_role})" if used_role else "vector"))
             if used_role == "example":
                 try:
-                    extra_docs = vs.search_chapter(ch, user_input, k=k * 2, book_name=book_name)
-                    for d in extra_docs:
-                        results.append({
-                            "chapter": ch,
-                            "chunk_id": d.metadata.get("chunk_id", ""),
-                            "text": d.page_content,
-                            "section_title": "",
-                            "page_idx": -1,
-                            "is_direct_hit": False,
-                            "source": "vector(example_boost)",
-                        })
+                    for d in vs.search_chapter(ch, user_input, k=k * 2, book_name=book_name):
+                        results.append(_doc_to_item(d, ch, "vector(example_boost)"))
                 except Exception:
                     pass
     else:
-        # 全库搜索
         all_results, used_role = _search_all_with_role(vs, user_input, k, top_n, priority_roles, book_name=book_name)
         for ch_name, docs in all_results.items():
             for d in docs:
-                results.append({
-                    "chapter": ch_name,
-                    "chunk_id": d.metadata.get("chunk_id", ""),
-                    "text": d.page_content,
-                    "section_title": "",
-                    "page_idx": -1,
-                    "is_direct_hit": False,
-                    "source": f"vector({used_role})" if used_role else "vector",
-                })
-        # 全库 example 也做无过滤 boost
+                results.append(_doc_to_item(d, ch_name, f"vector({used_role})" if used_role else "vector"))
         if used_role == "example":
             try:
-                extra_results = vs.search_all(user_input, k=k * 2, top_n=top_n, book_name=book_name)
-                for ch_name, docs in extra_results.items():
+                for ch_name, docs in vs.search_all(user_input, k=k * 2, top_n=top_n, book_name=book_name).items():
                     for d in docs:
-                        results.append({
-                            "chapter": ch_name,
-                            "chunk_id": d.metadata.get("chunk_id", ""),
-                            "text": d.page_content,
-                            "section_title": "",
-                            "page_idx": -1,
-                            "is_direct_hit": False,
-                            "source": "vector(example_boost)",
-                        })
+                        results.append(_doc_to_item(d, ch_name, "vector(example_boost)"))
             except Exception:
                 pass
-
     return results
 
 
-def _search_chapter_with_role(vs, chapter: str, query: str, k: int,
-                               priority_roles: list[str], book_name: str = ""):
-    """在指定章节内按 role 优先级搜索，无结果则回退到无过滤。"""
+def _doc_to_item(doc, chapter: str, source: str) -> dict:
+    meta = getattr(doc, "metadata", {}) or {}
+    return {
+        "chapter": chapter,
+        "chunk_id": meta.get("chunk_id", ""),
+        "text": getattr(doc, "page_content", ""),
+        "section_title": meta.get("section_title", ""),
+        "page_idx": meta.get("page_idx", -1),
+        "is_direct_hit": False,
+        "role": meta.get("role", ""),
+        "book_role": meta.get("book_role", ""),
+        "rag_priority": float(meta.get("rag_priority") or 1.0),
+        "subject": meta.get("subject", ""),
+        "source": source,
+    }
+
+
+def _search_chapter_with_role(vs, chapter: str, query: str, k: int, priority_roles: list[str], book_name: str = ""):
     for role in priority_roles:
         try:
-            # langchain_chroma filter 格式: {"role": "definition"}
-            docs = vs.search_chapter(chapter, query, k=k,
-                                      filter={"role": role}, book_name=book_name)
+            docs = vs.search_chapter(chapter, query, k=k, filter={"role": role}, book_name=book_name)
             if docs:
                 return docs, role
         except Exception:
             pass
-    # 回退：无过滤搜索
     try:
-        docs = vs.search_chapter(chapter, query, k=k, book_name=book_name)
-        return docs, None
+        return vs.search_chapter(chapter, query, k=k, book_name=book_name), None
     except Exception:
         return [], None
 
 
-def _search_all_with_role(vs, query: str, k: int, top_n: int,
-                          priority_roles: list[str], book_name: str = ""):
-    """全库按 role 优先级搜索，无结果则回退到无过滤。"""
+def _search_all_with_role(vs, query: str, k: int, top_n: int, priority_roles: list[str], book_name: str = ""):
     for role in priority_roles:
         try:
-            results = vs.search_all(query, k=k, top_n=top_n,
-                                    filter={"role": role}, book_name=book_name)
+            results = vs.search_all(query, k=k, top_n=top_n, filter={"role": role}, book_name=book_name)
             if results:
                 return results, role
         except Exception:
             pass
-    # 回退：无过滤搜索
     try:
-        results = vs.search_all(query, k=k, top_n=top_n, book_name=book_name)
-        return results, None
+        return vs.search_all(query, k=k, top_n=top_n, book_name=book_name), None
     except Exception:
         return {}, None
 
 
-# ── 第3层：合并去重 + 重排序 ────────────────────────────────────
+def _merge_and_rerank(precise: list[dict], vector: list[dict], *, max_chunks_per_chapter: int = 5, max_total_chunks: int = 8, include_metadata: bool = False):
+    all_items: list[tuple[int, dict]] = []
+    seen_text_hash: set[str] = set()
 
-def _merge_and_rerank(precise: list[dict], vector: list[dict],
-                      *, max_chunks_per_chapter: int = 5,
-                      max_total_chunks: int = 8) -> dict[str, list[str]]:
-    """合并两层检索结果，去重后重排序，按章节组织。
-
-    排序规则：
-      1. KG 精确直接命中（is_direct_hit=True）排最前
-      2. KG 精确上下文（is_direct_hit=False, source=kg_precise）次之
-      3. 向量检索结果最后
-    """
-    all_items = []
-    seen_text_hash = set()
-
-    def _text_hash(text: str) -> str:
+    def text_hash(text: str) -> str:
         return text[:80].strip().replace(" ", "").replace("\n", "")
 
-    # 先放精确结果（高优先级）
     for item in precise:
-        h = _text_hash(item["text"])
-        if h not in seen_text_hash:
+        h = text_hash(item.get("text", ""))
+        if h and h not in seen_text_hash:
             seen_text_hash.add(h)
             priority = 0 if item.get("is_direct_hit") else 1
             all_items.append((priority, item))
 
-    # 再放向量结果（去重）
     for item in vector:
-        h = _text_hash(item["text"])
-        if h not in seen_text_hash:
+        h = text_hash(item.get("text", ""))
+        if h and h not in seen_text_hash:
             seen_text_hash.add(h)
             all_items.append((2, item))
 
-    # 按优先级排序
-    all_items.sort(key=lambda x: x[0])
+    def rank(pair: tuple[int, dict]) -> tuple[Any, ...]:
+        priority, item = pair
+        return (
+            priority,
+            _looks_like_toc_chunk(item),
+            BOOK_ROLE_RANK.get(item.get("book_role", ""), 2),
+            ROLE_RANK.get(item.get("role", ""), 9),
+            item.get("page_idx", 999999),
+        )
 
-    # 按章节聚合，限制每章 chunk 数
+    all_items.sort(key=rank)
     chapter_contents: dict[str, list[str]] = {}
+    debug_items: list[dict] = []
     total = 0
-    for priority, item in all_items:
-        ch = item.get("chapter", "")
-        if not ch:
-            ch = "相关章节"
-        if ch not in chapter_contents:
-            chapter_contents[ch] = []
-        if len(chapter_contents[ch]) >= max_chunks_per_chapter:
+    for _, item in all_items:
+        chapter = item.get("chapter") or "\u76f8\u5173\u7ae0\u8282"
+        chapter_contents.setdefault(chapter, [])
+        if len(chapter_contents[chapter]) >= max_chunks_per_chapter:
             continue
         if total >= max_total_chunks:
             break
-        chapter_contents[ch].append(item["text"])
+        text = item.get("text", "")
+        chapter_contents[chapter].append(text)
+        debug_items.append({
+            "rank": total + 1,
+            "chapter": chapter,
+            "chunk_id": item.get("chunk_id", ""),
+            "source": item.get("source", ""),
+            "role": item.get("role", ""),
+            "book_role": item.get("book_role", ""),
+            "rag_priority": item.get("rag_priority", 1.0),
+            "section_title": item.get("section_title", ""),
+            "page_idx": item.get("page_idx", -1),
+            "is_direct_hit": bool(item.get("is_direct_hit", False)),
+            "is_toc_like": _looks_like_toc_chunk(item),
+            "preview": text[:180],
+        })
         total += 1
 
+    if include_metadata:
+        return chapter_contents, debug_items
     return chapter_contents
 
 
-# ── 历史记忆加载 ────────────────────────────────────────────────
-
 def _load_history(book_name: str, chapters: list[str]) -> list[dict]:
-    """从学习记录加载历史上下文"""
-    import json
-    from pathlib import Path
-    from config import PROGRESS_PATH
-
-    results = []
+    results: list[dict] = []
     progress_dir = Path(PROGRESS_PATH) / book_name
-
-    # 错题记录
     weakness_file = progress_dir / "weakness.json"
     if weakness_file.exists():
         with open(weakness_file, "r", encoding="utf-8") as f:
-            weak = json.load(f)
-            for w in weak[-10:]:
-                results.append({"type": "weakness", "chapter": w})
-
-    # 答题历史
+            for item in json.load(f)[-10:]:
+                results.append({"type": "weakness", "chapter": item})
     quiz_file = progress_dir / "quiz_history.json"
     if quiz_file.exists():
         with open(quiz_file, "r", encoding="utf-8") as f:
-            quiz_history = json.load(f)
-            for q in quiz_history[-10:]:
+            for q in json.load(f)[-10:]:
                 results.append({
                     "type": "quiz",
                     "chapter": q.get("chapter", ""),
                     "correct": q.get("correct", False),
                     "question": q.get("question", "")[:80],
                 })
-
     return results

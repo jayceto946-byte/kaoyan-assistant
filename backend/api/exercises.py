@@ -18,11 +18,13 @@ from backend.schemas import (
     ExerciseToMistakeRequest,
     ExerciseRecordOut,
     ExerciseStatusRequest,
+    TextbookExerciseAnalyzeRequest,
 )
 from config import DATA_DIR, PROGRESS_PATH
 from memory.exercise_bank import ExerciseRecord, get_exercise_bank
 from memory.exercise_file_importer import extract_exercise_text
 from memory.exercise_importer import analyze_candidates, refine_low_confidence_candidates, split_candidate_blocks
+from memory.textbook_exercise_importer import extract_textbook_exercise_text
 from memory.mistake_book import MistakeRecord, get_mistake_book
 from memory.learning_events import LearningEvent, concept_names, get_learning_event_store
 from utils.latex_sanitizer import sanitize_latex
@@ -232,6 +234,57 @@ def upload_and_analyze_exercises(
     except Exception as exc:
         return {"success": False, "message": f"文件导入失败：{exc}"}
 
+@router.post("/textbook-analyze")
+def analyze_textbook_exercises(req: TextbookExerciseAnalyzeRequest, book_name: str = "default"):
+    effective_book = req.book_name.strip() or book_name or "default"
+    try:
+        extracted = extract_textbook_exercise_text(
+            effective_book,
+            chapter=req.chapter.strip(),
+            page_start=req.page_start,
+            page_end=req.page_end,
+            source_mode=req.source_mode.strip() or "exercise_sections",
+        )
+        if not extracted.text.strip():
+            return {
+                "success": False,
+                "message": "未从教材中提取到可切分文本。请确认章节/页码范围，或先用 MinerU/OCR 导入扫描版教材。",
+                "extract": extracted.to_dict(),
+            }
+        effective_subject = normalize_subject_value(req.subject, fallback=effective_book)
+        chapter = extracted.chapter or req.chapter.strip()
+        page_label = ""
+        if extracted.page_start:
+            page_label = f" p{extracted.page_start}" if not extracted.page_end or extracted.page_end == extracted.page_start else f" p{extracted.page_start}-{extracted.page_end}"
+        source = f"{effective_book} / {chapter or '教材抽题'}{page_label}"
+        candidates = analyze_candidates(
+            split_candidate_blocks(extracted.text, limit=req.limit),
+            source=source,
+            subject=effective_subject,
+            chapter=chapter,
+            limit=req.limit,
+        )
+        if req.use_llm:
+            candidates = refine_low_confidence_candidates(candidates, max_items=req.llm_max_items)
+        data = [ExerciseCandidateOut(**candidate.to_dict()) for candidate in candidates]
+        needs_llm_count = sum(1 for candidate in candidates if candidate.needs_llm)
+        llm_refined_count = sum(1 for candidate in candidates if candidate.refined_by_llm)
+        warnings = extracted.warnings or []
+        return {
+            "success": True,
+            "message": f"已从教材抽取 {len(data)} 道候选题",
+            "data": data,
+            "summary": {
+                "total": len(data),
+                "needs_llm": needs_llm_count,
+                "auto_confident": len(data) - needs_llm_count,
+                "llm_refined": llm_refined_count,
+            },
+            "extract": extracted.to_dict(),
+            "warnings": warnings,
+        }
+    except Exception as exc:
+        return {"success": False, "message": f"教材抽题失败：{exc}"}
 @router.post("/analyze-candidates")
 def analyze_exercise_candidates(req: ExerciseAnalyzeRequest, book_name: str = "default"):
     source = req.source.strip()

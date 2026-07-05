@@ -26,6 +26,20 @@
   --info: #0066cc;
   --shadow-soft: none;
   --shadow-tight: none;
+  --font-app: "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "Microsoft YaHei", sans-serif;
+  --text-hero: 30px;
+  --text-title: 16px;
+  --text-section: 14px;
+  --text-body: 13px;
+  --text-caption: 12px;
+  --text-micro: 11px;
+  --leading-tight: 1.24;
+  --leading-normal: 1.45;
+  --leading-reading: 1.62;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
 }
 
 * {
@@ -41,7 +55,7 @@ body {
   background: var(--color-bg-primary);
   color: var(--color-text-primary);
   margin: 0;
-  font-family: "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "Microsoft YaHei", sans-serif;
+  font-family: var(--font-app);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -63,6 +77,55 @@ button:not(:disabled) {
 
 button:not(:disabled):active {
   transform: scale(0.95);
+}
+
+.type-hero {
+  font-size: var(--text-hero);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+  letter-spacing: 0;
+}
+
+.type-title {
+  font-size: var(--text-title);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  letter-spacing: 0;
+}
+
+.type-section-title {
+  font-size: var(--text-section);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-normal);
+  letter-spacing: 0;
+}
+
+.type-body {
+  font-size: var(--text-body);
+  font-weight: var(--weight-regular);
+  line-height: var(--leading-reading);
+  letter-spacing: 0;
+}
+
+.type-control {
+  font-size: var(--text-body);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-normal);
+  letter-spacing: 0;
+}
+
+.type-caption {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-regular);
+  line-height: var(--leading-normal);
+  letter-spacing: 0;
+}
+
+.type-micro {
+  font-size: var(--text-micro);
+  font-weight: var(--weight-regular);
+  line-height: 1.35;
+  letter-spacing: 0;
 }
 
 input,
@@ -270,52 +333,53 @@ select:hover {
 }
 
 
-/* Electron frameless window chrome. Hidden in the normal browser because the component is not rendered there. */
+/* Electron frameless window chrome. Electron uses an invisible drag strip plus a small glass control capsule. */
 .electron-titlebar {
   position: fixed;
   inset: 0 0 auto 0;
   z-index: 1000;
-  display: flex;
-  height: 44px;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 6px 10px 6px 12px;
-  background: rgba(245, 245, 247, 0.86);
-  border-bottom: 1px solid rgba(224, 224, 224, 0.8);
+  height: 0;
   user-select: none;
+  pointer-events: none;
 }
 
 .electron-titlebar-drag {
   -webkit-app-region: drag;
-  position: absolute;
-  inset: 0 104px 0 0;
-}
-
-.electron-titlebar-spacer {
-  height: 44px;
-  flex: 0 0 44px;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 104px;
+  height: 18px;
+  pointer-events: auto;
 }
 
 .electron-window-controls {
   -webkit-app-region: no-drag;
-  position: relative;
+  pointer-events: auto;
+  position: fixed;
+  top: 8px;
+  right: 10px;
   z-index: 1;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 32px;
+  height: 34px;
   padding: 3px;
-  border: 1px solid rgba(224, 224, 224, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.76);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: none;
-  backdrop-filter: saturate(180%) blur(20px);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.42));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 12px 34px rgba(0, 0, 0, 0.12);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
 }
 
 .electron-control-button {
   display: inline-flex;
   width: 28px;
-  height: 26px;
+  height: 28px;
   align-items: center;
   justify-content: center;
   border: 0;
@@ -326,12 +390,12 @@ select:hover {
 }
 
 .electron-control-button:hover {
-  background: var(--accent-softer);
+  background: rgba(0, 102, 204, 0.08);
   color: var(--color-accent);
 }
 
 .electron-control-button:active {
-  transform: scale(0.96);
+  transform: scale(0.94);
 }
 
 .electron-control-close:hover {
@@ -343,10 +407,19 @@ body:has(.electron-titlebar) {
   overflow: hidden;
 }
 
-body:has(.electron-titlebar) .app-shell {
-  height: calc(100dvh - 44px);
+body:has(.electron-titlebar) .desktop-chat-header {
+  padding-right: 7.25rem;
 }
 
+body:has(.electron-titlebar) .app-shell[data-sidebar="collapsed"] .desktop-chat-header {
+  padding-right: 7.25rem;
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .electron-window-controls {
+    background: rgba(255, 255, 255, 0.96);
+  }
+}
 @media print {
   .no-print {
     display: none !important;
@@ -369,6 +442,11 @@ body:has(.electron-titlebar) .app-shell {
 }
 
 @media (max-width: 767.98px) {
+  :root {
+    --text-hero: 26px;
+    --text-title: 15px;
+  }
+
   html,
   body,
   #root {

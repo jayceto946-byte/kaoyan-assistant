@@ -31,6 +31,7 @@ class JobManager:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path or (Path(PROGRESS_PATH) / "jobs.sqlite3"))
         self._lock = threading.RLock()
+        self._force_delete_journal = False
         self._init_db()
 
     def create_job(
@@ -225,6 +226,16 @@ class JobManager:
 
     def _init_db(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._init_db_once()
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_storage_error(exc):
+                raise
+            self._force_delete_journal = True
+            self._prepare_retry_db_files()
+            self._init_db_once()
+
+    def _init_db_once(self) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -249,10 +260,31 @@ class JobManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
             conn.commit()
 
+    def _prepare_retry_db_files(self) -> None:
+        for suffix in ("-wal", "-shm", "-journal"):
+            try:
+                Path(f"{self.db_path}{suffix}").unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            if self.db_path.exists() and self.db_path.stat().st_size == 0:
+                self.db_path.unlink()
+        except OSError:
+            pass
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        if self._force_delete_journal:
+            conn.execute("PRAGMA journal_mode=DELETE")
+        else:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError as exc:
+                if not _is_sqlite_storage_error(exc):
+                    raise
+                self._force_delete_journal = True
+                conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
@@ -309,6 +341,14 @@ def _json_loads(value: str | None, default: Any) -> Any:
     except Exception:
         return default
 
+
+def _is_sqlite_storage_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return (
+        "disk i/o" in message
+        or "readonly" in message
+        or "unable to open database file" in message
+    )
 
 def _clamp_progress(value: Any) -> int:
     try:

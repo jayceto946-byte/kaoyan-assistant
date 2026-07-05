@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Search, Sparkles, Upload } from 'lucide-react';
-import { get, post } from '../api/client';
+import { CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Search, Sparkles, Trash2, Upload } from 'lucide-react';
+import { del, get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
 import ScopeSelector from '../components/ScopeSelector';
 import { useChatContext } from '../contexts/ChatContext';
@@ -67,6 +67,11 @@ const ExercisesPage: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importSource, setImportSource] = useState('');
   const [importChapter, setImportChapter] = useState('');
+  const [textbookChapter, setTextbookChapter] = useState('');
+  const [textbookPageStart, setTextbookPageStart] = useState('');
+  const [textbookPageEnd, setTextbookPageEnd] = useState('');
+  const sourcePdfUrl = activeName && activeName !== 'default' ? `/api/books/${encodeURIComponent(activeName)}/source-pdf#page=${textbookPageStart || '1'}` : '';
+  const [textbookSourceMode, setTextbookSourceMode] = useState('exercise_sections');
   const [useLlmRepair, setUseLlmRepair] = useState(false);
   const [extractedPreview, setExtractedPreview] = useState('');
   const [candidates, setCandidates] = useState<ExerciseCandidate[]>([]);
@@ -94,7 +99,7 @@ const ExercisesPage: React.FC = () => {
   }, [practiceId, practicePool, records]);
 
   const recordList = useVisibleList(records, 30, `${activeName}|${targetSubject}|${statusFilter}|${searchKw}`);
-  const candidateList = useVisibleList(candidates, 20, `${activeName}|${importFile?.name || ''}|${importSummary.total}`);
+  const candidateList = useVisibleList(candidates, 20, `${activeName}|${importFile?.name || ''}|${textbookChapter}|${textbookPageStart}|${textbookPageEnd}|${importSummary.total}`);
 
   const loadBooks = useCallback(async () => {
     try {
@@ -206,6 +211,42 @@ const ExercisesPage: React.FC = () => {
     }
   };
 
+  const analyzeTextbookExercises = async () => {
+    if (!activeName || activeName === 'default') {
+      setMessage('请先选择已导入教材');
+      return;
+    }
+    setImporting(true);
+    setMessage('');
+    try {
+      const res = await post(`/exercises/textbook-analyze${bookQuery}`, {
+        book_name: activeName,
+        subject: targetSubject || activeName,
+        chapter: textbookChapter,
+        page_start: textbookPageStart ? Number(textbookPageStart) : null,
+        page_end: textbookPageEnd ? Number(textbookPageEnd) : null,
+        source_mode: textbookSourceMode,
+        limit: 200,
+        use_llm: useLlmRepair,
+        llm_max_items: 20,
+      }, 60000);
+      if (!res?.success) {
+        setMessage(res?.message || '教材抽题失败');
+        setExtractedPreview(res?.extract?.text ? res.extract.text.slice(0, 1200) : '');
+        return;
+      }
+      const next = res.data || [];
+      setCandidates(next);
+      setSelectedIds(new Set(next.map((item: ExerciseCandidate) => item.id)));
+      setExtractedPreview(res.extract?.text ? res.extract.text.slice(0, 1200) : '');
+      const warnings = res.extract?.warnings?.length ? `（${res.extract.warnings.join('；')}）` : '';
+      setMessage(`${res.message || `已从教材抽取 ${next.length} 道候选题`}${warnings}`);
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImporting(false);
+    }
+  };
   const importSelected = async () => {
     const selected = candidates.filter((item) => selectedIds.has(item.id));
     if (selected.length === 0) {
@@ -240,6 +281,27 @@ const ExercisesPage: React.FC = () => {
     await load();
   };
 
+  const deleteExercise = async (id: string) => {
+    if (!window.confirm('确定删除这道习题吗？')) return;
+    try {
+      const res = await del(`/exercises/${encodeURIComponent(id)}${bookQuery}`, 20000);
+      if (!res?.success) {
+        setMessage(res?.message || '删除习题失败');
+        return;
+      }
+      setRecords((prev) => prev.filter((item) => item.id !== id));
+      if (expandedId === id) setExpandedId('');
+      if (practiceId === id) {
+        setPracticeId('');
+        setPracticeAnswer('');
+        setPracticeSolutionOpen(false);
+      }
+      setMessage(res.message || '已删除习题');
+      await load();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : String(e));
+    }
+  };
   const selectPractice = (record?: ExerciseRecord | null) => {
     const next = record || practicePool.find((item) => item.id !== currentPractice?.id && item.status !== 'mastered') || practicePool.find((item) => item.id !== currentPractice?.id) || practicePool[0] || null;
     setPracticeId(next?.id || '');
@@ -329,6 +391,27 @@ const ExercisesPage: React.FC = () => {
               />
             </section>
 
+            <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
+              <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><ClipboardList className="h-4 w-4 text-accent" /> 从当前教材抽题</div>
+              {sourcePdfUrl && (
+                <div className="overflow-hidden rounded-xl border border-border bg-bg-primary">
+                  <iframe title="教材 PDF 预览" src={sourcePdfUrl} className="h-[420px] w-full bg-white" />
+                </div>
+              )}
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
+                <input placeholder="章节名/章节序号，可留空" value={textbookChapter} onChange={(e) => setTextbookChapter(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
+                <select value={textbookSourceMode} onChange={(e) => setTextbookSourceMode(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent">
+                  <option value="exercise_sections">习题页优先</option>
+                  <option value="examples">章节例题</option>
+                  <option value="all_pages">整页文本</option>
+                </select>
+                <input type="number" min="1" placeholder="起始页" value={textbookPageStart} onChange={(e) => setTextbookPageStart(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
+                <input type="number" min="1" placeholder="结束页" value={textbookPageEnd} onChange={(e) => setTextbookPageEnd(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
+              </div>
+              <button onClick={analyzeTextbookExercises} disabled={importing || !activeName || activeName === 'default'} className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+                {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} 抽取教材候选题
+              </button>
+            </section>
             <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
               <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><Sparkles className="h-4 w-4 text-accent" /> Word/PDF 导入</div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
@@ -486,7 +569,7 @@ const ExercisesPage: React.FC = () => {
                         </div>
                         <span className="rounded border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent-hover">{statusText[record.status] || record.status}</span>
                       </button>
-                      {expanded && <ExerciseDetail record={record} onStatus={(status) => updateStatus(record.id, status)} onPractice={() => selectPractice(record)} />}
+                      {expanded && <ExerciseDetail record={record} onStatus={(status) => updateStatus(record.id, status)} onPractice={() => selectPractice(record)} onDelete={() => deleteExercise(record.id)} />}
                     </article>
                   );
                 })}
@@ -507,7 +590,7 @@ const ExercisesPage: React.FC = () => {
   );
 };
 
-const ExerciseDetail = ({ record, onStatus, onPractice }: { record: ExerciseRecord; onStatus: (status: string) => void; onPractice: () => void }) => (
+const ExerciseDetail = ({ record, onStatus, onPractice, onDelete }: { record: ExerciseRecord; onStatus: (status: string) => void; onPractice: () => void; onDelete: () => void }) => (
   <div className="mt-4 space-y-4 border-t border-border pt-4">
     <Block title="题干"><ChatMessage role="assistant" content={record.question_text} linkedConcepts={record.linked_concepts || []} /></Block>
     <Block title="答案">{record.answer ? <ChatMessage role="assistant" content={record.answer} /> : <span className="text-sm text-text-secondary">暂无答案</span>}</Block>
@@ -517,6 +600,9 @@ const ExerciseDetail = ({ record, onStatus, onPractice }: { record: ExerciseReco
       {Object.entries(statusText).map(([status, label]) => (
         <button key={status} onClick={() => onStatus(status)} className="rounded border border-border bg-bg-primary px-3 py-1 text-xs hover:border-accent hover:text-accent">{label}</button>
       ))}
+      <button onClick={onDelete} className="flex items-center gap-1 rounded border border-[#e6b2a9] bg-[#fff1ed] px-3 py-1 text-xs text-[var(--danger)] hover:border-[var(--danger)]">
+        <Trash2 className="h-3.5 w-3.5" /> 删除
+      </button>
     </div>
     {record.origin_type !== 'manual' && <div className="text-xs text-text-secondary">来源对象：{record.origin_type} / {record.origin_id}</div>}
   </div>

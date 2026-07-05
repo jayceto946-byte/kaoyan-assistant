@@ -53,12 +53,12 @@ class ChapterVectorStore:
         print("  [向量库] 就绪（已缓存，后续请求复用）", flush=True)
 
     def _preload_all_stores(self):
-        """启动时预加载所有章节的 Chroma 实例，避免冷启动延迟。"""
+        """Preload only book-level aggregate stores; chapter stores are lazy-loaded."""
         import chromadb
 
         try:
             client = chromadb.PersistentClient(path=str(self.db_path))
-            cols = [c for c in client.list_collections() if c.name != "_chapter_map.json"]
+            cols = [c for c in client.list_collections() if self._is_book_collection(c.name)]
             for col in cols:
                 title = self._collection_to_title(col.name)
                 book_name = self._collection_to_book(col.name)
@@ -74,10 +74,9 @@ class ChapterVectorStore:
                     except Exception:
                         pass
             if self._stores:
-                print(f"  [向量库] 预加载 {len(self._stores)} 个章节存储", flush=True)
+                print(f"  [vector_store] preloaded {len(self._stores)} aggregate stores", flush=True)
         except Exception:
             pass
-
     # === 章节名 ↔ collection 名 映射 ===
 
     def _load_map(self) -> dict[str, dict[str, str]]:
@@ -97,12 +96,14 @@ class ChapterVectorStore:
                             "chapter": str(value.get("chapter") or value.get("title") or collection_name),
                             "book_name": str(value.get("book_name") or ""),
                             "schema_version": str(value.get("schema_version") or "2"),
+                            "kind": str(value.get("kind") or "chapter"),
                         }
                     else:
                         result[collection_name] = {
                             "chapter": str(value or collection_name),
                             "book_name": "",
                             "schema_version": "1",
+                            "kind": "chapter",
                         }
             return result
         return {}
@@ -152,6 +153,14 @@ class ChapterVectorStore:
         h = hashlib.md5(chapter_title.encode()).hexdigest()[:16]
         return f"ch{h}"
 
+    def _book_collection_name(self, book_name: str) -> str:
+        normalized_book = safe_book_name(book_name) if book_name else "all"
+        h = hashlib.md5(normalized_book.encode("utf-8")).hexdigest()[:24]
+        return f"book{h}"
+
+    def _is_book_collection(self, collection_name: str) -> bool:
+        entry = self._map.get(collection_name) or {}
+        return entry.get("kind") == "book_aggregate" or str(collection_name).startswith("book")
     def _collection_to_title(self, collection_name: str) -> str:
         """collection 名 -> 中文标题。"""
         entry = self._map.get(collection_name)
@@ -182,7 +191,7 @@ class ChapterVectorStore:
         scoped = []
         legacy = []
         for col in collections:
-            if col.name == "_chapter_map.json":
+            if col.name == "_chapter_map.json" or self._is_book_collection(col.name):
                 continue
             entry_book = self._collection_to_book(col.name)
             if normalized_book:
@@ -233,7 +242,14 @@ class ChapterVectorStore:
                     "book_name": normalized_book,
                     "chunk_index": chunk.get("chunk_index", 0),
                     "chunk_id": chunk.get("chunk_id", ""),
+                    "section_title": chunk.get("section_title", chunk.get("chapter", chapter_title)),
+                    "page_idx": chunk.get("page_idx", -1),
                     "role": chunk_roles.get(chunk.get("chunk_id", ""), "reference"),
+                    "subject": chunk.get("subject", ""),
+                    "book_role": chunk.get("book_role", ""),
+                    "rag_priority": float(chunk.get("rag_priority", 1.0) or 1.0),
+                    "review_status": chunk.get("review_status", ""),
+                    "source_markdown": chunk.get("source_markdown", ""),
                     "collection_schema": 2,
                 },
             )
@@ -325,6 +341,71 @@ class ChapterVectorStore:
             print(f"  [向量库] 章节检索失败，已跳过 {chapter_title}: {e}", flush=True)
             return []
 
+    def _aggregate_collections(self, collections, book_name: str = ""):
+        normalized_book = safe_book_name(book_name) if book_name else ""
+        result = []
+        for col in collections:
+            if not self._is_book_collection(col.name):
+                continue
+            entry_book = self._collection_to_book(col.name)
+            if not normalized_book or entry_book == normalized_book:
+                result.append(col)
+        return result
+
+    def _search_aggregate_collections(
+        self,
+        collections,
+        query_vec,
+        k: int,
+        top_n: int,
+        filter: dict | None = None,
+    ) -> tuple[dict[str, list[Document]], int] | None:
+        scored_docs: list[tuple[float, Document]] = []
+        searched = 0
+        for col in collections:
+            try:
+                title = self._collection_to_title(col.name)
+                store_key = self._store_key(title, self._collection_to_book(col.name))
+                store = self._stores.get(store_key)
+                if store is None:
+                    store = Chroma(
+                        collection_name=col.name,
+                        embedding_function=self.embeddings,
+                        persist_directory=str(self.db_path),
+                    )
+                    self._stores[store_key] = store
+                kwargs = {"k": max(k * top_n * 4, k)}
+                if filter:
+                    kwargs["filter"] = filter
+                try:
+                    docs_with_scores = store.similarity_search_by_vector_with_relevance_scores(query_vec, **kwargs)
+                except Exception:
+                    docs = store.similarity_search_by_vector(query_vec, **kwargs)
+                    docs_with_scores = [(d, float(i)) for i, d in enumerate(docs)]
+                for doc, score in docs_with_scores:
+                    meta = getattr(doc, "metadata", {}) or {}
+                    priority = float(meta.get("rag_priority") or 1.0)
+                    # Existing search_all treats smaller score as better; high-priority sources get a mild boost.
+                    adjusted = float(score) - (priority * 0.03)
+                    scored_docs.append((adjusted, doc))
+                searched += 1
+            except Exception:
+                pass
+        if not searched:
+            return None
+
+        scored_docs.sort(key=lambda item: item[0])
+        chapter_docs: dict[str, list[Document]] = {}
+        for _, doc in scored_docs:
+            meta = getattr(doc, "metadata", {}) or {}
+            chapter = str(meta.get("chapter") or meta.get("section_title") or "相关章节")
+            chapter_docs.setdefault(chapter, [])
+            if len(chapter_docs[chapter]) >= k:
+                continue
+            chapter_docs[chapter].append(doc)
+            if len(chapter_docs) >= top_n and all(len(docs) >= k for docs in chapter_docs.values()):
+                break
+        return dict(list(chapter_docs.items())[:top_n]), searched
     def search_all(
         self,
         query: str,
@@ -354,6 +435,15 @@ class ChapterVectorStore:
             self.available = False
             print(f"  [vector_store] search_all skipped because Chroma is unavailable: {e}", flush=True)
             return {}
+        aggregate_cols = self._aggregate_collections(collections, book_name)
+        if aggregate_cols:
+            aggregate_result = self._search_aggregate_collections(aggregate_cols, query_vec, k, top_n, filter=filter)
+            if aggregate_result is not None:
+                results, searched = aggregate_result
+                dt_total = time.time() - t0
+                print(f"  [检索] aggregate embed={dt_embed:.2f}s total={dt_total:.2f}s ({searched}书→取top{len(results)})", flush=True)
+                return results
+
         searched = 0
         for col in self._iter_collections_for_book(collections, book_name):
             title = self._collection_to_title(col.name)

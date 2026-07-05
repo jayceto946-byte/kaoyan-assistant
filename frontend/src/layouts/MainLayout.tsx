@@ -103,7 +103,7 @@ const MainLayout: React.FC = () => {
           <BookOpen className="h-4.5 w-4.5 text-white" />
         </div>
         <div className="ml-3 flex min-w-0 flex-1 items-center gap-2">
-          <h1 className="truncate text-sm font-semibold tracking-normal text-text-primary">考研助手</h1>
+          <h1 className="type-title truncate text-text-primary">考研助手</h1>
           <SystemHealth bookName={bookName} />
         </div>
         <button
@@ -125,7 +125,7 @@ const MainLayout: React.FC = () => {
             to={item.to}
             onClick={() => mode === 'drawer' && setSidebarExpanded(false)}
             className={({ isActive }) =>
-              `mb-1 flex items-center rounded-full border px-3 py-2.5 text-sm transition-colors ${
+              `mb-1 flex items-center rounded-full border px-3 py-2.5 type-control transition-colors ${
                 isActive
                   ? 'border-accent/30 bg-[var(--accent-soft)] text-accent'
                   : 'border-transparent text-text-secondary hover:border-border hover:bg-bg-card hover:text-text-primary'

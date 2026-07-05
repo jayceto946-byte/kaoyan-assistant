@@ -16,10 +16,11 @@ import {
   SlidersHorizontal,
   Sparkles,
   TrendingUp,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react';
-import { get, post } from '../api/client';
+import { del, get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
 import ScopeSelector, { type ScopeBookOption } from '../components/ScopeSelector';
 import { useChatContext } from '../contexts/ChatContext';
@@ -459,6 +460,29 @@ const MistakesPage: React.FC = () => {
     }
   };
 
+  const deleteMistake = async (id: string) => {
+    if (!window.confirm('确定删除这道错题吗？')) return;
+    setReviewMessage('');
+    setUploadMessage('');
+    try {
+      const res = await del(`/mistakes/${encodeURIComponent(id)}${bookQuery}`, 20000);
+      if (!res?.success) {
+        setReviewMessage(res?.message || '删除错题失败');
+        return;
+      }
+      setRecords((prev) => prev.filter((item) => item.id !== id));
+      setDueRecords((prev) => prev.filter((item) => item.id !== id));
+      if (expandedId === id) setExpandedId('');
+      if (expandedReviewId === id) setExpandedReviewId('');
+      if (savedRecord?.id === id) setSavedRecord(null);
+      setReviewMessage(res.message || '已删除错题');
+      await loadList();
+      await loadDue();
+      if (activeTab === '统计') await loadStats();
+    } catch (e) {
+      setReviewMessage(e instanceof Error ? e.message : String(e));
+    }
+  };
   const handleReview = async (id: string, quality: number) => {
     setReviewMessage('');
     const res = await post(`/mistakes/review${bookQuery}`, { id, quality });
@@ -625,6 +649,11 @@ const MistakesPage: React.FC = () => {
           {record.explanation ? <ChatMessage role="assistant" content={record.explanation} linkedConcepts={record.linked_concepts || []} /> : <div className="text-sm text-text-secondary">暂无已保存解答</div>}
         </div>
       </section>
+      <div className="flex justify-end">
+        <button onClick={() => deleteMistake(record.id)} className="flex items-center gap-1.5 rounded border border-[#e6b2a9] bg-[#fff1ed] px-3 py-1.5 text-xs text-[var(--danger)] hover:border-[var(--danger)]">
+          <Trash2 className="h-3.5 w-3.5" /> 删除
+        </button>
+      </div>
     </div>
   );
   const renderQuestionEditor = () => {

@@ -1,20 +1,7 @@
-# Desktop sample data
+﻿# 三本教材内置数据
 
-This directory is the local packaging input for built-in desktop demo resources. The packaged backend copies files from here into the user's Electron data directory on first launch without overwriting existing user files.
+本安装包内置：传感器短书、传感器长书、误差理论与数据处理。
 
-Expected runtime-shaped folders:
+包含内容：源 PDF、章节目录、OCR chunk deliverables、错题/习题库、三本书专用 Chroma 向量库、离线 embedding 模型。
 
-- `books/`
-- `chapters/`
-- `images/`
-- `progress/`
-- `vector_db/`
-- `models/`
-
-Large files in this directory are intentionally ignored by Git. Before building a desktop installer locally, run:
-
-```powershell
-.\scripts\prepare-desktop-sample-data.ps1 -SourceData .\kaoyan-assistant\data -BookName 优化设计
-```
-
-`build-desktop-backend.ps1` runs that preparation automatically when `kaoyan-assistant\data` exists.
+本包不包含：优化设计。

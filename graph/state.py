@@ -28,6 +28,7 @@ class AgentState(TypedDict):
 
     # === 检索结果 ===
     chapter_contents: dict      # {chapter_name: [docs]}
+    retrieval_debug_items: list[dict]  # final prompt chunks with metadata for eval/debug
     concept_results: list[dict]  # 语义检索结果
     history_results: list[dict]  # 学习历史
     knowledge_graph_path: list[str]  # 知识图谱关联路径

@@ -356,12 +356,7 @@ def run_graph_stream(
     # threading.Thread(target=_bg_extract_and_log, daemon=True).start()
 
     # ── Feedback ──
-    # Non-critical learning-memory writes should not delay or break the final SSE event.
-    def _run_feedback_background(snapshot: dict):
-        try:
-            feedback_node(snapshot)
-        except Exception as exc:
-            print(f"[Feedback] background update failed: {exc}", flush=True)
-
-    threading.Thread(target=_run_feedback_background, args=(dict(state),), daemon=True).start()
+    # Concept links are part of the UI response, so run this once before the
+    # final event. The node catches its own learning-memory failures.
+    state.update(feedback_node(dict(state)))
     yield {"stage": "done", "state": state, "enriched": False}

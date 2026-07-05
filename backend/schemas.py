@@ -249,6 +249,17 @@ class ExerciseAnalyzeRequest(BaseModel):
     use_llm: bool = False
     llm_max_items: int = Field(default=20, ge=1, le=100)
 
+class TextbookExerciseAnalyzeRequest(BaseModel):
+    book_name: str = ""
+    subject: str = ""
+    chapter: str = ""
+    page_start: Optional[int] = Field(default=None, ge=1)
+    page_end: Optional[int] = Field(default=None, ge=1)
+    source_mode: str = "exercise_sections"
+    limit: int = Field(default=200, ge=1, le=500)
+    use_llm: bool = False
+    llm_max_items: int = Field(default=20, ge=1, le=100)
+
 
 class ExerciseBatchAddRequest(BaseModel):
     exercises: list[ExerciseAddRequest] = Field(default_factory=list)
