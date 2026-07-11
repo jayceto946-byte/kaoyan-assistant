@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -7,12 +7,14 @@ from collections import defaultdict
 from pathlib import Path
 
 import chromadb
-from sentence_transformers import SentenceTransformer
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from config import get_embeddings
 
 ROOT = Path(r'D:\AI\agent\kaoyan-assistant')
 DATA = ROOT / 'data'
 DELIVERABLES = DATA / 'imports' / 'kaoyan_ocr_20260704' / 'deliverables'
-VECTOR_DB = Path(r'C:\tmp\chroma_smoke_test')
+VECTOR_DB = DATA / 'vector_db'
 PROGRESS = DATA / 'progress'
 MODEL_SNAPSHOTS = DATA / 'models' / 'models--BAAI--bge-small-zh-v1.5' / 'snapshots'
 
@@ -96,10 +98,10 @@ except Exception:
 snapshots = list(MODEL_SNAPSHOTS.iterdir()) if MODEL_SNAPSHOTS.exists() else []
 model_path = str(snapshots[0]) if snapshots else 'BAAI/bge-small-zh-v1.5'
 print('[embedding]', model_path)
-model = SentenceTransformer(model_path, device='cpu', cache_folder=str(DATA / 'models'), local_files_only=bool(snapshots))
+model = get_embeddings()
 
 def embed(texts):
-    return model.encode(texts, normalize_embeddings=True, show_progress_bar=False).tolist()
+    return model.embed_documents(texts)
 
 def add_aggregate_collection(book_id: str, meta: dict, grouped: dict):
     col_name = book_collection_name(meta['book_name'])
@@ -138,7 +140,10 @@ def add_aggregate_collection(book_id: str, meta: dict, grouped: dict):
     print(f"[aggregate] {meta['book_name']}: {len(all_chunks)} chunks -> {col_name}")
 
 summaries = []
+selected_books = {name.strip() for name in (__import__('os').environ.get('KAOYAN_IMPORT_BOOKS') or '').split(',') if name.strip()}
 for book_id, meta in BOOKS.items():
+    if selected_books and book_id not in selected_books:
+        continue
     grouped = grouped_chunks(book_id, meta)
     total = 0
     for title, chunks in grouped.items():

@@ -36,6 +36,9 @@ class EvalSample:
     expected_keywords: list[str] = field(default_factory=list)
     reference_answer: str = ""
     target_chapters: list[str] = field(default_factory=list)
+    answerable: bool = True
+    forbidden_chunk_ids: list[str] = field(default_factory=list)
+    expected_pages: list[int] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "EvalSample":
@@ -49,6 +52,9 @@ class EvalSample:
             expected_keywords=list(raw.get("expected_keywords") or []),
             reference_answer=str(raw.get("reference_answer") or ""),
             target_chapters=list(raw.get("target_chapters") or []),
+            answerable=bool(raw.get("answerable", True)),
+            forbidden_chunk_ids=list(raw.get("forbidden_chunk_ids") or []),
+            expected_pages=[int(page) for page in (raw.get("expected_pages") or [])],
         )
 
 
@@ -103,11 +109,19 @@ def _first_hit_rank(candidates: list[dict[str, Any]], expected: set[str]) -> int
 def retrieval_metrics(sample: EvalSample, candidates: list[dict[str, Any]], cutoffs: list[int]) -> dict[str, Any]:
     expected = set(sample.expected_chunk_ids)
     rank = _first_hit_rank(candidates, expected)
+    forbidden = set(sample.forbidden_chunk_ids)
     ids = [str(item.get("chunk_id") or "") for item in candidates]
     metrics: dict[str, Any] = {
         "expected_chunk_count": len(expected),
         "first_hit_rank": rank,
         "mrr": 0.0 if rank is None else 1.0 / rank,
+        "answerable": sample.answerable,
+        "forbidden_hits": [chunk_id for chunk_id in ids if chunk_id in forbidden],
+        "page_hit": None if not sample.expected_pages else any(
+            int(item.get("page_idx", item.get("page", -1))) in sample.expected_pages
+            for item in candidates
+            if str(item.get("page_idx", item.get("page", ""))).lstrip("-").isdigit()
+        ),
     }
     for cutoff in cutoffs:
         top_ids = set(ids[:cutoff])
@@ -209,6 +223,7 @@ def summarize(rows: list[dict[str, Any]], cutoffs: list[int]) -> dict[str, Any]:
         "sample_count": len(rows),
         "retrieval_status": dict(Counter(r["retrieval_meta"].get("retrieval_status") for r in rows)),
         "layer1_retrieval": layer1,
+        "latency": {"mean_retrieval_ms": _mean([r.get("retrieval_ms") for r in rows])},
         "layer2_context": layer2,
         "layer3_answer": layer3,
     }
@@ -223,7 +238,9 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
     by_intent: dict[str, list[dict[str, Any]]] = defaultdict(list)
     started = time.time()
     for idx, sample in enumerate(samples, 1):
+        retrieval_started = time.perf_counter()
         candidates, meta = retrieve_candidates(sample)
+        retrieval_ms = round((time.perf_counter() - retrieval_started) * 1000, 2)
         row = {
             "index": idx,
             "question": sample.question,
@@ -232,6 +249,7 @@ def run_eval(args: argparse.Namespace) -> dict[str, Any]:
             "expected_chunk_ids": sample.expected_chunk_ids,
             "top_chunks": candidates[: max(cutoffs)],
             "retrieval_meta": meta,
+            "retrieval_ms": retrieval_ms,
         }
         row["layer1"] = retrieval_metrics(sample, candidates, cutoffs)
         row["layer2"] = context_quality(sample, candidates, args.context_top_k)

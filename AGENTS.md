@@ -159,6 +159,13 @@ cd D:\AI\agent\kaoyan-assistant\frontend
 npm run dev
 ```
 
+### 启动 Electron 桌面端
+
+```powershell
+cd D:\AI\agent\kaoyan-assistant\desktop
+npm run dev
+```
+
 ### 生产构建
 
 ```powershell

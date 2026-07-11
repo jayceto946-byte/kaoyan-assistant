@@ -1,3 +1,44 @@
+## 2026-07-10 - CPU-only desktop installer with three-book sample data
+
+- Audited the desktop release changes after the previous CUDA DLL packaging failure.
+- Confirmed the release dependency set pins torch 2.11.0+cpu and the GitHub desktop workflow installs requirements-release.txt.
+- Found two remaining verification gaps: torch.cuda.is_available() can be false for a CUDA build without a working driver, and the old post-build check allowed a complete CUDA DLL set to pass.
+- Hardened scripts/build-desktop-backend.ps1 to require an explicit +cpu torch version, require torch.version.cuda to be null, validate required sample data, and fail on any CUDA binary or PE import.
+- Added scripts/verify_cpu_only_build.py, which parses Windows PE import tables without third-party dependencies and checks every packaged EXE/DLL, including shm.dll.
+- Bundled desktop/sample_data_three_books as the seed dataset: 6435 files / 689.6 MiB, including the PDFs, OCR imports, progress/KG data, CPU embedding model, and clean Chroma index for 传感器短书、传感器长书、误差理论与数据处理. 优化设计 remains excluded.
+- Rebuilt the PyInstaller backend and generated release/kaoyan-assistant-desktop-setup-0.1.0.exe.
+
+### Validation
+
+- Build environment: torch 2.11.0+cpu, torch.version.cuda=null, torch.cuda.is_available()=False.
+- Fresh backend build passed the PE verification: 67 EXE/DLL files inspected, zero CUDA/NVIDIA binary names, and zero CUDA import references.
+- Packaged shm.dll imports torch_cpu.dll and c10.dll; it does not reference torch_cuda.dll.
+- Packaged seed contains 6435 files. All three PDF hashes match the source seed, and vector_db/chroma.sqlite3 also matches.
+- Installer size: 564147970 bytes (538.0 MiB).
+- Installer SHA-256: 57BFE1C17C539968BB24A5701B2F2AF9E258EE8D71032D5BD6338024C9ABE9E7.
+- Frontend production build, PyInstaller backend build, and electron-builder NSIS build passed.
+- A packaged-process /health smoke launch was attempted but blocked by the Codex execution-approval quota; this was not counted as passed.
+
+---
+## 2026-07-10 - High-priority reliability and local data safety fixes
+
+- Moved streaming feedback persistence off the user-visible completion path. Streaming and non-streaming answers now survive learning-memory write failures; the SSE done event is no longer replaced by an error.
+- Split local KG concept linking from background learning records and removed the automatic post-answer LLM concept-extraction fallback, preventing a hidden second LLM call before completion.
+- Replaced automatic deletion of non-empty SQLite WAL/SHM/journal files with conservative recovery that removes only zero-byte artifacts and preserves files that may contain recoverable transactions.
+- Added a URL scheme allowlist and a restrictive Content Security Policy to generated chapter-highlight HTML; executable, data, file, and protocol-relative links are no longer rendered as anchors.
+- Lifted active chat cancellation into ChatContext, added AbortSignal support for non-streaming chat, and guarded stream callbacks by request generation so new/loaded conversations cannot be overwritten by stale events.
+- Added striped per-conversation locks around JSON read-modify-write persistence to prevent concurrent message loss.
+- Added regression coverage for stream completion, no automatic feedback LLM call, concurrent conversation writes, conservative SQLite recovery, and chapter-highlight HTML safety.
+
+### Validation
+
+- Full backend test suite passed: 71 passed, 3 warnings.
+- Targeted high-priority regression suite passed: 12 passed, 3 warnings.
+- Frontend tests passed: 2 test files, 7 tests.
+- Frontend production build passed.
+- Frontend lint completed with no errors and the existing HighlightRepositoryDialog.tsx hooks dependency warning.
+
+---
 ## 2026-07-03 - RAG retrieval hardening and Chroma recovery
 
 - Preserved final prompt chunk metadata in retrieval state via `retrieval_debug_items`, including rank, chapter, chunk id, source, role, section title, page index, direct-hit flag, TOC-like flag, and preview text.
@@ -328,3 +369,73 @@ The detailed historical notes for this period were damaged by mojibake before th
 - `scripts/build-desktop-backend.ps1 -SkipSampleDataPrepare -SampleDataDir desktop\sample_data_three_books`：通过。
 - `npm run dist`：通过，生成 NSIS 安装包。
 - release 内置 `sample_data` 抽查：6435 个文件，含三本 PDF，不含 `优化设计` 路径。
+## 2026-07-11 教材 RAG 准确率 P0-P3 改造
+
+### 原因与数据修复
+
+- 定位“电容式传感器是否适合动态测量”只回答“质量轻”的根因：运行环境曾指向 `C:\tmp\chroma_smoke_test`，正式 `data/vector_db` 中没有《传感器长书》索引，模型实际依赖自身知识作答。
+- 将运行时 `VECTOR_DB_PATH` 恢复为项目约定的 `./data/vector_db`；旧烟雾测试库保留，不执行删除。
+- 为《传感器长书》在正式库中重建 12 个章节 collection、1359 个结构化 chunk；Dense 与 BM25 索引数量一致，健康检查通过。
+- 本地 `torchvision` 与 `torch` 二进制不匹配会阻断 `sentence-transformers`。文本 Embedding 加载阶段现会隔离不需要的可选 `torchvision` 探测，不卸载或重装依赖。
+
+### P0：索引完整性与安全降级
+
+- 本地 PDF 导入现在也会构建教材索引，不再只解析章节而返回 `indexed_chunks=0`。
+- 新增每本教材的 `collection_count`、`chunk_count`、`lexical_chunk_count`、`healthy` 健康统计，并在 Books API 列表中返回。
+- 新增 `POST /api/books/{book_name}/reindex`，只重建派生检索资产，保留 PDF、OCR 原文、错题和学习记录。
+- 教材存在但索引为空时返回 `book_index_empty`；教材模式无直接证据时强制拒答，不再静默使用模型参数知识补齐。
+
+### P1：背诵准确模式与混合检索
+
+- 新增 `factual_recall` 意图，用于原因、特点、优缺点、条件和并列要点等专业课背诵问题。
+- 新增持久化本地 BM25 索引，采用 Dense Top 20 + BM25 Top 20 + RRF 融合；取消“第一个 role 有结果就停止”的硬过滤，role 改为软加权。
+- 原 `_merge_and_rerank()` 的固定优先级排序改为问题相关的融合评分，保留 Dense/BM25/KG 来源、覆盖率和最终分数调试信息。
+- 新增可选本地 Cross-Encoder 接口；设置 `RERANKER_MODEL_PATH` 后启用，未配置时使用确定性融合精排。
+- 生成提示要求每个事实结论由选定教材证据支持；列表题必须穷尽证据中的并列项并附章节、小节、页码和 chunk_id。教材生成温度降为 0.1。
+- 对年份、公式编号、英文缩写和数字参数增加精确字面证据约束，避免只有主题相似的段落冒充直接证据。
+
+### P2：结构化切块与上下文补全
+
+- 默认切块由 2000/100 字符调整为 700/80 字符，并优先按 Markdown 标题和自然段边界切分。
+- chunk 新增 `section_path`、`parent_id`、`prev_chunk_id`、`next_chunk_id`、`parent_content` 和仅供检索使用的教材/章节前缀。
+- Chroma 同时保存带上下文的 `retrieval_text` 与不带前缀的 `raw_content`；生成阶段使用原始教材正文。
+- BM25 命中后支持相邻块扩展；公式、例题和列表可沿文档顺序补足上下文。
+
+### P3：评测与回归
+
+- 新增 `evaluation/rag_eval.py`，支持离线计算 Recall@K、MRR、要点完整率以及不可回答题拒答结果。
+- 新增 `evaluation/datasets/textbook_recall.jsonl` 首批专业课背诵评测集，以及事实意图、RRF、切块关系、要点完整率和空索引拒答测试。
+- 关键回归“电容式传感器是否适合动态测量”在正式库中排名 Top 1，Dense 与 BM25 双命中，同一证据完整包含“静电引力很小、质量很轻、介质损耗小”。
+- 当前 10 题离线基线：Recall@10 为 80%，要点召回率为 83.3%；剩余薄弱项主要是完整特点块的标题排序和跨连续小节的列表聚合，作为后续调参基线保留。
+
+### Validation
+
+- `.\venv310\Scripts\python.exe -B -m pytest -q`：77 passed，3 warnings。
+- `frontend/npm.cmd run build`：通过，Vite production build 成功。
+- 正式《传感器长书》索引健康统计：12 collections / 1359 vector chunks / 1359 lexical chunks。
+- 关键案例 Top 1 chunk：`3e87d09788d31566`，章节“第4章 力敏传感器”，融合来源 `dense + bm25`。
+
+## 2026-07-11 传感器问答检索与展示修复
+
+- 从保留的 OCR chunks 重建传感器短书索引：479 个章节 collection、562 个 chunk，并补建 562 条 BM25 索引；未改动长书索引、OCR 源和学习记录。
+- 传感器问答改为分层联邦检索：短书为 core 主证据，长书作为 reference 补证；两库保持独立以保留来源追踪。
+- 生成提示与前端双重隐藏内部 chunk ID；Markdown 不再保留源文本缩进空白，并折叠过量空行。
+- 追问改写不再把所有短问题一律视为追问，只对显式指代词启用上下文；历史输入会清除内部索引号。
+- 重建脚本复用项目文本嵌入加载器，规避不兼容 torchvision，并支持 KAOYAN_IMPORT_BOOKS 选择性重建。
+
+验证：Python 语法检查通过；frontend npm run build 通过；短书 Chroma 与 BM25 计数见上。
+
+
+## 2026-07-11 - P0/P1 evaluation, latency trace, and runtime convergence
+
+- Extended the gold-set evaluator with expected chunk recall/MRR, forbidden-chunk detection, expected-page hits, and per-query retrieval latency.
+- Added bounded SQLite RAG traces (last 500 requests) with request ID, fast-path flag, TTFT, total time, stage timings, and evidence metadata; answer text and model thinking are not stored.
+- Added `GET /api/system/rag-traces`, trace database health, and LLM runtime-configuration health.
+- Added request IDs and elapsed milliseconds to chat SSE events and replaced backend startup/chat `print` diagnostics with structured logging.
+- Retired the obsolete Gradio web entry and removed Gradio from the development dependency list. Electron + React + FastAPI remains the supported product path; the root CLI is explicitly legacy.
+
+### Validation
+
+- `python -B -m pytest -q`: 79 passed, 1 dependency deprecation warning.
+- `frontend/npm.cmd run build`: passed (TypeScript and Vite production build).
+- `git diff --check`: passed.

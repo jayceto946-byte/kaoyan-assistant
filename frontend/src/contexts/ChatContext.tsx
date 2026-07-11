@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import type { ChatAgentCard, ChatChapterHighlightCard, ChatExerciseCard, ChatReportCard, ChatUtilityCard, ConceptCandidate } from '../types';
 
 export interface ChatMessage {
@@ -23,6 +23,8 @@ interface ChatContextType {
   setBookName: (name: string) => void;
   setSubject: (subject: string) => void;
   setConversationId: (id: string) => void;
+  setActiveChatAbort: (abort: (() => void) | null) => void;
+  cancelActiveChat: () => void;
   loadConversation: (id: string, messages: ChatMessage[], meta?: { subject?: string; bookName?: string }) => void;
   newConversation: () => void;
   addMessage: (msg: ChatMessage) => void;
@@ -43,6 +45,17 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [bookName, setBookName] = useState('');
   const [subject, setSubject] = useState(() => window.localStorage.getItem('kaoyan_subject') || '数学');
   const [conversationId, setConversationId] = useState(() => window.localStorage.getItem('kaoyan_conversation_id') || createConversationId());
+  const activeChatAbortRef = useRef<(() => void) | null>(null);
+
+  const setActiveChatAbort = useCallback((abort: (() => void) | null) => {
+    activeChatAbortRef.current = abort;
+  }, []);
+
+  const cancelActiveChat = useCallback(() => {
+    const abort = activeChatAbortRef.current;
+    activeChatAbortRef.current = null;
+    abort?.();
+  }, []);
 
   const persistSubject = useCallback((next: string) => {
     setSubject(next);
@@ -55,19 +68,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const newConversation = useCallback(() => {
+    cancelActiveChat();
     const next = createConversationId();
     persistConversationId(next);
     setIsLoading(false);
     setMessages([]);
-  }, [persistConversationId]);
+  }, [cancelActiveChat, persistConversationId]);
 
   const loadConversation = useCallback((id: string, nextMessages: ChatMessage[], meta: { subject?: string; bookName?: string } = {}) => {
+    cancelActiveChat();
     persistConversationId(id);
     setIsLoading(false);
     setMessages(nextMessages);
     if (meta.subject !== undefined) persistSubject(meta.subject);
     if (meta.bookName !== undefined) setBookName(meta.bookName);
-  }, [persistConversationId, persistSubject]);
+  }, [cancelActiveChat, persistConversationId, persistSubject]);
 
   const addMessage = useCallback((msg: ChatMessage) => {
     setMessages((prev) => [...prev, msg]);
@@ -83,8 +98,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const clearMessages = useCallback(() => {
+    cancelActiveChat();
+    setIsLoading(false);
     setMessages([]);
-  }, []);
+  }, [cancelActiveChat]);
 
   const value = useMemo(
     () => ({
@@ -96,6 +113,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setBookName,
       setSubject: persistSubject,
       setConversationId: persistConversationId,
+      setActiveChatAbort,
+      cancelActiveChat,
       loadConversation,
       newConversation,
       addMessage,
@@ -103,7 +122,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading: setIsLoading,
       clearMessages,
     }),
-    [messages, isLoading, bookName, subject, conversationId, persistSubject, persistConversationId, loadConversation, newConversation, addMessage, updateLastMessage, clearMessages]
+    [messages, isLoading, bookName, subject, conversationId, persistSubject, persistConversationId, setActiveChatAbort, cancelActiveChat, loadConversation, newConversation, addMessage, updateLastMessage, clearMessages]
   );
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;

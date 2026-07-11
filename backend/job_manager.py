@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from config import PROGRESS_PATH
+from utils.sqlite_recovery import prepare_sqlite_retry_files
 
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
@@ -261,16 +262,13 @@ class JobManager:
             conn.commit()
 
     def _prepare_retry_db_files(self) -> None:
-        for suffix in ("-wal", "-shm", "-journal"):
-            try:
-                Path(f"{self.db_path}{suffix}").unlink(missing_ok=True)
-            except OSError:
-                pass
-        try:
-            if self.db_path.exists() and self.db_path.stat().st_size == 0:
-                self.db_path.unlink()
-        except OSError:
-            pass
+        result = prepare_sqlite_retry_files(self.db_path)
+        if result["preserved"]:
+            print(
+                f"[sqlite] preserved non-empty recovery files for {self.db_path}: "
+                f"{', '.join(result['preserved'])}",
+                flush=True,
+            )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)

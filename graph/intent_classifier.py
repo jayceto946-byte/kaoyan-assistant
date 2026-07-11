@@ -15,6 +15,12 @@ from typing import Optional
 # ── 意图定义 ──────────────────────────────────────────────
 
 INTENT_META = {
+    "factual_recall": {
+        "keywords": ["\u4e3a\u4ec0\u4e48", "\u539f\u56e0", "\u662f\u5426\u9002\u5408", "\u6709\u54ea\u4e9b", "\u54ea\u51e0", "\u5217\u51fa", "\u7b80\u8ff0", "\u8bf4\u660e", "\u4f18\u70b9", "\u7f3a\u70b9"],
+        "anti_keywords": ["\u8ba1\u7b97", "\u6c42\u89e3", "\u8bc1\u660e", "\u63a8\u5bfc"],
+        "description": "textbook factual recall",
+        "is_simple": True,
+    },
     # === 简单意图 → Fast Path（跳过 plan LLM）===
     "definition": {
         "keywords": ["什么是", "定义", "含义", "意思", "概念", "名词解释"],
@@ -167,6 +173,8 @@ def is_fast_path_eligible(user_input: str, local_result: dict) -> bool:
 
     q = user_input.lower()
     complex_signals = ["为什么", "怎么推导", "证明", "比较", "区别", "联系", "计算", "求解"]
+    if local_result.get("intent") == "factual_recall":
+        complex_signals = ["\u600e\u4e48\u63a8\u5bfc", "\u8bc1\u660e", "\u6bd4\u8f83", "\u533a\u522b", "\u8054\u7cfb", "\u8ba1\u7b97", "\u6c42\u89e3"]
     if any(s in q for s in complex_signals):
         return False
 

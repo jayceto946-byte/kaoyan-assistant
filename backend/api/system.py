@@ -8,6 +8,7 @@ from typing import Literal
 from fastapi import APIRouter
 
 from config import PROGRESS_PATH, VECTOR_DB_PATH
+from backend.rag_trace import TRACE_DB_PATH, list_traces
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -30,7 +31,7 @@ def _check_vector_store() -> dict:
                 collection_count=0,
                 path=str(db_path),
             )
-        with sqlite3.connect(str(db_path), timeout=10) as conn:
+        with sqlite3.connect(str(db_path), timeout=1) as conn:
             integrity = conn.execute("PRAGMA quick_check").fetchone()
             collection_count = conn.execute("SELECT COUNT(*) FROM collections").fetchone()[0]
         if not integrity or integrity[0] != "ok":
@@ -61,8 +62,12 @@ def _check_vector_store() -> dict:
             collection_count=collection_count,
             path=str(db_path),
         )
+    except sqlite3.OperationalError as exc:
+        if 'locked' in str(exc).lower():
+            return _component('degraded', f'Vector database is locked by another process: {exc}', path=str(db_path))
+        return _component('error', f'Vector database is unavailable: {exc}', path=str(db_path))
     except Exception as exc:
-        return _component("error", f"向量库不可用：{exc}", path=str(db_path))
+        return _component('error', f'Vector database is unavailable: {exc}', path=str(db_path))
 
 
 def _check_sqlite(path: Path, table_name: str, label: str) -> dict:
@@ -100,6 +105,28 @@ def _check_sqlite(path: Path, table_name: str, label: str) -> dict:
         return _component("error", f"{label}不可用：{exc}", path=str(path), record_count=0)
 
 
+def _check_runtime_config() -> dict:
+    import config
+    backend = str(getattr(config, "LLM_BACKEND", ""))
+    keys = {
+        "deepseek": getattr(config, "DEEPSEEK_API_KEY", ""),
+        "moonshot": getattr(config, "MOONSHOT_API_KEY", ""),
+        "openai": getattr(config, "OPENAI_API_KEY", ""),
+    }
+    configured = backend not in keys or bool(keys.get(backend))
+    return _component(
+        "healthy" if configured else "degraded",
+        "LLM configuration is ready" if configured else f"API key for {backend} is not configured",
+        backend=backend,
+        embedding_model=getattr(config, "EMBEDDING_MODEL_NAME", ""),
+    )
+
+
+@router.get("/rag-traces")
+def rag_traces(limit: int = 50):
+    return {"success": True, "data": list_traces(limit)}
+
+
 @router.post("/vector-store/reload")
 def reload_vector_store():
     try:
@@ -124,6 +151,8 @@ def system_health(book_name: str = ""):
         "mistake_book": _check_sqlite(
             Path(PROGRESS_PATH) / f"mistake_book_{safe_book_name}.db", "mistakes", "错题库"
         ),
+        "rag_trace": _check_sqlite(TRACE_DB_PATH, "rag_traces", "RAG trace"),
+        "runtime_config": _check_runtime_config(),
         "exercise_bank": _check_sqlite(
             Path(PROGRESS_PATH) / f"exercise_bank_{safe_book_name}.db", "exercises", "习题库"
         ),

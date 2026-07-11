@@ -5,6 +5,7 @@ import hashlib
 import html
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .chapter_highlight_types import _url_quote
 
@@ -139,6 +140,7 @@ window.MathJax = {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.bootcdn.net; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
 <title>{html.escape(str(title))} - 章节重点</title>
 <style>{style}</style>
 {mathjax_loader}
@@ -299,12 +301,31 @@ window.MathJax = {
         protected = re.sub(r"\$(?!\$)(?:\\.|[^$\\])*?\$", protect, protected)
         return protected, tokens
 
+    @staticmethod
+    def _safe_link_url(value: str) -> str:
+        url = html.unescape(str(value or "")).strip()
+        if not url or any(ord(char) < 32 for char in url):
+            return ""
+        parsed = urlsplit(url)
+        if parsed.scheme:
+            return url if parsed.scheme.lower() in {"http", "https"} else ""
+        if parsed.netloc or url.startswith(("\\", "//")):
+            return ""
+        return url
+
     def _render_inline_html(self, text: str) -> str:
         protected, math_tokens = self._protect_inline_math(text)
         escaped = html.escape(protected)
         escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
         escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
-        escaped = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{m.group(1)}</a>', escaped)
+        def render_link(match: re.Match[str]) -> str:
+            safe_url = self._safe_link_url(match.group(2))
+            if not safe_url:
+                return match.group(1)
+            href = html.escape(safe_url, quote=True)
+            return f'<a href="{href}" target="_blank" rel="noopener noreferrer">{match.group(1)}</a>'
+
+        escaped = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", render_link, escaped)
         for index, original in enumerate(math_tokens):
             escaped = escaped.replace(f"@@MATH_TOKEN_{index}@@", html.escape(original))
         return escaped

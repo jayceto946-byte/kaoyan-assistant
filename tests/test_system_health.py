@@ -23,6 +23,8 @@ def test_system_health_reports_all_components(monkeypatch, tmp_path):
         "vector_store",
         "mistake_book",
         "exercise_bank",
+        "rag_trace",
+        "runtime_config",
     }
     assert data["components"]["vector_store"]["details"]["collection_count"] == 3
 

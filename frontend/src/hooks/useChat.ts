@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { chatAsk, chatStream } from '../api/client';
 import { useChatContext } from '../contexts/ChatContext';
 import type { ConceptCandidate } from '../types';
@@ -13,12 +13,14 @@ export function useChat() {
     subject,
     conversationId,
     setConversationId,
+    setActiveChatAbort,
+    cancelActiveChat,
     addMessage,
     updateLastMessage,
     setLoading,
   } = useChatContext();
 
-  const abortRef = useRef<(() => void) | null>(null);
+  const requestSequenceRef = useRef(0);
   const streamContentRef = useRef('');
   const sourceChaptersRef = useRef<string[]>([]);
   const linkedConceptsRef = useRef<ConceptCandidate[]>([]);
@@ -27,6 +29,8 @@ export function useChat() {
     (question: string) => {
       if (!question.trim() || isLoading) return;
 
+      cancelActiveChat();
+      const requestId = ++requestSequenceRef.current;
       streamContentRef.current = '';
       sourceChaptersRef.current = [];
       linkedConceptsRef.current = [];
@@ -36,14 +40,23 @@ export function useChat() {
       addMessage({ role: 'assistant', content: '', stage: 'thinking' });
 
       const fail = (message: string) => {
+        if (requestId !== requestSequenceRef.current) return;
+        setActiveChatAbort(null);
         updateLastMessage((last) => last.role === 'assistant' ? { ...last, content: `出错了：${message}`, stage: 'error' } : last);
         setLoading(false);
       };
 
       if (USE_NON_STREAMING) {
+        const ctrl = new AbortController();
+        setActiveChatAbort(() => {
+          requestSequenceRef.current += 1;
+          ctrl.abort();
+        });
         (async () => {
           try {
-            const result = await chatAsk(question, bookName, subject, conversationId);
+            const result = await chatAsk(question, bookName, subject, conversationId, ctrl.signal);
+            if (requestId !== requestSequenceRef.current) return;
+            setActiveChatAbort(null);
             if (result.conversation_id) setConversationId(result.conversation_id);
             updateLastMessage((last) => {
               if (last.role !== 'assistant') return last;
@@ -53,18 +66,20 @@ export function useChat() {
             });
             setLoading(false);
           } catch (err) {
+            if (ctrl.signal.aborted) return;
             fail(err instanceof Error ? err.message : String(err));
           }
         })();
         return;
       }
 
-      abortRef.current = chatStream(
+      const abortStream = chatStream(
         question,
         bookName,
         subject,
         conversationId,
         (event) => {
+          if (requestId !== requestSequenceRef.current) return;
           if (event.conversation_id) setConversationId(event.conversation_id);
           if (event.stage === 'context') return;
           if (event.stage === 'plan') sourceChaptersRef.current = event.chapters || [];
@@ -124,26 +139,35 @@ export function useChat() {
             return next;
           });
 
-          if (event.stage === 'done' || event.stage === 'error') setLoading(false);
+          if (event.stage === 'done' || event.stage === 'error') {
+            setActiveChatAbort(null);
+            setLoading(false);
+          }
         },
         (err) => fail(err.message)
       );
+      setActiveChatAbort(() => {
+        if (requestId === requestSequenceRef.current) requestSequenceRef.current += 1;
+        abortStream();
+      });
     },
-    [bookName, subject, conversationId, isLoading, addMessage, updateLastMessage, setLoading, setConversationId]
+    [bookName, subject, conversationId, isLoading, addMessage, updateLastMessage, setLoading, setConversationId, setActiveChatAbort, cancelActiveChat]
   );
 
   const stop = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current();
-      abortRef.current = null;
-    }
+    cancelActiveChat();
     updateLastMessage((last) => {
       if (last.role !== 'assistant' || last.stage === 'done' || last.stage === 'error') return last;
       const content = streamContentRef.current.trim() || (last.content && !last.content.endsWith('...') ? last.content : '已停止生成。');
       return { ...last, content, stage: 'stopped' };
     });
     setLoading(false);
-  }, [setLoading, updateLastMessage]);
+  }, [cancelActiveChat, setLoading, updateLastMessage]);
+
+  useEffect(() => () => {
+    cancelActiveChat();
+    setLoading(false);
+  }, [cancelActiveChat, setLoading]);
 
   return { messages, isLoading, sendMessage, stop };
 }

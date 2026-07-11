@@ -162,7 +162,26 @@ def get_embeddings():
     embedding_local_files_only = os.getenv("EMBEDDING_LOCAL_FILES_ONLY", "1") == "1"
     if embedding_local_files_only:
         os.environ["HF_HUB_OFFLINE"] = "1"
-    from sentence_transformers import SentenceTransformer
+    # Text embeddings do not need torchvision. Some desktop/dev environments
+    # contain a mismatched optional torchvision wheel that crashes during
+    # transformers feature detection, so hide only that optional package while
+    # importing the text stack.
+    import importlib.util
+    original_find_spec = importlib.util.find_spec
+    importlib.util.find_spec = lambda name, *args, **kwargs: (
+        None if name == "torchvision" or name.startswith("torchvision.")
+        else original_find_spec(name, *args, **kwargs)
+    )
+    try:
+        import transformers.utils.import_utils as transformers_import_utils
+        transformers_import_utils._torchvision_available = False
+    except Exception:
+        pass
+
+    try:
+        from sentence_transformers import SentenceTransformer
+    finally:
+        importlib.util.find_spec = original_find_spec
 
     # Prefer the desktop/local snapshot so offline installs do not contact the Hub.
     _local_snapshot = DATA_DIR / "models" / "models--BAAI--bge-small-zh-v1.5" / "snapshots"

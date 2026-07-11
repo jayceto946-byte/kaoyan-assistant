@@ -208,10 +208,14 @@ async function waitForBackend(timeoutMs = 60000) {
   while (Date.now() < deadline) {
     if (backendStartError) return false;
     try {
-      const res = await fetch(`${BACKEND_URL}/health`);
+      const res = await fetchWithTimeout(`${BACKEND_URL}/health`);
       if (res.ok) return true;
-    } catch {
-      // Backend is still starting.
+    } catch (error) {
+      if (error?.name !== 'AbortError') {
+        appendBackendLog(`[wait] backend not ready: ${error.message || error}`);
+      } else {
+        appendBackendLog(`[wait] backend health check timed out: ${BACKEND_URL}/health`);
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 600));
   }
@@ -220,6 +224,16 @@ async function waitForBackend(timeoutMs = 60000) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(url, timeoutMs = 2500) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function loadAppUrl(targetUrl) {

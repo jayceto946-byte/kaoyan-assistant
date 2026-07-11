@@ -1,3 +1,14 @@
+# Build the backend executable for the Electron desktop app.
+#
+# IMPORTANT: This build MUST use CPU-only PyTorch (torch==2.11.0+cpu).
+# The release venv should be created from requirements-release.txt, NOT
+# from requirements.txt (which would install CUDA torch and cause
+# shm.dll load failures on end-user machines without NVIDIA drivers).
+#
+# To set up the release venv:
+#   python -m venv venv310
+#   .\venv310\Scripts\pip install -r requirements-release.txt
+#
 param(
     [string]$Python = ".\venv310\Scripts\python.exe",
     [string]$SampleSourceData = "",
@@ -37,6 +48,18 @@ if (-not $SkipSampleDataPrepare) {
     }
 }
 
+if (-not (Test-Path -LiteralPath $sampleData)) {
+    throw "Sample data directory not found: $sampleData"
+}
+$sampleFiles = Get-ChildItem -LiteralPath $sampleData -Recurse -File
+$sampleSize = ($sampleFiles | Measure-Object Length -Sum).Sum
+if ($RequireSampleData -and $sampleFiles.Count -eq 0) {
+    throw "Sample data directory is empty: $sampleData"
+}
+Write-Host "Sample data: $sampleData"
+Write-Host "  Files: $($sampleFiles.Count)"
+Write-Host "  Size:  $([math]::Round($sampleSize / 1MB, 1)) MiB"
+
 Invoke-CheckedCommand "[1/3] Building frontend assets..." {
     Push-Location (Join-Path $projectRoot "frontend")
     try {
@@ -49,6 +72,31 @@ Invoke-CheckedCommand "[1/3] Building frontend assets..." {
 Invoke-CheckedCommand "[2/3] Checking PyInstaller..." {
     & $Python -m PyInstaller --version
 }
+
+Write-Host "[2.5/3] Verifying CPU-only PyTorch..."
+$torchCheck = & $Python -c "import json, torch; print(json.dumps({'version': torch.__version__, 'compiled_cuda': torch.version.cuda, 'cuda_available': torch.cuda.is_available()}))" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to import torch: $torchCheck"
+}
+try {
+    $torchInfo = ($torchCheck | Select-Object -Last 1) | ConvertFrom-Json
+} catch {
+    throw "Could not parse PyTorch build information: $torchCheck"
+}
+Write-Host "  PyTorch version:      $($torchInfo.version)"
+Write-Host "  Compiled CUDA runtime: $($torchInfo.compiled_cuda)"
+Write-Host "  CUDA available:       $($torchInfo.cuda_available)"
+if (
+    $torchInfo.version -notmatch '\+cpu$' -or
+    $null -ne $torchInfo.compiled_cuda -or
+    [bool]$torchInfo.cuda_available
+) {
+    throw @"
+Non-CPU PyTorch detected: version=$($torchInfo.version), compiled_cuda=$($torchInfo.compiled_cuda), cuda_available=$($torchInfo.cuda_available)
+The release build requires an explicit +cpu wheel. Reinstall from requirements-release.txt.
+"@
+}
+Write-Host "  Explicit CPU-only PyTorch confirmed - OK"
 
 Invoke-CheckedCommand "[3/3] Building backend executable..." {
     & $Python -m PyInstaller `
@@ -125,5 +173,10 @@ Invoke-CheckedCommand "[3/3] Building backend executable..." {
       desktop\backend_server.py
 }
 
+Write-Host "[Post-build] Verifying CPU-only PE imports..."
+& $Python -B scripts\verify_cpu_only_build.py --root build\backend\backend_server
+if ($LASTEXITCODE -ne 0) {
+    throw "CPU-only PE verification failed. The backend build was not accepted."
+}
 Write-Host "Backend executable ready: build\backend\backend_server\backend_server.exe"
 Write-Host "Next: cd desktop; npm install; npm run dist"

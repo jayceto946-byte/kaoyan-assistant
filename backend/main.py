@@ -9,14 +9,25 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from contextlib import asynccontextmanager
+import logging
 import os
 
 from backend.api import agent, chat, mistakes, books, kg, exercises, system, reports, assets, highlights, jobs
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _warmup()
+    yield
 
 app = FastAPI(
     title="考研智能辅助系统 API",
     description="FastAPI + React 架构后端",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # ── CORS ──────────────────────────────────────────────────
@@ -53,7 +64,6 @@ def health():
     return {"status": "ok", "version": "1.0.0"}
 
 # ── 启动预热 ──────────────────────────────────────────────
-@app.on_event("startup")
 def _warmup():
     """启动时预热：加载嵌入模型和向量库，避免首请求长时间等待。"""
     import time
@@ -63,33 +73,33 @@ def _warmup():
 
         interrupted = get_job_manager().mark_running_interrupted()
         if interrupted:
-            print(f"[jobs] marked {interrupted} unfinished jobs interrupted")
+            logger.info("marked %s unfinished jobs interrupted", interrupted)
     except Exception as e:
-        print(f"[jobs] startup recovery failed: {e}")
+        logger.exception("startup job recovery failed")
     if os.getenv('SKIP_EMBEDDING_WARMUP', '0') == '1':
-        print('[warmup] embeddings skipped')
+        logger.info("embedding warmup skipped")
     else:
         try:
             from config import get_embeddings
             get_embeddings()
-            print(f"[warmup] embeddings loaded in {time.time()-t0:.1f}s")
+            logger.info("embeddings loaded in %.1fs", time.time() - t0)
         except Exception as e:
-            print(f"[warmup] embeddings failed: {e}")
+            logger.exception("embedding warmup failed")
 
     t1 = time.time()
     if os.getenv('SKIP_VECTOR_WARMUP', '0') == '1':
-        print('[warmup] vector_store skipped')
+        logger.info("vector store warmup skipped")
     else:
         try:
             from ingestion.vector_store import get_vector_store
             get_vector_store()
-            print(f'[warmup] vector_store loaded in {time.time()-t1:.1f}s')
+            logger.info("vector store loaded in %.1fs", time.time() - t1)
         except Exception as e:
-            print(f'[warmup] vector_store failed: {e}')
+            logger.exception("vector store warmup failed")
 
-    print("[warmup] concept graph warmup skipped")
+    logger.info("concept graph warmup skipped")
 
-    print(f"[warmup] total {time.time()-t0:.1f}s")
+    logger.info("startup warmup completed in %.1fs", time.time() - t0)
 
 
 # ── 静态文件（前端 build 产物）─────────────────────────────

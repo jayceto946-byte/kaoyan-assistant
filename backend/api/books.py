@@ -15,9 +15,10 @@ from pydantic import BaseModel
 
 from backend.job_manager import JobCancelled, get_job_manager
 from backend.schemas import PreReadStatusOut
-from config import BOOKS_PATH, DATA_DIR, MINERU_OUTPUT_PATH, PROGRESS_PATH
+from config import BOOKS_PATH, DATA_DIR, MINERU_OUTPUT_PATH, PROGRESS_PATH, VECTOR_DB_PATH
 from ingestion.background_reader import BackgroundReader
-from ingestion.mineru_importer import import_textbook, import_textbook_from_mineru_output, import_textbook_local
+from ingestion.vector_store import get_vector_store
+from ingestion.mineru_importer import build_index_from_chapters, import_textbook, import_textbook_from_mineru_output, import_textbook_local
 from ingestion.pdf_parser import PDFParser
 from utils.json_io import atomic_write_json
 from utils.path_safety import safe_book_name, safe_child_path
@@ -63,10 +64,48 @@ def _known_book_names(include_archived: bool = False) -> list[str]:
         names = {name for name in names if not _read_book_meta(name).get("archived")}
     return sorted(names)
 
+def _fast_book_index_stats(book_name: str) -> dict:
+    normalized = safe_book_name(book_name)
+    stats = {"book_name": normalized, "collection_count": 0, "chunk_count": 0, "healthy": False}
+
+    map_path = Path(VECTOR_DB_PATH) / "_chapter_map.json"
+    try:
+        raw = json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
+        if isinstance(raw, dict):
+            for value in raw.values():
+                if not isinstance(value, dict):
+                    continue
+                if value.get("book_name") == normalized and value.get("kind") != "book_aggregate":
+                    stats["collection_count"] += 1
+    except Exception as exc:
+        stats["error"] = str(exc)
+
+    try:
+        from ingestion.lexical_index import load_book_index
+
+        stats["lexical_chunk_count"] = len(load_book_index(normalized))
+    except Exception:
+        stats["lexical_chunk_count"] = 0
+
+    stats["healthy"] = stats["collection_count"] > 0 or stats["lexical_chunk_count"] > 0
+    return stats
+
+
 
 def _book_pdf_path(name: str) -> Path | None:
     candidate = BOOKS_PATH / f"{Path(name).name}.pdf"
     return candidate if candidate.exists() else None
+
+def _load_raw_chapters(name: str) -> list[dict]:
+    """Load persisted OCR units without UI-only TOC normalization."""
+    path = safe_child_path(PROGRESS_PATH, safe_book_name(name), "_chapters.json")
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 
 def _load_chapters(name: str) -> list[dict]:
@@ -269,6 +308,7 @@ def _run_import_job(job_id: str, pdf_path: Path, toc_pages: str, pre_read: bool,
         _set_current_book(book_name, result.chapters, pdf_path)
         if pre_read and result.chapters and not result.used_mineru:
             _start_pre_read(book_name, result.chapters, pdf_path)
+        index_status = get_vector_store().get_book_index_stats(book_name)
         _update_job(
             job_id,
             status="completed",
@@ -280,6 +320,7 @@ def _run_import_job(job_id: str, pdf_path: Path, toc_pages: str, pre_read: bool,
                 "chapter_count": len(result.chapters),
                 "used_mineru": result.used_mineru,
                 "indexed_chunks": result.indexed_chunks,
+                "index_status": index_status,
                 "output_dir": result.output_dir,
                 "subject": _book_subject(book_name),
             },
@@ -295,6 +336,7 @@ def list_books():
     data = []
     for name in _known_book_names():
         pdf_path = _book_pdf_path(name)
+        index_status = _fast_book_index_stats(name)
         data.append({
             "name": name,
             "path": str(pdf_path) if pdf_path else "",
@@ -302,8 +344,29 @@ def list_books():
             "subject": _book_subject(name),
             "has_pdf": bool(pdf_path or _source_pdf_path(name)),
             "chapter_count": len(_load_chapters(name)),
+            "index_status": index_status,
         })
     return {"success": True, "data": data}
+
+@router.post("/{book_name}/reindex")
+def reindex_book(book_name: str):
+    """Rebuild derived retrieval assets while preserving OCR/source data."""
+    name = safe_book_name(book_name)
+    chapters = _load_raw_chapters(name)
+    if not chapters:
+        return {"success": False, "message": "No persisted textbook content found"}
+    output_dir = safe_child_path(PROGRESS_PATH, name)
+    try:
+        indexed = build_index_from_chapters(name, chapters, output_dir)
+        stats = get_vector_store().get_book_index_stats(name)
+    except Exception as exc:
+        return {"success": False, "message": f"Reindex failed: {exc}"}
+    _write_book_meta(name, indexed_chunks=indexed, index_schema=3)
+    return {
+        "success": True,
+        "message": f"Indexed {indexed} chunks",
+        "data": stats,
+    }
 
 
 @router.get("/current")

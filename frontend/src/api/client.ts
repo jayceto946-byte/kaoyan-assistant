@@ -1,10 +1,21 @@
 import type { AgentToolResult, AgentToolSpec, ReadOnlyAgentResponse, ConceptCandidate } from '../types';
 
-const API_BASE = '/api';
+const API_BASE = normalizeApiBase(import.meta.env.VITE_API_BASE_URL || '/api');
 const DEFAULT_TIMEOUT_MS = 20000;
+
+function normalizeApiBase(value: string): string {
+  const trimmed = (value || '/api').trim().replace(/\/+$/, '');
+  return trimmed || '/api';
+}
+
+function apiUrl(path: string): string {
+  return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+}
 
 export type ChatEvent = {
   stage: string;
+  request_id?: string;
+  elapsed_ms?: number;
   chunk?: string;
   replace?: boolean;
   done?: boolean;
@@ -31,13 +42,13 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
 }
 
 export async function get(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<any> {
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, {}, timeoutMs);
+  const res = await fetchWithTimeout(apiUrl(path), {}, timeoutMs);
   if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
   return res.json();
 }
 
 export async function post(path: string, body: unknown, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<any> {
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, {
+  const res = await fetchWithTimeout(apiUrl(path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -47,7 +58,7 @@ export async function post(path: string, body: unknown, timeoutMs = DEFAULT_TIME
 }
 
 export async function patch(path: string, body: unknown, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<any> {
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, {
+  const res = await fetchWithTimeout(apiUrl(path), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -57,7 +68,7 @@ export async function patch(path: string, body: unknown, timeoutMs = DEFAULT_TIM
 }
 
 export async function del(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<any> {
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, { method: 'DELETE' }, timeoutMs);
+  const res = await fetchWithTimeout(apiUrl(path), { method: 'DELETE' }, timeoutMs);
   if (!res.ok) throw new Error(`DELETE ${path} failed: ${res.status}`);
   return res.json();
 }
@@ -122,7 +133,7 @@ export function chatStream(
 
   (async () => {
     try {
-      const res = await fetch(`${API_BASE}/chat/stream`, {
+      const res = await fetch(apiUrl('/chat/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question, book_name: bookName, subject, conversation_id: conversationId }),
@@ -164,12 +175,14 @@ export async function chatAsk(
   question: string,
   bookName: string = '',
   subject: string = '',
-  conversationId: string = ''
+  conversationId: string = '',
+  signal?: AbortSignal
 ): Promise<{ content: string; intent: string; chapters: string[]; linked_concepts?: ConceptCandidate[]; conversation_id?: string; rewritten_question?: string }> {
-  const res = await fetch(`${API_BASE}/chat/ask`, {
+  const res = await fetch(apiUrl('/chat/ask'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question, book_name: bookName, subject, conversation_id: conversationId }),
+    signal,
   });
   if (!res.ok) throw new Error(`chatAsk failed: ${res.status}`);
   return res.json();

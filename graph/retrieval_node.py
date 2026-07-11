@@ -7,9 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from config import PROGRESS_PATH
+from ingestion.lexical_index import expand_neighbors, search_book, tokenize
+from ingestion.reranker import cross_encoder_scores, reranker_status
 from graph.safe_retrieval import get_safe_kg, get_safe_vector_store
 
 INTENT_ROLE_PRIORITY: dict[str, list[str]] = {
+    "factual_recall": ["property", "definition", "reference", "theorem", "formula"],
     "definition": ["definition", "theorem", "property", "example", "derivation"],
     "formula": ["definition", "property", "derivation", "example"],
     "property": ["property", "theorem", "definition", "example"],
@@ -82,23 +85,49 @@ def retrieve_node(state: dict) -> dict:
     if kg_error:
         retrieval_errors.append(f"knowledge_graph: {kg_error}")
 
+    index_stats = {}
+    if book_name and book_name != "default" and hasattr(vs, "get_book_index_stats"):
+        try:
+            index_stats = vs.get_book_index_stats(book_name)
+        except Exception as exc:
+            retrieval_errors.append(f"index_health: {exc}")
+        if index_stats and not index_stats.get("healthy") and not getattr(kg, "_is_local", False):
+            return {
+                "chapter_contents": {}, "retrieval_debug_items": [], "evidence_items": [],
+                "concept_results": [], "history_results": [], "knowledge_graph_path": [],
+                "knowledge_graph_formulas": [], "matched_concepts": [],
+                "retrieval_status": "unavailable",
+                "retrieval_error": "book_index_empty",
+                "index_stats": index_stats,
+            }
+
     precise_results, matched_concepts = _kg_precise_retrieval(kg, user_input, intent=intent)
-    vector_results = _vector_retrieval(
-        vs,
-        user_input,
-        intent=intent,
-        book_name=book_name,
-        target_chapters=target_chapters,
-        precise_chapters=list({r["chapter"] for r in precise_results if r.get("chapter")}),
-        k=3,
-        top_n=2,
-    )
+    retrieval_books = [book_name]
+    if state.get("subject") == "传感器" or book_name in {"传感器短书", "传感器长书"}:
+        retrieval_books = ["传感器短书", "传感器长书"]
+    vector_results: list[dict] = []
+    lexical_results: list[dict] = []
+    neighbor_results: list[dict] = []
+    for candidate_book in retrieval_books:
+        is_primary = candidate_book == book_name
+        candidate_vectors = _vector_retrieval(
+            vs, user_input, intent=intent, book_name=candidate_book,
+            target_chapters=target_chapters if is_primary else [],
+            precise_chapters=list({r["chapter"] for r in precise_results if r.get("chapter")}) if is_primary else [],
+            k=20 if is_primary else 12, top_n=4 if is_primary else 3,
+        )
+        vector_results.extend(candidate_vectors)
+        candidate_lexical = search_book(candidate_book, user_input, k=20 if is_primary else 12, chapters=(target_chapters or None) if is_primary else None)
+        lexical_results.extend(candidate_lexical)
+        neighbor_results.extend(expand_neighbors(candidate_book, [item.get("chunk_id", "") for item in candidate_lexical[:3]], window=1))
     chapter_contents, retrieval_debug_items = _merge_and_rerank(
         precise_results,
-        vector_results,
+        vector_results + lexical_results + neighbor_results,
         max_chunks_per_chapter=6,
         max_total_chunks=10,
         include_metadata=True,
+        query=user_input,
+        intent=intent,
     )
 
     kg_path: list[str] = []
@@ -136,9 +165,30 @@ def retrieve_node(state: dict) -> dict:
         "knowledge_graph_path": kg_path,
         "knowledge_graph_formulas": kg_formulas,
         "matched_concepts": matched_concepts,
+        "evidence_items": [
+            {
+                "chunk_id": item.get("chunk_id", ""), "chapter": item.get("chapter", ""),
+                "section_title": item.get("section_title", ""), "page_idx": item.get("page_idx", -1),
+                "text": item.get("text", ""), "score": item.get("score", 0.0),
+                "query_coverage": item.get("query_coverage", 0.0),
+                "book_role": item.get("book_role", ""),
+                "rag_priority": item.get("rag_priority", 1.0),
+            }
+            for item in retrieval_debug_items[:6]
+            if item.get("text") and _supports_query_literals(user_input, item.get("text", "")) and (item.get("is_direct_hit") or float(item.get("query_coverage", 0)) >= 0.2)
+        ],
+        "index_stats": index_stats,
         "retrieval_status": "degraded" if retrieval_errors else "ok",
         "retrieval_error": "; ".join(dict.fromkeys(retrieval_errors)),
+        "evidence_gate_applied": True,
     }
+def _supports_query_literals(query: str, text: str) -> bool:
+    """Require exact years, identifiers and Latin tokens when the query has them."""
+    literals = [token.lower() for token in re.findall(r"[A-Za-z]+\d*|\d{2,}", query or "")]
+    lowered = (text or "").lower()
+    return all(token in lowered for token in literals)
+
+
 
 
 def _find_debug_for_content(content: str, debug_by_preview: dict[str, dict]) -> dict | None:
@@ -279,6 +329,9 @@ def _vector_retrieval(vs, user_input: str, *, intent: str = "qa", book_name: str
                         results.append(_doc_to_item(d, ch_name, "vector(example_boost)"))
             except Exception:
                 pass
+    for rank, item in enumerate(results, 1):
+        item["retrieval_rank"] = rank
+        item["dense_rank"] = rank
     return results
 
 
@@ -287,7 +340,11 @@ def _doc_to_item(doc, chapter: str, source: str) -> dict:
     return {
         "chapter": chapter,
         "chunk_id": meta.get("chunk_id", ""),
-        "text": getattr(doc, "page_content", ""),
+        "text": meta.get("raw_content") or getattr(doc, "page_content", ""),
+        "parent_id": meta.get("parent_id", ""),
+        "prev_chunk_id": meta.get("prev_chunk_id", ""),
+        "next_chunk_id": meta.get("next_chunk_id", ""),
+        "section_path": meta.get("section_path", ""),
         "section_title": meta.get("section_title", ""),
         "page_idx": meta.get("page_idx", -1),
         "is_direct_hit": False,
@@ -300,13 +357,6 @@ def _doc_to_item(doc, chapter: str, source: str) -> dict:
 
 
 def _search_chapter_with_role(vs, chapter: str, query: str, k: int, priority_roles: list[str], book_name: str = ""):
-    for role in priority_roles:
-        try:
-            docs = vs.search_chapter(chapter, query, k=k, filter={"role": role}, book_name=book_name)
-            if docs:
-                return docs, role
-        except Exception:
-            pass
     try:
         return vs.search_chapter(chapter, query, k=k, book_name=book_name), None
     except Exception:
@@ -314,54 +364,88 @@ def _search_chapter_with_role(vs, chapter: str, query: str, k: int, priority_rol
 
 
 def _search_all_with_role(vs, query: str, k: int, top_n: int, priority_roles: list[str], book_name: str = ""):
-    for role in priority_roles:
-        try:
-            results = vs.search_all(query, k=k, top_n=top_n, filter={"role": role}, book_name=book_name)
-            if results:
-                return results, role
-        except Exception:
-            pass
     try:
         return vs.search_all(query, k=k, top_n=top_n, book_name=book_name), None
     except Exception:
         return {}, None
 
 
-def _merge_and_rerank(precise: list[dict], vector: list[dict], *, max_chunks_per_chapter: int = 5, max_total_chunks: int = 8, include_metadata: bool = False):
-    all_items: list[tuple[int, dict]] = []
-    seen_text_hash: set[str] = set()
+def _merge_and_rerank(
+    precise: list[dict],
+    vector: list[dict],
+    *,
+    max_chunks_per_chapter: int = 5,
+    max_total_chunks: int = 8,
+    include_metadata: bool = False,
+    query: str = "",
+    intent: str = "qa",
+):
+    """Fuse KG, dense and BM25 ranks, then apply query-aware local reranking."""
+    fused = {}
+    source_ranks = {}
+    for source_items in (precise, vector):
+        for position, original in enumerate(source_items, 1):
+            item = dict(original)
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            key = str(item.get("chunk_id") or text[:100].replace(" ", "").replace("\n", ""))
+            source = str(item.get("source") or "unknown")
+            source_key = "bm25" if source == "bm25" else ("kg" if source.startswith("kg") else "dense")
+            rank = int(item.get("retrieval_rank") or position)
+            source_ranks[(key, source_key)] = min(rank, source_ranks.get((key, source_key), rank))
+            fused.setdefault(key, item)
+            if item.get("is_direct_hit"):
+                fused[key]["is_direct_hit"] = True
+                fused[key]["source"] = source
 
-    def text_hash(text: str) -> str:
-        return text[:80].strip().replace(" ", "").replace("\n", "")
+    query_tokens = set(tokenize(query))
+    role_order = INTENT_ROLE_PRIORITY.get(intent, [])
+    ranked = []
+    for key, item in fused.items():
+        score = 0.0
+        sources = []
+        for source_key in ("kg", "dense", "bm25"):
+            rank = source_ranks.get((key, source_key))
+            if rank is not None:
+                score += 1.0 / (60.0 + rank)
+                sources.append(source_key)
+        if item.get("is_direct_hit"):
+            score += 0.05
+        item_tokens = set(tokenize(str(item.get("text") or "")))
+        coverage = 0.0
+        if query_tokens:
+            coverage = len(query_tokens & item_tokens) / len(query_tokens)
+            score += 0.08 * coverage
+        item["query_coverage"] = round(coverage, 6)
+        role = str(item.get("role") or "")
+        if role in role_order:
+            score += 0.012 * (len(role_order) - role_order.index(role)) / max(len(role_order), 1)
+        book_role = str(item.get("book_role") or "")
+        if book_role == "core":
+            score += 0.035
+        elif book_role == "reference":
+            score -= 0.006
+        if item.get("source") == "neighbor":
+            score -= 0.004
+        if _looks_like_toc_chunk(item):
+            score -= 0.2
+        item["score"] = round(score, 6)
+        item["fusion_sources"] = sources
+        ranked.append(item)
 
-    for item in precise:
-        h = text_hash(item.get("text", ""))
-        if h and h not in seen_text_hash:
-            seen_text_hash.add(h)
-            priority = 0 if item.get("is_direct_hit") else 1
-            all_items.append((priority, item))
+    cross_scores = cross_encoder_scores(query, [str(item.get("text") or "") for item in ranked])
+    if cross_scores is not None:
+        for item, cross_score in zip(ranked, cross_scores):
+            item["cross_encoder_score"] = cross_score
+            item["score"] = float(item.get("score", 0)) + 0.15 * cross_score
+    rerank_meta = reranker_status()
 
-    for item in vector:
-        h = text_hash(item.get("text", ""))
-        if h and h not in seen_text_hash:
-            seen_text_hash.add(h)
-            all_items.append((2, item))
-
-    def rank(pair: tuple[int, dict]) -> tuple[Any, ...]:
-        priority, item = pair
-        return (
-            priority,
-            _looks_like_toc_chunk(item),
-            BOOK_ROLE_RANK.get(item.get("book_role", ""), 2),
-            ROLE_RANK.get(item.get("role", ""), 9),
-            item.get("page_idx", 999999),
-        )
-
-    all_items.sort(key=rank)
+    ranked.sort(key=lambda item: (-float(item.get("score", 0)), item.get("page_idx", 999999)))
     chapter_contents: dict[str, list[str]] = {}
     debug_items: list[dict] = []
     total = 0
-    for _, item in all_items:
+    for item in ranked:
         chapter = item.get("chapter") or "\u76f8\u5173\u7ae0\u8282"
         chapter_contents.setdefault(chapter, [])
         if len(chapter_contents[chapter]) >= max_chunks_per_chapter:
@@ -373,6 +457,15 @@ def _merge_and_rerank(precise: list[dict], vector: list[dict], *, max_chunks_per
         debug_items.append({
             "rank": total + 1,
             "chapter": chapter,
+            "score": item.get("score", 0.0),
+            "fusion_sources": item.get("fusion_sources", []),
+            "text": text,
+            "parent_id": item.get("parent_id", ""),
+            "cross_encoder_score": item.get("cross_encoder_score"),
+            "query_coverage": item.get("query_coverage", 0.0),
+                "book_role": item.get("book_role", ""),
+                "rag_priority": item.get("rag_priority", 1.0),
+            "reranker_mode": rerank_meta.get("mode"),
             "chunk_id": item.get("chunk_id", ""),
             "source": item.get("source", ""),
             "role": item.get("role", ""),

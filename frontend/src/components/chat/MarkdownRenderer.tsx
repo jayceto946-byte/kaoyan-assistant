@@ -146,7 +146,7 @@ const markdownPlugins: PluggableList = [remarkGfm, remarkMath];
 const katexPlugins: PluggableList = [[rehypeKatex, { strict: false, throwOnError: false, errorColor: 'inherit' }]];
 
 export const SimpleMarkdown: React.FC<{ content: string }> = ({ content }) => (
-  <div className="markdown-body text-sm leading-relaxed whitespace-pre-wrap break-words">
+  <div className="markdown-body text-sm leading-relaxed break-words">
     <ReactMarkdown remarkPlugins={markdownPlugins} rehypePlugins={katexPlugins}>
       {prepareMathMarkdown(content || '')}
     </ReactMarkdown>
@@ -159,7 +159,10 @@ export const MarkdownMessage: React.FC<{
   onConceptClick: (concept: ConceptCandidate) => void;
 }> = ({ content, linkedConcepts, onConceptClick }) => {
   const cleanContent = React.useMemo(() => {
-    const withoutRefs = content.replace(/\u3010\u6765\u6e90\uff1a(.+?)\u3011/g, '');
+    const withoutRefs = content
+      .replace(/\u3010\u6765\u6e90\uff1a(.+?)\u3011/g, '')
+      .replace(/\s*\/\s*[a-f0-9]{12,64}(?=\s*\])/gi, '')
+      .replace(/\n{3,}/g, '\n\n');
     const mathReady = prepareMathMarkdown(withoutRefs);
     return linkConcepts(mathReady, linkedConcepts);
   }, [content, linkedConcepts]);
@@ -243,7 +246,7 @@ export const MarkdownMessage: React.FC<{
   };
 
   return (
-    <div className="markdown-body text-[15px] leading-relaxed whitespace-pre-wrap break-words">
+    <div className="markdown-body text-[15px] leading-relaxed break-words">
       {contentBlocks.map((block, index) => {
         const key = blockKey(block, index);
         return (

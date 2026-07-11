@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -10,6 +12,7 @@ from backend.conversation_memory import append_message, ensure_conversation_id, 
 from backend.schemas import ChatRequest
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 @router.get("/conversations")
 def conversations(subject: str = "", book_name: str = "", limit: int = 80):
     return {"success": True, "data": list_conversations(subject=subject, book_name=book_name, limit=limit)}
@@ -53,6 +56,17 @@ def chat_stream(req: ChatRequest):
     rewritten_question = rewrite_followup(req.question, history, book_name=book_name, subject=subject)
 
     def event_generator():
+        from backend.rag_trace import new_request_id, save_trace
+
+        request_id = new_request_id()
+        started = time.perf_counter()
+        stage_started = started
+        last_stage = "context"
+        timings: dict[str, float] = {}
+        ttft_ms = None
+        final_state: dict = {}
+        intent = ""
+        fast_path = False
         assistant_chunks: list[str] = []
         assistant_persisted = False
         assistant_persistence_error = ""
@@ -74,11 +88,29 @@ def chat_stream(req: ChatRequest):
                 assistant_persistence_error = ""
             except Exception as exc:
                 assistant_persistence_error = str(exc)
-                print(f"[chat] assistant persistence failed: {exc}", flush=True)
+                logger.exception("assistant persistence failed")
             return assistant_persistence_error
 
+        def observe(event: dict) -> None:
+            nonlocal stage_started, last_stage, ttft_ms, final_state, intent, fast_path
+            now = time.perf_counter()
+            stage = str(event.get("stage") or "unknown")
+            if stage != last_stage:
+                timings[last_stage] = round((now - stage_started) * 1000, 2)
+                stage_started = now
+                last_stage = stage
+            if stage == "plan":
+                intent = str(event.get("intent") or "")
+                fast_path = bool(event.get("fast_path"))
+            if stage == "generate" and event.get("chunk") and ttft_ms is None:
+                ttft_ms = round((now - started) * 1000, 2)
+            if stage == "done":
+                final_state = event.get("state") or {}
+            event["request_id"] = request_id
+            event["elapsed_ms"] = round((now - started) * 1000, 2)
+
         try:
-            yield f"data: {json.dumps({'stage': 'context', 'conversation_id': conversation_id, 'rewritten_question': rewritten_question if rewritten_question != req.question else ''}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'stage': 'context', 'request_id': request_id, 'conversation_id': conversation_id, 'rewritten_question': rewritten_question if rewritten_question != req.question else ''}, ensure_ascii=False)}\n\n"
             append_message(conversation_id, "user", req.question, book_name=book_name, subject=subject)
             for event in run_graph_stream(
                 user_input=rewritten_question,
@@ -88,6 +120,7 @@ def chat_stream(req: ChatRequest):
                 target_chapters=req.target_chapters or [],
                 use_textbook_context=use_textbook_context,
             ):
+                observe(event)
                 event["conversation_id"] = conversation_id
                 if event.get("stage") == "generate":
                     if event.get("replace"):
@@ -102,8 +135,24 @@ def chat_stream(req: ChatRequest):
                         event["persistence_error"] = persistence_error
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
+            logger.exception("chat stream failed", extra={"request_id": request_id})
             event = {"stage": "error", "message": str(exc), "done": True, "conversation_id": conversation_id}
+            observe(event)
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            now = time.perf_counter()
+            timings[last_stage] = round((now - stage_started) * 1000, 2)
+            try:
+                save_trace({
+                    "request_id": request_id, "conversation_id": conversation_id,
+                    "book_name": book_name, "question": req.question, "intent": intent,
+                    "fast_path": fast_path, "status": "error" if last_stage == "error" else "done",
+                    "ttft_ms": ttft_ms, "total_ms": round((now - started) * 1000, 2),
+                    "timings": timings, "evidence": final_state.get("retrieval_debug_items", []),
+                    "error": final_state.get("error", ""),
+                })
+            except Exception:
+                logger.exception("failed to persist RAG trace", extra={"request_id": request_id})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

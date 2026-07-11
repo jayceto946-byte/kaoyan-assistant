@@ -3,8 +3,8 @@ from memory.study_memory import StudyMemory
 from memory.spaced_repetition import SpacedRepetition
 
 
-def feedback_node(state: dict) -> dict:
-    """收集用户反馈并更新学习状态"""
+def _feedback_node_impl(state: dict) -> dict:
+    """Collect feedback and update learning state."""
     book_name = state.get("book_name", "default")
     target_chapters = state.get("target_chapters", [])
     feedback = state.get("user_feedback") or {}
@@ -46,6 +46,28 @@ def feedback_node(state: dict) -> dict:
     }
 
 
+def feedback_node(state: dict) -> dict:
+    """Best-effort feedback that never invalidates an already generated answer."""
+    try:
+        return _feedback_node_impl(state)
+    except Exception as exc:
+        print(f"[feedback] record failed: {exc}", flush=True)
+        return {
+            "mastery_update": {},
+            "user_feedback": None,
+            "linked_concepts": link_concepts_for_response(state),
+        }
+
+def link_concepts_for_response(state: dict) -> list[dict]:
+    """Resolve UI concept links locally without writing data or calling an LLM."""
+    try:
+        raw_concepts = _link_concepts_locally(state)
+        return _strict_concepts(raw_concepts, str(state.get("user_input", "")))
+    except Exception as exc:
+        print(f"[ConceptMemory] response linking failed: {exc}", flush=True)
+        return []
+
+
 _GENERIC_ALIAS_TERMS = {
     "\u65b9\u6cd5", "\u6b65\u9aa4", "\u8fed\u4ee3", "\u8fed\u4ee3\u6b65\u9aa4", "\u7a0b\u5e8f\u6846\u56fe", "\u539f\u7406", "\u8fc7\u7a0b", "\u7b97\u6cd5", "\u7ea6\u675f", "\u4f18\u5316", "\u4f18\u5316\u65b9\u6cd5", "\u6700\u4f18\u5316\u65b9\u6cd5", "\u95ee\u9898", "\u6761\u4ef6",
     "method", "step", "steps", "algorithm",
@@ -74,7 +96,7 @@ def _strict_concepts(concepts: list[dict], question: str = "") -> list[dict]:
 def _record_concept_memory(state: dict) -> list[dict]:
     """Link final QA output to KG concepts and persist shared concept memory."""
     try:
-        from knowledge.concept_linker import ConceptLinker, is_unclear_intent
+        from knowledge.concept_linker import is_unclear_intent
         from knowledge.concept_memory import ConceptMemory
         from memory.learning_events import LearningEvent, concept_names, get_learning_event_store
 
@@ -84,20 +106,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
         conversation_id = state.get("conversation_id", "")
         question = state.get("user_input", "")
         answer = state.get("final_output", "")
-        chapter_contents = state.get("chapter_contents", {}) or {}
-        chunks = []
-        for docs in chapter_contents.values():
-            chunks.extend(docs[:2])
-
-        linker = ConceptLinker(book_name)
-        raw_concepts = linker.link(
-            question=question,
-            answer=answer,
-            chunks=chunks,
-            matched_concepts=state.get("matched_concepts", []),
-            intent=intent,
-            limit=8,
-        )
+        raw_concepts = _link_concepts_locally(state)
 
         memory = ConceptMemory(book_name)
         concepts = _strict_concepts(raw_concepts, question)
@@ -113,8 +122,6 @@ def _record_concept_memory(state: dict) -> list[dict]:
             )
 
         candidates = [item for item in raw_concepts if item not in concepts]
-        if not raw_concepts:
-            candidates = memory.extract_concepts(question, answer)
         if candidates:
             memory.log_candidates(
                 candidates,
@@ -181,6 +188,26 @@ def _record_concept_memory(state: dict) -> list[dict]:
     except Exception as e:
         print(f"[ConceptMemory] QA record failed: {e}", flush=True)
         return []
+
+
+def _link_concepts_locally(state: dict) -> list[dict]:
+    """Use only the local KG linker; automatic feedback must never add an LLM call."""
+    from knowledge.concept_linker import ConceptLinker
+
+    chapter_contents = state.get("chapter_contents", {}) or {}
+    chunks: list[str] = []
+    for docs in chapter_contents.values():
+        chunks.extend(docs[:2])
+
+    return ConceptLinker(state.get("book_name", "default")).link(
+        question=state.get("user_input", ""),
+        answer=state.get("final_output", ""),
+        chunks=chunks,
+        matched_concepts=state.get("matched_concepts", []),
+        intent=state.get("intent", "qa"),
+        limit=8,
+    )
+
 
 def _rating_to_quality(rating) -> int:
     if isinstance(rating, (int, float)):

@@ -236,8 +236,13 @@ class ChapterVectorStore:
 
         documents = [
             Document(
-                page_content=chunk["content"],
+                page_content=chunk.get("retrieval_text") or chunk["content"],
                 metadata={
+                    "raw_content": chunk.get("content", ""),
+                    "section_path": json.dumps(chunk.get("section_path", []), ensure_ascii=False),
+                    "parent_id": chunk.get("parent_id", ""),
+                    "prev_chunk_id": chunk.get("prev_chunk_id", ""),
+                    "next_chunk_id": chunk.get("next_chunk_id", ""),
                     "chapter": chunk.get("chapter", chapter_title),
                     "book_name": normalized_book,
                     "chunk_index": chunk.get("chunk_index", 0),
@@ -318,6 +323,33 @@ class ChapterVectorStore:
         for col in self._iter_collections_for_book(collections, normalized_book):
             names.append(self._collection_to_title(col.name))
         return names
+
+    def get_book_index_stats(self, book_name: str) -> dict:
+        """Return per-book index health without embedding a query."""
+        normalized_book = safe_book_name(book_name) if book_name else ""
+        stats = {"book_name": normalized_book, "collection_count": 0, "chunk_count": 0, "healthy": False}
+        if not normalized_book:
+            return stats
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(path=str(self.db_path))
+            for collection in client.list_collections():
+                if self._is_book_collection(collection.name):
+                    continue
+                if self._collection_to_book(collection.name) != normalized_book:
+                    continue
+                stats["collection_count"] += 1
+                stats["chunk_count"] += int(collection.count())
+        except Exception as exc:
+            stats["error"] = str(exc)
+            return stats
+        stats["healthy"] = stats["collection_count"] > 0 and stats["chunk_count"] > 0
+        try:
+            from ingestion.lexical_index import load_book_index
+            stats["lexical_chunk_count"] = len(load_book_index(normalized_book))
+        except Exception:
+            stats["lexical_chunk_count"] = 0
+        return stats
 
     def search_chapter(
         self,

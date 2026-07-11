@@ -17,6 +17,7 @@ from typing import Any, Callable
 from config import MINERU_API_URL, MINERU_CLI_COMMAND, MINERU_OUTPUT_PATH, MINERU_TASK_POLL_SECONDS, MINERU_TASK_TIMEOUT_SECONDS
 from ingestion.chapter_splitter import ChapterSplitter
 from ingestion.chunk_roles import assign_chunk_roles, load_kg_chunk_roles, role_distribution
+from ingestion.lexical_index import write_book_index
 from ingestion.mineru_client import MinerUClient
 from ingestion.pdf_parser import PDFParser
 from ingestion.vector_store import get_vector_store
@@ -57,11 +58,18 @@ def import_textbook_local(
     if on_progress:
         on_progress("local_parse", "使用本地目录解析，扫描件正文不会 OCR", 35)
     chapters = _parse_chapters_locally(pdf_path, book_name, toc_pages)
+    if on_progress:
+        on_progress("indexing", "Building local textbook index", 75)
+    output_dir = MINERU_OUTPUT_PATH / book_name / "local"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    indexed = build_index_from_chapters(book_name, chapters, output_dir)
     return BookImportResult(
         book_name=book_name,
         chapters=chapters,
         used_mineru=False,
         message="本地目录解析完成；扫描件正文未 OCR",
+        indexed_chunks=indexed,
+        output_dir=str(output_dir),
     )
 
 
@@ -365,7 +373,36 @@ def _collect_block_text(block: dict) -> str:
     return " ".join(parts).strip()
 
 
+def _coalesce_external_ocr_chapters(chapters: list[dict], book_name: str) -> list[dict]:
+    """Collapse legacy heading-per-record OCR imports into book chapters."""
+    if len(chapters) < 80 or sum(item.get("source") == "external_ocr_jsonl" for item in chapters[:120]) < 20:
+        return chapters
+    grouped, current, current_number = [], None, ""
+    for item in chapters:
+        title = str(item.get("title") or "").strip()
+        text = str(item.get("text") or "").strip()
+        match = re.match(r"^(\d{1,2})(?:\.|\s)", title)
+        number = match.group(1) if match else current_number
+        if number and number != current_number:
+            current_number = number
+            current = {
+                "title": f"\u7b2c{number}\u7ae0", "text_parts": [],
+                "page_number": item.get("page_number") or item.get("page") or 1,
+            }
+            grouped.append(current)
+        if current is None:
+            current = {"title": book_name, "text_parts": [], "page_number": 1}
+            grouped.append(current)
+        if text:
+            current["text_parts"].append(f"## {title}\n\n{text}" if title and not text.lstrip().startswith("#") else text)
+    return [
+        {"title": item["title"], "text": "\n\n".join(item["text_parts"]), "page_number": item["page_number"]}
+        for item in grouped if item["text_parts"]
+    ]
+
+
 def build_index_from_chapters(book_name: str, chapters: list[dict], output_dir: Path) -> int:
+    chapters = _coalesce_external_ocr_chapters(chapters, book_name)
     splitter = ChapterSplitter()
     vs = get_vector_store()
     kg_roles = load_kg_chunk_roles(book_name)
@@ -376,9 +413,12 @@ def build_index_from_chapters(book_name: str, chapters: list[dict], output_dir: 
         text = chapter.get("text", "")
         if not text.strip():
             continue
-        chunks = splitter.split_chapter(title, text)
+        try:
+            chunks = splitter.split_chapter(title, text, book_name=book_name)
+        except TypeError:
+            chunks = splitter.split_chapter(title, text)
         for chunk in chunks:
-            chunk["section_title"] = title
+            chunk["section_title"] = chunk.get("section_title") or title
             chunk["page_idx"] = max(int(chapter.get("page_number", 1) or 1) - 1, 0)
 
         chunk_roles = assign_chunk_roles(chunks, kg_roles)
@@ -396,6 +436,13 @@ def build_index_from_chapters(book_name: str, chapters: list[dict], output_dir: 
         (output_dir / f"{book_name}_middle_chunks.json").write_text(
             json.dumps(all_chunks, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        if hasattr(vs, "get_book_index_stats"):
+            write_book_index(book_name, all_chunks)
+        stats = vs.get_book_index_stats(book_name) if hasattr(vs, "get_book_index_stats") else {}
+        if stats and (not stats.get("healthy") or int(stats.get("chunk_count", 0)) < len(all_chunks)):
+            raise RuntimeError(
+                f"textbook index validation failed: expected={len(all_chunks)}, actual={stats.get('chunk_count', 0)}"
+            )
     return len(all_chunks)
 
 def _normalize_text(text: str) -> str:

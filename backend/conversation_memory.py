@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import threading
 import uuid
 from pathlib import Path
 
@@ -12,6 +13,11 @@ from utils.json_io import atomic_write_json
 from utils.subject_catalog import normalize_subject_value, subject_matches
 
 CONV_DIR = Path(PROGRESS_PATH) / "conversations"
+_CONVERSATION_LOCKS = tuple(threading.RLock() for _ in range(64))
+
+
+def _conversation_lock(conversation_id: str) -> threading.RLock:
+    return _CONVERSATION_LOCKS[hash(conversation_id) % len(_CONVERSATION_LOCKS)]
 
 
 def ensure_conversation_id(conversation_id: str = "") -> str:
@@ -44,25 +50,25 @@ def load_history(conversation_id: str) -> list[dict]:
 def append_message(conversation_id: str, role: str, content: str, book_name: str = "", subject: str = "") -> None:
     subject = normalize_subject_value(subject)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
-    payload = _read_payload(conversation_id)
-    history = payload.get("messages", []) if isinstance(payload, dict) else []
-    history.append({
-        "role": role,
-        "content": content,
-        "book_name": book_name,
-        "subject": subject,
-        "created_at": now,
-    })
-    payload = {
-        "id": conversation_id,
-        "messages": history[-40:],
-        "subject": subject or payload.get("subject", ""),
-        "book_name": book_name or payload.get("book_name", ""),
-        "created_at": payload.get("created_at") or now,
-        "updated_at": now,
-    }
-    atomic_write_json(_path(conversation_id), payload)
-
+    with _conversation_lock(conversation_id):
+        payload = _read_payload(conversation_id)
+        history = payload.get("messages", []) if isinstance(payload, dict) else []
+        history.append({
+            "role": role,
+            "content": content,
+            "book_name": book_name,
+            "subject": subject,
+            "created_at": now,
+        })
+        payload = {
+            "id": conversation_id,
+            "messages": history[-40:],
+            "subject": subject or payload.get("subject", ""),
+            "book_name": book_name or payload.get("book_name", ""),
+            "created_at": payload.get("created_at") or now,
+            "updated_at": now,
+        }
+        atomic_write_json(_path(conversation_id), payload)
 
 def get_conversation(conversation_id: str) -> dict:
     payload = _read_payload(ensure_conversation_id(conversation_id))
@@ -130,31 +136,30 @@ def _first_meta(messages: list[dict], key: str) -> str:
 
 
 def rewrite_followup(question: str, history: list[dict], book_name: str = "", subject: str = "") -> str:
+    """Turn an explicit anaphoric follow-up into a compact retrieval query."""
     question = question.strip()
     if not history or not _looks_like_followup(question):
         return question
-    recent = history[-6:]
-    lines = []
-    for item in recent:
-        role = "用户" if item.get("role") == "user" else "助手"
-        content = str(item.get("content", "")).strip()
-        if content:
-            lines.append(f"{role}: {content[:600]}")
-    context = "\n".join(lines)
-    scope = ""
-    if subject or book_name:
-        scope = f"科目：{subject or '未指定'}；教材：{book_name or '未指定'}。\n"
-    return (
-        "请基于以下同一会话上下文理解用户追问，优先把省略指代补全后回答。\n"
-        f"{scope}"
-        f"【最近上下文】\n{context}\n\n"
-        f"【当前追问】\n{question}"
+    previous_user = next(
+        (_strip_internal_references(str(item.get("content", ""))) for item in reversed(history) if item.get("role") == "user" and str(item.get("content", "")).strip()),
+        "",
     )
+    if not previous_user:
+        return question
+    scope = " / ".join(value for value in (subject.strip(), book_name.strip()) if value)
+    prefix = f"[{scope}] " if scope else ""
+    return f"{prefix}{previous_user[:500]}；{question}"
 
 
 def _looks_like_followup(question: str) -> bool:
     compact = re.sub(r"\s+", "", question)
-    if len(compact) <= 18:
-        return True
-    markers = ["这个", "那个", "上面", "刚才", "继续", "为什么", "怎么", "这里", "它", "这一步", "再解释", "展开", "追问"]
+    markers = [
+        "\u8fd9\u4e2a", "\u90a3\u4e2a", "\u4e0a\u9762", "\u521a\u624d", "\u524d\u9762", "\u7ee7\u7eed",
+        "\u8fd9\u91cc", "\u5b83", "\u5176", "\u8fd9\u4e00\u6b65", "\u518d\u89e3\u91ca", "\u5c55\u5f00", "\u8ffd\u95ee",
+    ]
     return any(marker in compact for marker in markers)
+
+
+def _strip_internal_references(text: str) -> str:
+    text = re.sub(r"\s*/\s*[a-f0-9]{12,64}(?=\s*\])", "", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip()

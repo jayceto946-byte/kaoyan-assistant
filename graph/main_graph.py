@@ -90,6 +90,9 @@ def build_initial_state(
         "target_chapters": target_chapters or [],
         "route_decision": "",
         "chapter_contents": {},
+        "retrieval_debug_items": [],
+        "evidence_items": [],
+        "index_stats": {},
         "concept_results": [],
         "history_results": [],
         "knowledge_graph_path": [],
@@ -162,9 +165,8 @@ def run_graph_stream(
     from graph.chapter_subgraph import (
         prepare_chapter_subgraph, TEACH_PROMPT, _future_result_if_done,
     )
-    from graph.generator import _build_generate_prompt, _format_quiz_appendix
-    from graph.feedback_node import feedback_node
-    from knowledge.concept_memory import ConceptMemory
+    from graph.generator import _build_generate_prompt, _format_quiz_appendix, grounded_failure_message, has_textbook_evidence
+    from graph.feedback_node import feedback_node, link_concepts_for_response
     from knowledge.summary_store import SummaryStore
     from utils.latex_sanitizer import sanitize_latex
     from utils.thinking_filter import ThinkingFilter
@@ -308,55 +310,47 @@ def run_graph_stream(
         state["final_output"] = sanitize_latex(content)
         yield {"stage": "generate", "chunk": "", "done": True}
     else:
-        prompt = _build_generate_prompt(state)
-        llm = get_llm()
-        buffer = ""
-        tf = ThinkingFilter()
-        for chunk in llm.stream(prompt):
-            text = tf.filter(chunk.content)
-            if text:
-                buffer += text
-                yield {"stage": "generate", "chunk": text, "done": False}
-        final_flush = tf.flush()
-        if final_flush:
-            buffer += final_flush
-            yield {"stage": "generate", "chunk": final_flush, "done": False}
-        quiz_appendix = _format_quiz_appendix(state)
-        if quiz_appendix:
-            buffer += quiz_appendix
-            yield {"stage": "generate", "chunk": quiz_appendix, "done": False}
-        sanitized_output = sanitize_latex(buffer)
-        if sanitized_output != buffer:
-            yield {"stage": "generate", "chunk": sanitized_output, "replace": True, "done": False}
-        state["final_output"] = sanitized_output
-        yield {"stage": "generate", "chunk": "", "done": True}
+        if state.get("use_textbook_context", True) and not has_textbook_evidence(state):
+            buffer = grounded_failure_message(state)
+            state["final_output"] = buffer
+            yield {"stage": "generate", "chunk": buffer, "done": False}
+            yield {"stage": "generate", "chunk": "", "done": True}
+        else:
+            prompt = _build_generate_prompt(state)
+            try:
+                llm = get_llm(temperature=0.1 if state.get("use_textbook_context", True) else 1)
+            except TypeError:
+                llm = get_llm()
+            buffer = ""
+            tf = ThinkingFilter()
+            for chunk in llm.stream(prompt):
+                text = tf.filter(chunk.content)
+                if text:
+                    buffer += text
+                    yield {"stage": "generate", "chunk": text, "done": False}
+            final_flush = tf.flush()
+            if final_flush:
+                buffer += final_flush
+                yield {"stage": "generate", "chunk": final_flush, "done": False}
+            quiz_appendix = _format_quiz_appendix(state)
+            if quiz_appendix:
+                buffer += quiz_appendix
+                yield {"stage": "generate", "chunk": quiz_appendix, "done": False}
+            sanitized_output = sanitize_latex(buffer)
+            if sanitized_output != buffer:
+                yield {"stage": "generate", "chunk": sanitized_output, "replace": True, "done": False}
+            state["final_output"] = sanitized_output
+            yield {"stage": "generate", "chunk": "", "done": True}
 
-    # ── ConceptMemory：提取概念（后台）+ enrich（同步）──
-    # 【暂时关闭学习提醒】
-    # cm = ConceptMemory(book_name)
-    # final_output = state.get("final_output", "")
-    # local_concepts = cm._extract_concepts_local(
-    #     user_input, final_output, state.get("target_chapters", [])
-    # )
-    # local_names = [c["name"] for c in local_concepts]
-    # if local_names:
-    #     enriched = cm.enrich_answer(final_output, local_names)
-    #     if enriched != final_output:
-    #         state["final_output"] = enriched
-    #         yield {"stage": "generate", "chunk": enriched[len(final_output):], "done": False}
-    # def _bg_extract_and_log():
-    #     try:
-    #         concepts = cm.extract_concepts(user_input, state["final_output"])
-    #         if not concepts:
-    #             concepts = local_concepts
-    #         cm.log_exposure(concepts, user_input, state.get("intent", "qa"))
-    #         print(f"[ConceptMemory] 记录 {len(concepts)} 个概念", flush=True)
-    #     except Exception as e:
-    #         print(f"[ConceptMemory] 后台提取失败: {e}", flush=True)
-    # threading.Thread(target=_bg_extract_and_log, daemon=True).start()
+    # UI concept links are resolved locally. Learning-memory writes are
+    # best-effort background work and must never delay or replace the answer.
+    state["linked_concepts"] = link_concepts_for_response(state)
 
-    # ── Feedback ──
-    # Concept links are part of the UI response, so run this once before the
-    # final event. The node catches its own learning-memory failures.
-    state.update(feedback_node(dict(state)))
+    def _record_feedback() -> None:
+        try:
+            feedback_node(dict(state))
+        except Exception as exc:
+            print(f"[feedback] background record failed: {exc}", flush=True)
+
+    threading.Thread(target=_record_feedback, name="chat-feedback", daemon=True).start()
     yield {"stage": "done", "state": state, "enriched": False}

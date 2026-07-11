@@ -79,9 +79,8 @@ def _write_asset_manifest(data_dir: Path) -> None:
 
 
 def _seed_sample_data(data_dir: Path) -> None:
-    sample_dir = Path(os.getenv("KAOYAN_SEED_DATA_DIR", ""))
-    if not sample_dir:
-        sample_dir = _bundle_root() / "sample_data"
+    sample_dir_str = os.getenv("KAOYAN_SEED_DATA_DIR", "")
+    sample_dir = Path(sample_dir_str) if sample_dir_str else (_bundle_root() / "sample_data")
     if not sample_dir.exists():
         return
 

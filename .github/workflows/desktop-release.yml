@@ -35,7 +35,7 @@ jobs:
         run: |
           python -m venv venv310
           .\venv310\Scripts\python.exe -m pip install --upgrade pip
-          .\venv310\Scripts\python.exe -m pip install -r requirements.txt pyinstaller
+          .\venv310\Scripts\python.exe -m pip install -r requirements-release.txt
 
       - name: Install frontend dependencies
         shell: pwsh

@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from utils.path_safety import safe_book_name, safe_child_path
+from utils.sqlite_recovery import prepare_sqlite_retry_files
 from utils.subject_catalog import subject_matches
 from typing import Any, Callable, Optional
 
@@ -120,16 +121,13 @@ class MistakeBookStore:
             conn.commit()
 
     def _prepare_retry_db_files(self) -> None:
-        for suffix in ("-wal", "-shm", "-journal"):
-            try:
-                Path(f"{self.db_path}{suffix}").unlink(missing_ok=True)
-            except OSError:
-                pass
-        try:
-            if self.db_path.exists() and self.db_path.stat().st_size == 0:
-                self.db_path.unlink()
-        except OSError:
-            pass
+        result = prepare_sqlite_retry_files(self.db_path)
+        if result["preserved"]:
+            print(
+                f"[sqlite] preserved non-empty recovery files for {self.db_path}: "
+                f"{', '.join(result['preserved'])}",
+                flush=True,
+            )
 
     def add(self, record: MistakeRecord) -> str:
         if not record.sm2:
