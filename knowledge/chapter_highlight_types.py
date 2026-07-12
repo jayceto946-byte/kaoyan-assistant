@@ -8,7 +8,7 @@ from typing import Callable
 
 ProgressCallback = Callable[[str, str, int | None], None]
 
-PROMPT_VERSION = "chapter_highlights_v5_grounded"
+PROMPT_VERSION = "chapter_highlights_v6_review_friendly"
 MAX_SECTION_INPUT_CHARS = 14000
 MAX_COMBINE_INPUT_CHARS = 80000
 

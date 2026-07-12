@@ -9,6 +9,10 @@
   --color-accent: #0066cc;
   --color-accent-hover: #0071e3;
   --color-border: #e0e0e0;
+  --radius-md: 8px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
 }
 
 :root {
@@ -21,16 +25,27 @@
   --accent-soft: rgba(0, 102, 204, 0.08);
   --accent-softer: rgba(0, 102, 204, 0.045);
   --success: #2f6b4f;
+  --success-text: #2f6b4f;
+  --success-bg: #edf6f0;
+  --success-border: #bfd4c6;
   --warning: #8a651c;
+  --warning-text: #8a651c;
+  --warning-bg: #fff7de;
+  --warning-border: #dec98b;
   --danger: #b42318;
+  --danger-text: #b42318;
+  --danger-bg: #fff1ed;
+  --danger-border: #e6b2a9;
   --info: #0066cc;
   --shadow-soft: none;
   --shadow-tight: none;
-  --font-app: "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "Microsoft YaHei", sans-serif;
+  --font-app: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-math: "STIX Two Math", "Cambria Math", "Times New Roman", serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
   --text-hero: 30px;
-  --text-title: 16px;
-  --text-section: 14px;
-  --text-body: 13px;
+  --text-title: 24px;
+  --text-section: 16px;
+  --text-body: 14px;
   --text-caption: 12px;
   --text-micro: 11px;
   --leading-tight: 1.24;
@@ -58,6 +73,21 @@ body {
   font-family: var(--font-app);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  font-variant-numeric: proportional-nums;
+}
+
+code,
+pre,
+kbd,
+samp,
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+.tabular-nums,
+time,
+[data-numeric="true"] {
+  font-variant-numeric: tabular-nums;
 }
 
 button,
@@ -75,8 +105,19 @@ button:not(:disabled) {
   cursor: pointer;
 }
 
-button:not(:disabled):active {
-  transform: scale(0.95);
+button:not(:disabled):active,
+a[role="button"]:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 72%, white);
+  outline-offset: 2px;
 }
 
 .type-hero {
@@ -327,6 +368,24 @@ select:hover {
   box-shadow: var(--shadow-tight);
 }
 
+.status-success {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.status-warning {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.status-danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
 .subtle-panel {
   border: 1px solid var(--color-border);
   background: var(--surface-subtle);
@@ -445,7 +504,8 @@ body:has(.electron-titlebar) .app-shell[data-sidebar="collapsed"] .desktop-chat-
 @media (max-width: 767.98px) {
   :root {
     --text-hero: 26px;
-    --text-title: 15px;
+    --text-title: 21px;
+    --text-section: 15px;
   }
 
   html,

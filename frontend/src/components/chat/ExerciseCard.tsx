@@ -57,8 +57,8 @@ const ExerciseCard: React.FC<{ card: ChatExerciseCard; bookName: string }> = ({ 
             {answerOpen ? '收起答案解析' : '查看答案解析'}
           </button>
           <button type="button" disabled={practiceLoading} onClick={() => submitPractice(1, true)} className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-[var(--danger)] disabled:opacity-50">做错入错题</button>
-          <button type="button" disabled={practiceLoading} onClick={() => submitPractice(3)} className="rounded-lg border border-[#dec98b] bg-[#fff7de] px-3 py-1.5 text-xs text-[var(--warning)] disabled:opacity-50">勉强会</button>
-          <button type="button" disabled={practiceLoading} onClick={() => submitPractice(5)} className="rounded-lg border border-[#bfd4c6] bg-[#edf6f0] px-3 py-1.5 text-xs text-[var(--success)] disabled:opacity-50">掌握</button>
+          <button type="button" disabled={practiceLoading} onClick={() => submitPractice(3)} className="status-warning rounded-lg border px-3 py-1.5 text-xs disabled:opacity-50">勉强会</button>
+          <button type="button" disabled={practiceLoading} onClick={() => submitPractice(5)} className="status-success rounded-lg border px-3 py-1.5 text-xs disabled:opacity-50">掌握</button>
         </div>
         {practiceLoading && <div className="mt-3 flex items-center gap-2 text-xs text-text-secondary"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在记录...</div>}
         {message && <div className="mt-3 rounded-lg border border-border bg-bg-card px-3 py-2 text-xs text-text-secondary">{message}</div>}

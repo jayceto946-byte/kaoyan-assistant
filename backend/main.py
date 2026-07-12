@@ -12,16 +12,39 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 import logging
 import os
+import threading
 
 from backend.api import agent, chat, mistakes, books, kg, exercises, system, reports, assets, highlights, jobs
 
 logger = logging.getLogger(__name__)
+_warmup_state = {"status": "pending", "error": ""}
+_warmup_lock = threading.Lock()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    _warmup()
+    _recover_jobs()
+    _start_warmup()
     yield
+
+
+def _recover_jobs() -> None:
+    try:
+        from backend.job_manager import get_job_manager
+
+        interrupted = get_job_manager().mark_running_interrupted()
+        if interrupted:
+            logger.info("marked %s unfinished jobs interrupted", interrupted)
+    except Exception:
+        logger.exception("startup job recovery failed")
+
+
+def _start_warmup() -> None:
+    with _warmup_lock:
+        if _warmup_state["status"] != "pending":
+            return
+        _warmup_state.update(status="starting", error="")
+        threading.Thread(target=_warmup, name="backend-warmup", daemon=True).start()
 
 app = FastAPI(
     title="考研智能辅助系统 API",
@@ -61,21 +84,15 @@ app.include_router(jobs.router, prefix="/api")
 # ── 健康检查 ──────────────────────────────────────────────
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": "1.0.0", "warmup": dict(_warmup_state)}
 
 # ── 启动预热 ──────────────────────────────────────────────
 def _warmup():
     """启动时预热：加载嵌入模型和向量库，避免首请求长时间等待。"""
     import time
     t0 = time.time()
-    try:
-        from backend.job_manager import get_job_manager
-
-        interrupted = get_job_manager().mark_running_interrupted()
-        if interrupted:
-            logger.info("marked %s unfinished jobs interrupted", interrupted)
-    except Exception as e:
-        logger.exception("startup job recovery failed")
+    _warmup_state.update(status="running", error="")
+    errors = []
     if os.getenv('SKIP_EMBEDDING_WARMUP', '0') == '1':
         logger.info("embedding warmup skipped")
     else:
@@ -84,6 +101,7 @@ def _warmup():
             get_embeddings()
             logger.info("embeddings loaded in %.1fs", time.time() - t0)
         except Exception as e:
+            errors.append(str(e))
             logger.exception("embedding warmup failed")
 
     t1 = time.time()
@@ -95,10 +113,12 @@ def _warmup():
             get_vector_store()
             logger.info("vector store loaded in %.1fs", time.time() - t1)
         except Exception as e:
+            errors.append(str(e))
             logger.exception("vector store warmup failed")
 
     logger.info("concept graph warmup skipped")
 
+    _warmup_state.update(status="degraded" if errors else "ready", error="; ".join(errors))
     logger.info("startup warmup completed in %.1fs", time.time() - t0)
 
 

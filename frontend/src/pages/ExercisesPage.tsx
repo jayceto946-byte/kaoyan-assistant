@@ -705,11 +705,11 @@ const ExercisesPage: React.FC = () => {
                 <input type="number" min="1" value={pdfPage} onChange={(e) => setPdfPage(e.target.value)} className="w-24 rounded-lg border border-border bg-bg-primary px-2.5 py-1.5 text-sm outline-none focus:border-accent" />
                 <button onClick={() => setPdfPage((value) => String(Math.max(1, Number(value || 1) - 1)))} className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:border-accent">上一页</button>
                 <button onClick={() => setPdfPage((value) => String(Number(value || 1) + 1))} className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:border-accent">下一页</button>
-                <button onClick={() => { setTextbookPageStart(pdfPage || '1'); if (!textbookPageEnd) setTextbookPageEnd(pdfPage || '1'); setPdfOpen(false); }} className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white">用作起始页</button>
+                <button onClick={() => { const selectedPage = pdfPage || '1'; setTextbookPageStart(selectedPage); setTextbookPageEnd(selectedPage); setPdfOpen(false); }} className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white">{"\u62bd\u53d6\u5f53\u524d\u9875"}</button>
                 <button onClick={() => setPdfOpen(false)} aria-label="关闭 PDF" className="rounded-lg border border-border p-1.5 hover:border-accent"><X className="h-4 w-4" /></button>
               </div>
             </div>
-            <iframe key={sourcePdfUrl} title="教材 PDF 预览" src={sourcePdfUrl} className="min-h-0 flex-1 bg-white" />
+            <iframe key={sourcePdfUrl + '#page=' + (pdfPage || '1')} title={"\u6559\u6750 PDF \u9884\u89c8"} src={sourcePdfUrl + '#page=' + Math.max(1, Number(pdfPage || 1))} className="min-h-0 flex-1 bg-white" />
           </div>
         </div>
       )}

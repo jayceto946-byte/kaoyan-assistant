@@ -168,7 +168,7 @@ import subprocess
 from datetime import datetime
 
 from config import BASE_DIR
-from utils.subject_catalog import DEFAULT_SUBJECT_TREE, read_subject_tree, write_subject_tree
+from utils.subject_catalog import DEFAULT_SUBJECT_TREE, clean_subject_tree, read_subject_tree, write_subject_tree
 
 ENV_PATH = Path(os.getenv("ENV_PATH", str(BASE_DIR / ".env")))
 
@@ -287,13 +287,41 @@ def get_subjects():
     return {"success": True, "data": _read_subject_tree()}
 
 
+def _subject_values_in_use() -> list[str]:
+    """Read textbook assignments without changing textbook metadata or indexes."""
+    from backend.api.books import _book_subject, _known_book_names
+
+    return sorted({value for name in _known_book_names() if (value := _book_subject(name))})
+
+
+def _catalog_values(tree: list[dict]) -> set[str]:
+    values: set[str] = set()
+    for node in tree:
+        parent = str(node.get("name", "")).strip()
+        if not parent:
+            continue
+        values.add(parent)
+        for child in node.get("children", []) or []:
+            child_name = str(child).strip()
+            if child_name:
+                values.add(child_name)  # Backward-compatible legacy assignment.
+                values.add(f"{parent}/{child_name}")
+    return values
+
+
 @router.post("/settings/subjects")
 def save_subjects(payload: dict):
     tree = payload.get("subjects", [])
     if not isinstance(tree, list):
         return {"success": False, "message": "subjects 必须是列表"}
-    cleaned = _write_subject_tree(tree)
-    return {"success": True, "message": "学科设置已保存", "data": cleaned}
+    cleaned = clean_subject_tree(tree)
+    valid_values = _catalog_values(cleaned)
+    orphaned = [value for value in _subject_values_in_use() if value not in valid_values]
+    if orphaned:
+        preview = "、".join(orphaned[:4])
+        return {"success": False, "message": f"目录未保存：以下教材归属仍在使用，请先移动对应教材：{preview}"}
+    saved = _write_subject_tree(cleaned)
+    return {"success": True, "message": "资料库目录已保存", "data": saved}
 
 
 @router.get("/version")

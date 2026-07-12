@@ -12,6 +12,8 @@ let mainWindow = null;
 let backendProcess = null;
 let backendStartError = null;
 let shuttingDown = false;
+let allowQuit = false;
+let backendShutdownPromise = null;
 let updaterConfigured = false;
 let updateState = {
   status: 'idle',
@@ -160,6 +162,76 @@ function attachBackendLogging() {
   });
 }
 
+function waitForProcessExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once('exit', onExit);
+  });
+}
+
+function forceKillProcessTree(pid) {
+  if (!pid) return Promise.resolve();
+  if (process.platform === 'win32') {
+    return new Promise((resolve) => {
+      const killer = spawn('taskkill.exe', ['/pid', String(pid), '/t', '/f'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      killer.once('error', (error) => {
+        appendBackendLog('[shutdown] taskkill failed: ' + (error.message || error));
+        resolve();
+      });
+      killer.once('exit', () => resolve());
+    });
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch (error) {
+    if (error?.code !== 'ESRCH') appendBackendLog('[shutdown] force kill failed: ' + (error.message || error));
+  }
+  return Promise.resolve();
+}
+
+function stopBackend() {
+  if (backendShutdownPromise) return backendShutdownPromise;
+  const child = backendProcess;
+  if (!child || child.exitCode !== null) return Promise.resolve();
+
+  backendShutdownPromise = (async () => {
+    const pid = child.pid;
+    appendBackendLog('[shutdown] stopping backend tree pid=' + pid);
+    if (process.platform === 'win32') {
+      await forceKillProcessTree(pid);
+      await waitForProcessExit(child, 2500);
+    } else {
+      try {
+        child.kill();
+      } catch (error) {
+        appendBackendLog('[shutdown] graceful stop failed: ' + (error.message || error));
+      }
+      if (!(await waitForProcessExit(child, 2500))) {
+        appendBackendLog('[shutdown] forcing backend tree pid=' + pid);
+        await forceKillProcessTree(pid);
+        await waitForProcessExit(child, 2500);
+      }
+    }
+    if (backendProcess === child) backendProcess = null;
+  })().finally(() => {
+    backendShutdownPromise = null;
+  });
+  return backendShutdownPromise;
+}
+
 function startBackend() {
   if (process.env.KAOYAN_SKIP_BACKEND === '1') {
     appendBackendLog('[main] KAOYAN_SKIP_BACKEND=1, backend spawn skipped.');
@@ -178,6 +250,7 @@ function startBackend() {
       backendProcess = spawn(executable, [], {
         cwd: path.dirname(executable),
         windowsHide: true,
+        detached: process.platform !== 'win32',
         env,
       });
       attachBackendLogging();
@@ -192,6 +265,7 @@ function startBackend() {
       {
         cwd: projectRoot(),
         windowsHide: true,
+        detached: process.platform !== 'win32',
         env,
       },
     );
@@ -311,13 +385,15 @@ ipcMain.handle('updates:download', async () => {
   await autoUpdater.downloadUpdate();
   return updateState;
 });
-ipcMain.handle('updates:install', () => {
+ipcMain.handle('updates:install', async () => {
   if (updateState.status !== 'downloaded') {
-    return emitUpdateState({ status: 'error', message: '更新尚未下载完成，无法安装。' });
+    return emitUpdateState({ status: 'error', message: '\\u66f4\\u65b0\\u5c1a\\u672a\\u4e0b\\u8f7d\\u5b8c\\u6210\\uff0c\\u65e0\\u6cd5\\u5b89\\u88c5\\u3002' });
   }
   shuttingDown = true;
+  await stopBackend();
+  allowQuit = true;
   autoUpdater.quitAndInstall(false, true);
-  return emitUpdateState({ status: 'installing', message: '正在重启并安装更新...' });
+  return emitUpdateState({ status: 'installing', message: '\\u6b63\\u5728\\u91cd\\u542f\\u5e76\\u5b89\\u88c5\\u66f4\\u65b0...' });
 });
 
 app.whenReady().then(() => {
@@ -326,11 +402,14 @@ app.whenReady().then(() => {
   createWindow();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   shuttingDown = true;
-  if (backendProcess && !backendProcess.killed) {
-    backendProcess.kill();
-  }
+  if (allowQuit) return;
+  event.preventDefault();
+  void stopBackend().finally(() => {
+    allowQuit = true;
+    app.quit();
+  });
 });
 
 app.on('window-all-closed', () => {

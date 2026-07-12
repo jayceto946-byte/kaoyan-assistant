@@ -154,7 +154,7 @@ def test_chapter_highlight_prompt_uses_v5_and_textbook_evidence_only(tmp_path):
 
     prompt = service._section_prompt(source, sections)
 
-    assert PROMPT_VERSION == "chapter_highlights_v5_grounded"
+    assert PROMPT_VERSION == "chapter_highlights_v6_review_friendly"
     assert "不得使用模型记忆补充教材外知识" in prompt
     assert "每条事实必须能在给定材料中找到依据" in prompt
     assert "禁止自拟题" in prompt

@@ -43,36 +43,39 @@ class BackgroundReader:
         self._thread.start()
 
     def _run(self):
-        from ingestion.kimi_reader import KimiReader
-        from knowledge.keyword_index import KeywordIndex
-
-        reader = KimiReader(self.book_name)
-        kw_index = KeywordIndex(self.book_name)
         done = 0
+        final_current = "\u5b8c\u6210"
+        error = ""
+        try:
+            from ingestion.kimi_reader import KimiReader
+            from knowledge.keyword_index import KeywordIndex
 
-        for ch in self.chapters:
-            if not self._running:
-                break
-
-            title = ch.get("title", f"Ch{done+1}")
-            start = max(0, ch.get("page_number", 1) - 1)
-            end = ch.get("end_page", start + 10)
-
-            print(f"[预读] {done+1}/{len(self.chapters)} {title} p{start+1}-{end}", flush=True)
-            self._save_status(done=done, current=title)
-
+            reader = KimiReader(self.book_name)
+            kw_index = KeywordIndex(self.book_name)
+            for ch in self.chapters:
+                if not self._running:
+                    final_current = "\u5df2\u505c\u6b62"
+                    break
+                title = ch.get("title", f"Ch{done+1}")
+                start = max(0, ch.get("page_number", 1) - 1)
+                end = ch.get("end_page", start + 10)
+                self._save_status(done=done, current=title)
+                try:
+                    text, kws = reader.read_pages(
+                        self.pdf_path, start, end, title, extract_keywords=True
+                    )
+                    if kws:
+                        kw_index.add_keywords(kws, title)
+                except Exception as exc:
+                    print(f"[preread] {title} failed: {exc}", flush=True)
+                done += 1
+        except Exception as exc:
+            error = str(exc)
+            final_current = "\u5931\u8d25"
+            print(f"[preread] worker failed: {exc}", flush=True)
+        finally:
+            self._running = False
             try:
-                text, kws = reader.read_pages(
-                    self.pdf_path, start, end, title, extract_keywords=True
-                )
-                print(f"[预读] {title} 完成 ({len(text)}字, {len(kws)}关键词)", flush=True)
-                if kws:
-                    kw_index.add_keywords(kws, title)
-            except Exception as e:
-                print(f"[预读] {title} 失败: {e}", flush=True)
-
-            done += 1
-
-        print(f"[预读] 全部完成: {done}/{len(self.chapters)}", flush=True)
-        self._save_status(done=done, current="完成", running=False)
-        self._running = False
+                self._save_status(done=done, current=final_current, running=False, error=error)
+            except Exception as exc:
+                print(f"[preread] failed to persist final status: {exc}", flush=True)

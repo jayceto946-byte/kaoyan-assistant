@@ -75,7 +75,16 @@ def extract_textbook_exercise_text(
             chunk_count=chunk_count,
             warnings=warnings,
         )
-    warnings.append("未找到已生成重点页的 source_package，已尝试读取教材导入产物")
+    if resolved_start:
+        selected_range = f"p{resolved_start}"
+        if resolved_end and resolved_end != resolved_start:
+            selected_range += f"-{resolved_end}"
+        warnings.append(
+            f"\u672a\u4ece source_package \u5339\u914d\u5230\u6240\u9009\u9875 {selected_range} \u7684\u53ef\u7528\u9898\u76ee\uff0c"
+            "\u5df2\u6309\u540c\u4e00\u9875\u7801\u8303\u56f4\u8bfb\u53d6\u6559\u6750\u5bfc\u5165\u4ea7\u7269"
+        )
+    else:
+        warnings.append("\u672a\u627e\u5230\u5df2\u751f\u6210\u91cd\u70b9\u9875\u7684 source_package\uff0c\u5df2\u5c1d\u8bd5\u8bfb\u53d6\u6559\u6750\u5bfc\u5165\u4ea7\u7269")
 
     chunk_text, chunk_count = _text_from_middle_chunks(clean_book, resolved_chapter, resolved_start, resolved_end, source_mode=source_mode)
     if chunk_text.strip():
@@ -319,7 +328,7 @@ def _section_chunks(section: dict, page_start: int | None, page_end: int | None,
         text = str(chunk.get("text") or chunk.get("content") or "").strip()
         if not text:
             continue
-        page = _positive_int(chunk.get("page")) or _page_from_item(chunk)
+        page = _page_from_item(chunk)
         if not _page_in_range(page, page_start, page_end):
             continue
         role = str(chunk.get("role") or "")
@@ -365,14 +374,29 @@ def _looks_like_toc_or_frontmatter(text: str, title: str = "") -> bool:
 
 def _page_from_item(item: dict) -> int | None:
     if "page_idx" in item:
-        page = _positive_int(item.get("page_idx"))
-        return page + 1 if page is not None else None
-    return _positive_int(item.get("page"))
+        try:
+            page_idx = int(item.get("page_idx"))
+        except (TypeError, ValueError):
+            page_idx = -1
+        if page_idx >= 0:
+            return page_idx + 1
+    for key in ("page", "page_number", "pdf_page", "page_no"):
+        page = _positive_int(item.get(key))
+        if page is not None:
+            return page
+    page = _page_from_source_markdown(item)
+    if page is not None:
+        return page
+    source_ref = str(item.get("source_ref") or "")
+    match = re.search(r"(?:^|[ /_-])p(?:age)?[ ._-]?(\d+)(?:\D|$)", source_ref, re.IGNORECASE)
+    return _positive_int(match.group(1)) if match else None
 
 
 def _page_in_range(page: int | None, page_start: int | None, page_end: int | None) -> bool:
-    if page is None or not page_start:
+    if not page_start:
         return True
+    if page is None:
+        return False
     end = page_end or page_start
     return page_start <= page <= end
 

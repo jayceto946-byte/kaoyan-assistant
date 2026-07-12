@@ -1,19 +1,20 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ArrowRightLeft, BookOpen, CheckCircle2, CircleX, Plus, RefreshCw, Save, Trash2, Wrench, X } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { AlertTriangle, CheckCircle2, CircleX, RefreshCw, Save, Wrench, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { del, get, patch, post } from '../api/client';
 import { useSystemHealth } from '../hooks/useSystemHealth';
 import { useChatContext } from '../contexts/ChatContext';
 import type { SystemHealthStatus } from '../types';
+import LibraryManager from './settings/LibraryManager';
 
 type SubjectNode = { name: string; children: string[] };
 type ManagedBook = { name: string; subject?: string; path?: string; has_pdf?: boolean; chapter_count?: number; size?: number };
-type Tab = 'health' | 'version' | 'books' | 'subjects' | 'models';
+type Tab = 'health' | 'version' | 'subjects' | 'models';
 
 const statusMeta: Record<SystemHealthStatus, { label: string; icon: typeof CheckCircle2; iconClass: string; className: string }> = {
-  healthy: { label: '系统正常', icon: CheckCircle2, iconClass: 'text-[var(--success)]', className: 'border-[#bfd4c6] bg-[#edf6f0] text-[var(--success)]' },
-  degraded: { label: '部分降级', icon: AlertTriangle, iconClass: 'text-[var(--warning)]', className: 'border-[#dec98b] bg-[#fff7de] text-[var(--warning)]' },
+  healthy: { label: '系统正常', icon: CheckCircle2, iconClass: 'text-[var(--success)]', className: 'status-success' },
+  degraded: { label: '部分降级', icon: AlertTriangle, iconClass: 'text-[var(--warning)]', className: 'status-warning' },
   error: { label: '系统异常', icon: CircleX, iconClass: 'text-[var(--danger)]', className: 'border-red-300 bg-red-50 text-[var(--danger)]' },
 };
 
@@ -22,8 +23,7 @@ const secretKeys = ['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'OPENAI_API_KEY'];
 const SETTINGS_TABS: Array<{ id: Tab; label: string }> = [
   { id: 'health', label: '服务器健康' },
   { id: 'version', label: '版本更新' },
-  { id: 'books', label: '教材管理' },
-  { id: 'subjects', label: '学科管理' },
+  { id: 'subjects', label: '资料库' },
   { id: 'models', label: '模型配置' },
 ];
 
@@ -112,6 +112,7 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
   }, [open]);
 
   useEffect(() => {
+    if (selectedSubjectIndex < 0) return;
     if (!subjects.length) {
       setSelectedSubjectIndex(0);
       setSelectedChildIndex(null);
@@ -133,8 +134,6 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
   const selectedChild = selectedSubject && selectedChildIndex !== null ? selectedSubject.children[selectedChildIndex] || '' : '';
   const targetSubject = subjectPath(selectedSubject?.name, selectedChild);
 
-  const booksAtTarget = useMemo(() => books.filter((book) => selectedSubject && bookBelongsTo(book, selectedSubject.name, selectedChild)), [books, selectedSubject, selectedChild]);
-  const otherBooks = useMemo(() => books.filter((book) => !booksAtTarget.some((item) => item.name === book.name)), [books, booksAtTarget]);
 
   const saveEnv = async () => {
     setMessage('');
@@ -165,10 +164,12 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
     setSelectedChildIndex(null);
   };
 
-  const addChild = () => {
-    if (!selectedSubject) return;
-    const childIndex = selectedSubject.children.length;
-    setSubjects((prev) => prev.map((item, index) => index === selectedSubjectIndex ? { ...item, children: [...item.children, `新科目 ${childIndex + 1}`] } : item));
+  const addChild = (subjectIndex = selectedSubjectIndex) => {
+    const subject = subjects[subjectIndex];
+    if (!subject) return;
+    const childIndex = subject.children.length;
+    setSubjects((prev) => prev.map((item, index) => index === subjectIndex ? { ...item, children: [...item.children, '新科目 ' + (childIndex + 1)] } : item));
+    setSelectedSubjectIndex(subjectIndex);
     setSelectedChildIndex(childIndex);
   };
 
@@ -176,14 +177,18 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
   const updateChildName = (childIndex: number, name: string) => setSubjects((prev) => prev.map((item, i) => i === selectedSubjectIndex ? { ...item, children: item.children.map((child, ci) => ci === childIndex ? name : child) } : item));
 
   const deleteSubject = (index: number) => {
-    if (!window.confirm('删除学科只会移除分类建议，不会删除教材文件、向量库或学习记录。继续吗？')) return;
+    const subject = subjects[index];
+    if (subject && books.some((book) => bookBelongsTo(book, subject.name))) { setMessage('该学科仍有教材，请先移动教材。'); return; }
+    if (!window.confirm('删除空学科目录吗？教材文件、索引和学习记录不会被改动。')) return;
     setSubjects((prev) => prev.filter((_, i) => i !== index));
     setSelectedSubjectIndex(0);
     setSelectedChildIndex(null);
   };
 
   const deleteChild = (childIndex: number) => {
-    if (!window.confirm('删除二级科目只会移除分类建议，不会删除教材文件、向量库或学习记录。继续吗？')) return;
+    const child = selectedSubject?.children[childIndex] || '';
+    if (selectedSubject && books.some((book) => bookBelongsTo(book, selectedSubject.name, child))) { setMessage('该科目仍有教材，请先移动教材。'); return; }
+    if (!window.confirm('删除空科目目录吗？教材文件、索引和学习记录不会被改动。')) return;
     setSubjects((prev) => prev.map((item, index) => index === selectedSubjectIndex ? { ...item, children: item.children.filter((_, i) => i !== childIndex) } : item));
     setSelectedChildIndex(null);
   };
@@ -199,12 +204,8 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
     }
   };
 
-  const moveBookToTarget = async (name: string) => {
-    if (!targetSubject) {
-      setMessage('请先选择一个一级学科或二级科目。');
-      return;
-    }
-    await saveBookSubject(name, targetSubject);
+  const moveBookToTarget = async (name: string, nextTarget = targetSubject) => {
+    await saveBookSubject(name, nextTarget);
   };
 
   const deleteManagedBook = async (name: string) => {
@@ -339,107 +340,26 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
                   </section>
                 )}
 
-                {tab === 'books' && (
-                  <section className="space-y-4">
-                    <div className="rounded-lg border border-border bg-bg-card p-3 text-xs leading-5 text-text-secondary">
-                      教材归属也可以在“学科管理”的三列视图里调整。这里保留快速编辑入口；隐藏教材不会删除本地文件、章节索引、向量库或学习记录。
-                    </div>
-                    <div className="space-y-3">
-                      {books.map((book) => (
-                        <BookManageRow
-                          key={book.name}
-                          book={book}
-                          draftSubject={bookDrafts[book.name] || ''}
-                          onDraftSubject={(value) => setBookDrafts((prev) => ({ ...prev, [book.name]: value }))}
-                          onSave={() => saveBookSubject(book.name)}
-                          onSwitch={() => switchManagedBook(book.name)}
-                          onDelete={() => deleteManagedBook(book.name)}
-                        />
-                      ))}
-                      {books.length === 0 && <div className="rounded-xl border border-dashed border-border py-10 text-center text-sm text-text-secondary">暂无教材，请先到教材导入页添加。</div>}
-                    </div>
-                  </section>
-                )}
-
                 {tab === 'subjects' && (
-                  <section className="space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="text-sm text-text-secondary">管理一级学科、二级科目和教材归属。教材移动只更新分类元数据，不改名、不搬文件、不删除学习历史。</div>
-                      <div className="flex flex-wrap gap-2">
-                        <button onClick={addSubject} className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm hover:border-accent"><Plus className="h-4 w-4" />一级学科</button>
-                        <button onClick={openBookImport} className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm hover:border-accent"><BookOpen className="h-4 w-4" />添加教材</button>
-                        <button onClick={() => saveSubjects()} className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover"><Save className="h-4 w-4" />保存学科</button>
-                      </div>
-                    </div>
-
-                    <div className="grid min-h-[470px] gap-3 lg:grid-cols-[minmax(190px,0.75fr)_minmax(210px,0.85fr)_minmax(360px,1.4fr)]">
-                      <section className="rounded-xl border border-border bg-bg-card p-3">
-                        <ColumnTitle title="一级学科" count={subjects.length} />
-                        <div className="mt-3 space-y-2">
-                          {subjects.map((item, index) => (
-                            <div key={`${item.name}-${index}`} className={`rounded-lg border p-2 ${selectedSubjectIndex === index ? 'border-accent/45 bg-[var(--accent-soft)]' : 'border-border bg-bg-primary'}`}>
-                              <button type="button" onClick={() => { setSelectedSubjectIndex(index); setSelectedChildIndex(null); }} className="mb-2 w-full text-left text-xs font-medium text-text-secondary">选择</button>
-                              <div className="flex gap-2">
-                                <input value={item.name} onChange={(e) => updateSubjectName(index, e.target.value)} className="min-w-0 flex-1 rounded-lg border border-border bg-bg-card px-2 py-1.5 text-sm outline-none focus:border-accent" />
-                                <button onClick={() => deleteSubject(index)} className="rounded-lg border border-border px-2 text-[var(--danger)] hover:border-red-300" title="删除一级学科"><Trash2 className="h-4 w-4" /></button>
-                              </div>
-                            </div>
-                          ))}
-                          {subjects.length === 0 && <EmptyHint text="还没有学科，先添加一个一级学科。" />}
-                        </div>
-                      </section>
-
-                      <section className="rounded-xl border border-border bg-bg-card p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <ColumnTitle title="二级科目" count={selectedSubject?.children?.length || 0} />
-                          <button onClick={addChild} disabled={!selectedSubject} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:border-accent hover:text-text-primary disabled:opacity-50"><Plus className="h-3.5 w-3.5" />添加</button>
-                        </div>
-                        <div className="mt-3 space-y-2">
-                          {selectedSubject && (
-                            <button type="button" onClick={() => setSelectedChildIndex(null)} className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${selectedChildIndex === null ? 'border-accent/45 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-primary text-text-primary hover:border-accent/35'}`}>
-                              全部{selectedSubject.name}
-                              <span className="mt-1 block text-xs text-text-secondary">显示该一级学科下的全部教材</span>
-                            </button>
-                          )}
-                          {selectedSubject?.children.map((child, childIndex) => (
-                            <div key={`${child}-${childIndex}`} className={`rounded-lg border p-2 ${selectedChildIndex === childIndex ? 'border-accent/45 bg-[var(--accent-soft)]' : 'border-border bg-bg-primary'}`}>
-                              <button type="button" onClick={() => setSelectedChildIndex(childIndex)} className="mb-2 w-full text-left text-xs font-medium text-text-secondary">选择</button>
-                              <div className="flex gap-2">
-                                <input value={child} onChange={(e) => updateChildName(childIndex, e.target.value)} className="min-w-0 flex-1 rounded-lg border border-border bg-bg-card px-2 py-1.5 text-sm outline-none focus:border-accent" />
-                                <button onClick={() => deleteChild(childIndex)} className="rounded-lg border border-border px-2 text-[var(--danger)] hover:border-red-300" title="删除二级科目"><Trash2 className="h-4 w-4" /></button>
-                              </div>
-                            </div>
-                          ))}
-                          {!selectedSubject && <EmptyHint text="先选择或添加一级学科。" />}
-                        </div>
-                      </section>
-
-                      <section className="rounded-xl border border-border bg-bg-card p-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <ColumnTitle title="教材" count={booksAtTarget.length} />
-                            <div className="mt-1 text-xs text-text-secondary">当前位置：{targetSubject || '未选择'}</div>
-                          </div>
-                          <button onClick={loadBooks} className="inline-flex items-center gap-1 rounded-lg border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:border-accent hover:text-text-primary"><RefreshCw className="h-3.5 w-3.5" />刷新</button>
-                        </div>
-                        <div className="mt-3 space-y-2">
-                          {booksAtTarget.map((book) => (
-                            <BookPlacementRow key={book.name} book={book} active onSwitch={() => switchManagedBook(book.name)} onMove={() => moveBookToTarget(book.name)} onDelete={() => deleteManagedBook(book.name)} />
-                          ))}
-                          {booksAtTarget.length === 0 && <EmptyHint text="当前位置还没有教材。可以从下方其他教材移动过来。" />}
-                        </div>
-                        <div className="mt-4 border-t border-border pt-3">
-                          <div className="mb-2 text-xs font-medium text-text-secondary">其他教材</div>
-                          <div className="space-y-2">
-                            {otherBooks.map((book) => (
-                              <BookPlacementRow key={book.name} book={book} active={false} onSwitch={() => switchManagedBook(book.name)} onMove={() => moveBookToTarget(book.name)} onDelete={() => deleteManagedBook(book.name)} />
-                            ))}
-                            {otherBooks.length === 0 && <div className="text-xs text-text-secondary">没有其他教材。</div>}
-                          </div>
-                        </div>
-                      </section>
-                    </div>
-                  </section>
+                  <LibraryManager
+                    subjects={subjects}
+                    books={books}
+                    selectedSubjectIndex={selectedSubjectIndex}
+                    selectedChildIndex={selectedChildIndex}
+                    onSelect={(subjectIndex, childIndex) => { setSelectedSubjectIndex(subjectIndex); setSelectedChildIndex(childIndex); }}
+                    onAddSubject={addSubject}
+                    onAddChild={addChild}
+                    onRenameSubject={updateSubjectName}
+                    onRenameChild={updateChildName}
+                    onDeleteSubject={deleteSubject}
+                    onDeleteChild={deleteChild}
+                    onSaveSubjects={() => saveSubjects()}
+                    onImportBook={openBookImport}
+                    onRefresh={loadBooks}
+                    onMoveBook={moveBookToTarget}
+                    onSwitchBook={switchManagedBook}
+                    onArchiveBook={deleteManagedBook}
+                  />
                 )}
 
                 {tab === 'models' && (
@@ -482,61 +402,6 @@ const SettingsSidebar = ({ tab, onTabChange }: { tab: Tab; onTabChange: (tab: Ta
 
 const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <label className="block space-y-1.5 text-sm text-text-primary"><span className="text-xs font-medium text-text-secondary">{label}</span>{children}</label>
-);
-
-const ColumnTitle = ({ title, count }: { title: string; count: number }) => (
-  <div className="flex items-center justify-between gap-2">
-    <div className="text-sm font-semibold text-text-primary">{title}</div>
-    <span className="rounded-md border border-border bg-bg-primary px-1.5 py-0.5 text-[11px] text-text-secondary">{count}</span>
-  </div>
-);
-
-const EmptyHint = ({ text }: { text: string }) => (
-  <div className="rounded-lg border border-dashed border-border bg-bg-primary px-3 py-4 text-center text-xs text-text-secondary">{text}</div>
-);
-
-const BookMeta = ({ book }: { book: ManagedBook }) => (
-  <div className="mt-1 space-y-0.5 text-[11px] leading-5 text-text-secondary">
-    <div>{book.has_pdf ? 'PDF' : 'OCR/Markdown'} · {book.chapter_count || 0} 章 · {book.subject || '未分类'}</div>
-    {book.path && <div className="truncate">{book.path}</div>}
-  </div>
-);
-
-const BookManageRow = ({ book, draftSubject, onDraftSubject, onSave, onSwitch, onDelete }: { book: ManagedBook; draftSubject: string; onDraftSubject: (value: string) => void; onSave: () => void; onSwitch: () => void; onDelete: () => void }) => (
-  <div className="rounded-xl border border-border bg-bg-card p-4">
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><BookOpen className="h-4 w-4 text-accent" /> <span className="truncate">{book.name}</span></div>
-        <BookMeta book={book} />
-      </div>
-      <div className="flex flex-wrap gap-2">
-        <button onClick={onSwitch} className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:border-accent hover:text-text-primary">设为当前</button>
-        <button onClick={onDelete} className="rounded-lg border border-red-200 px-3 py-1.5 text-xs text-[var(--danger)] hover:border-red-300">隐藏</button>
-      </div>
-    </div>
-    <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-      <Field label="所属学科（例：数学/高数）">
-        <input value={draftSubject} onChange={(e) => onDraftSubject(e.target.value)} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" />
-      </Field>
-      <button onClick={onSave} className="inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover sm:self-end"><Save className="h-4 w-4" />保存</button>
-    </div>
-  </div>
-);
-
-const BookPlacementRow = ({ book, active, onSwitch, onMove, onDelete }: { book: ManagedBook; active: boolean; onSwitch: () => void; onMove: () => void; onDelete: () => void }) => (
-  <div className={`rounded-lg border p-3 ${active ? 'border-accent/25 bg-[var(--accent-softer)]' : 'border-border bg-bg-primary'}`}>
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><BookOpen className="h-4 w-4 text-accent" /><span className="truncate">{book.name}</span></div>
-        <BookMeta book={book} />
-      </div>
-      <div className="flex flex-shrink-0 flex-wrap justify-end gap-1.5">
-        {!active && <button onClick={onMove} className="inline-flex items-center gap-1 rounded-lg border border-border bg-bg-card px-2 py-1.5 text-xs text-text-secondary hover:border-accent hover:text-text-primary"><ArrowRightLeft className="h-3.5 w-3.5" />移动</button>}
-        <button onClick={onSwitch} className="rounded-lg border border-border bg-bg-card px-2 py-1.5 text-xs text-text-secondary hover:border-accent hover:text-text-primary">当前</button>
-        <button onClick={onDelete} className="rounded-lg border border-red-200 bg-bg-card px-2 py-1.5 text-xs text-[var(--danger)] hover:border-red-300"><Trash2 className="h-3.5 w-3.5" /></button>
-      </div>
-    </div>
-  </div>
 );
 
 export default SystemHealth;

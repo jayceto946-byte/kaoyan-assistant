@@ -54,8 +54,8 @@ const statusLabel = (item?: HighlightScopeStatus | null) => {
 
 const statusClass = (item?: HighlightScopeStatus | null) => {
   const status = item?.highlight_status || 'not_generated';
-  if (status === 'succeeded') return 'border-[#bfd4c6] bg-[#edf6f0] text-[var(--success)]';
-  if (status === 'stale') return 'border-[#dec98b] bg-[#fff7de] text-[var(--warning)]';
+  if (status === 'succeeded') return 'status-success';
+  if (status === 'stale') return 'status-warning';
   if (status === 'running' || status === 'queued' || status === 'cancelling') return 'border-accent/30 bg-[var(--accent-softer)] text-accent';
   if (status === 'failed') return 'border-red-200 bg-red-50 text-[var(--danger)]';
   return 'border-border bg-bg-card text-text-secondary';
@@ -84,6 +84,11 @@ const highlightAppUrlFor = (bookName: string, chapterId: string, sectionId: stri
 };
 
 function openPreview(url: string) {
+  if (url.startsWith('/highlights')) {
+    window.history.pushState({}, '', url);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    return;
+  }
   const opened = window.open(url, '_blank', 'noopener,noreferrer');
   if (!opened) window.location.href = url;
 }
@@ -185,6 +190,7 @@ const HighlightRepositoryDialog: React.FC<HighlightRepositoryDialogProps> = ({ o
     if (!activeJobId) return;
     let alive = true;
     let timer: number | null = null;
+    let consecutiveFailures = 0;
 
     const poll = async () => {
       try {
@@ -192,6 +198,7 @@ const HighlightRepositoryDialog: React.FC<HighlightRepositoryDialogProps> = ({ o
         if (!alive) return;
         if (!res?.success) throw new Error(res?.message || '获取章节重点生成进度失败');
         const job: HighlightJob = res.data;
+        consecutiveFailures = 0;
         const target = activeJobTarget || {
           bookName: job.book_name || highlightBookName || currentBookName,
           chapterId: job.chapter_id || selectedChapterId,
@@ -225,6 +232,12 @@ const HighlightRepositoryDialog: React.FC<HighlightRepositoryDialogProps> = ({ o
         }
       } catch (err) {
         if (!alive) return;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 8) {
+          setActiveJobId('');
+          setProgress((prev) => ({ status: 'interrupted', message: '网络连接持续不可用，已停止轮询。网络恢复后可再次点击生成以继续。', progress: prev?.progress, target: prev?.target || activeJobTarget }));
+          return;
+        }
         setProgress((prev) => ({
           status: 'running',
           message: `进度刷新失败，稍后重试：${err instanceof Error ? err.message : String(err)}`,
@@ -232,7 +245,7 @@ const HighlightRepositoryDialog: React.FC<HighlightRepositoryDialogProps> = ({ o
           target: prev?.target || activeJobTarget,
         }));
       }
-      timer = window.setTimeout(poll, 1500);
+      timer = window.setTimeout(poll, consecutiveFailures ? Math.min(12000, 1500 * (2 ** consecutiveFailures)) : 1500);
     };
 
     timer = window.setTimeout(poll, 800);

@@ -23,14 +23,20 @@ def _bundle_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _iter_seed_files(sample_dir: Path) -> list[Path]:
+def _iter_seed_files(sample_dir: Path, *, exclude_roots: set[str] | None = None) -> list[Path]:
     ignored = {".gitkeep", "README.md"}
-    return [p for p in sample_dir.rglob("*") if p.is_file() and p.name not in ignored]
+    excluded = exclude_roots or set()
+    return [
+        p for p in sample_dir.rglob("*")
+        if p.is_file()
+        and p.name not in ignored
+        and p.relative_to(sample_dir).parts[0] not in excluded
+    ]
 
 
-def _copy_missing_seed_files(sample_dir: Path, data_dir: Path) -> int:
+def _copy_missing_seed_files(sample_dir: Path, data_dir: Path, *, exclude_roots: set[str] | None = None) -> int:
     copied = 0
-    for src in _iter_seed_files(sample_dir):
+    for src in _iter_seed_files(sample_dir, exclude_roots=exclude_roots):
         rel = src.relative_to(sample_dir)
         dest = data_dir / rel
         if dest.exists():
@@ -89,7 +95,10 @@ def _seed_sample_data(data_dir: Path) -> None:
         return
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    copied = _copy_missing_seed_files(sample_dir, data_dir)
+    copied = _copy_missing_seed_files(sample_dir, data_dir, exclude_roots={"mineru_output"})
+    mineru_seed = sample_dir / "mineru_output"
+    if mineru_seed.exists():
+        copied += _copy_missing_seed_files(mineru_seed, data_dir.parent / "mineru_output")
     marker = data_dir / ".sample_data_seeded"
     marker.write_text(f"seeded_at={time.strftime('%Y-%m-%dT%H:%M:%S')}\ncopied={copied}\nsource={sample_dir}\n", encoding="utf-8")
     _write_asset_manifest(data_dir)

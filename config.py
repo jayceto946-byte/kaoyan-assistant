@@ -1,6 +1,7 @@
 import os
 import re
 import base64
+import threading
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
@@ -149,12 +150,21 @@ def encode_image(image_path: str | Path) -> str:
 
 # Embedding adapter used by Chroma.
 _embeddings_instance = None
+_embeddings_lock = threading.Lock()
 
 
 def get_embeddings():
     global _embeddings_instance
     if _embeddings_instance is not None:
         return _embeddings_instance
+    with _embeddings_lock:
+        if _embeddings_instance is not None:
+            return _embeddings_instance
+        return _load_embeddings()
+
+
+def _load_embeddings():
+    global _embeddings_instance
     print("  [embedding] loading model...", flush=True)
 
     import torch

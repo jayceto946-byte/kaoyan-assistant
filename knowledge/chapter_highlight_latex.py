@@ -14,6 +14,9 @@ class ChapterHighlightLatexMixin:
 
     def _sanitize_generated_markdown(self, raw: Any, context_title: str = "", allow_llm_repair: bool = True) -> str:
         text = strip_thinking(str(raw or "")).replace("＄", "$")
+        text = re.sub(r'\[IMAGE:[^\]]+\]', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\[(?:公式|图片|图像)(?:索引|编号|引用)[:：]\s*[^\]]+\]', '', text)
+        text = re.sub(r'\\(?:tag\*?|label|ref|eqref)\s*\{[^{}]*\}', '', text)
         text = sanitize_latex(text)
         text = self._normalize_display_math(text)
         text = self._remove_empty_math(text)

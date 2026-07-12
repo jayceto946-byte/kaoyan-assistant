@@ -75,3 +75,41 @@ def test_textbook_analyze_api(monkeypatch, tmp_path):
     assert res["success"] is True
     assert res["summary"]["total"] == 2
     assert res["extract"]["provider"] == "chapter-highlight-source-package"
+
+
+def test_explicit_page_range_excludes_chunks_without_page_metadata(tmp_path, monkeypatch):
+    progress = tmp_path / "progress"
+    source_dir = progress / "demo" / "chapter_highlights" / "chapter_001"
+    source_dir.mkdir(parents=True)
+    (source_dir / "source_package.json").write_text(
+        json.dumps(
+            {
+                "book_name": "demo",
+                "chapter": {"title": "Chapter"},
+                "practice_sections": [
+                    {
+                        "title": "Exercises",
+                        "chunks": [
+                            {"text": "1. Unknown page question", "role": "exercise"},
+                            {"text": "2. Selected page question", "page": 8, "role": "exercise"},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("memory.textbook_exercise_importer.PROGRESS_PATH", progress)
+
+    extracted = extract_textbook_exercise_text("demo", page_start=8, page_end=8)
+
+    assert "Selected page question" in extracted.text
+    assert "Unknown page question" not in extracted.text
+    assert extracted.chunk_count == 1
+
+
+def test_page_metadata_supports_zero_based_index_and_source_markdown():
+    from memory.textbook_exercise_importer import _page_from_item
+
+    assert _page_from_item({"page_idx": 0}) == 1
+    assert _page_from_item({"source_markdown": "CGQ_118.md"}) == 118

@@ -1,4 +1,28 @@
-﻿## 2026-07-12 - Harden PDF preview, durable answer generation, and OCR highlight lookup
+## 2026-07-12 - Textbook exercise extraction page scoping
+
+- The PDF picker now navigates the embedded preview to the entered page and the selection action sets both range endpoints to that page, preventing a stale end page from expanding a single-page request into a large range.
+- Explicit page-scoped extraction now rejects chunks with unknown page metadata instead of treating them as matches for every page.
+- Page resolution now supports zero-based page_idx values, page/page_number/pdf_page/page_no fields, source_markdown filenames, and page references.
+- Source-package fallback warnings now report the selected range and retain that same range for fallback extraction.
+
+### Validation
+
+- Full backend test suite: 85 passed, 1 dependency deprecation warning.
+- Frontend npm production build: passed.
+
+## 2026-07-12 - Runtime shutdown and non-blocking startup
+
+- Background textbook prereading now clears its running flag and persists a terminal completed/stopped/failed status even when reader initialization or progress persistence fails.
+- FastAPI startup now exposes /health immediately and performs embedding/vector-store warmup in a daemon thread. The health payload includes a separate warmup state, and embedding initialization is protected against duplicate concurrent loads.
+- Chat SSE explicitly closes the underlying graph generator when the client disconnects, allowing generator cleanup to run promptly.
+- Electron shutdown now waits for backend cleanup. On Windows it uses taskkill /T /F for the backend PID so Python/PyInstaller and descendant processes are removed before the desktop app exits; updater installation follows the same cleanup path.
+
+### Validation
+
+- .\\venv310\\Scripts\\python.exe -B -m pytest -q -p no:cacheprovider: 83 passed, 1 dependency deprecation warning.
+- node --check desktop/main.cjs and git diff --check: passed.
+
+## 2026-07-12 - Harden PDF preview, durable answer generation, and OCR highlight lookup
 
 - Served textbook PDFs with an explicit inline content disposition and reduced the exercise PDF modal to a compact desktop-friendly size.
 - Hid the unfinished agentic review-plan actions and reserved title-bar space for Electron window controls.
@@ -491,3 +515,30 @@ The detailed historical notes for this period were damaged by mojibake before th
 - `python -B -m pytest -q`: 79 passed, 1 dependency deprecation warning.
 - `frontend/npm.cmd run build`: passed (TypeScript and Vite production build).
 - `git diff --check`: passed.
+
+
+## 2026-07-12 - 资料库目录统一（方案 B）
+
+- 设置中心合并“教材管理”和“学科管理”为单一“资料库”入口，采用左侧学科/科目树与右侧教材内容区。
+- 教材归属不再提供自由文本编辑入口；教材只能在已有目录间移动，未分类教材集中展示。
+- 非空学科或科目禁止重命名和删除；后端保存目录前再次校验现有教材归属，避免产生孤儿分类。
+- 本次仅更新学科目录与教材 subject 元数据的管理方式，不移动或改名 PDF，不修改章节数据，不删除或重建 Chroma 索引，不迁移学习记录。
+- 验证：前端生产构建通过；前端 7 项测试通过；后端 87 项测试通过；当前教材归属只读检查结果为 `used_assignments=['专业课']`、`orphaned=[]`。
+
+- 后续交互修正：每本教材增加“归属到”分组下拉框，可直接选择如“专业课 / 传感器”的二级科目；原有间接移动区已移除。
+
+
+## 2026-07-12 - 章节重点查看、公式与断网续生成修复
+
+- 桌面端打开重点改为在现有 React 路由内跳转，避免相对地址被 FastAPI 当作服务端路由并返回 404。
+- 清理未解析的图片/公式索引，并移除会导致 KaTeX multiple tag 报错的公式编号、标签和引用命令。
+- 生成任务按小节保存 generation_checkpoint.json；重新启动同一范围时复用已完成小节，成功后删除断点。前端轮询使用退避重连，连续失败后停止空转并恢复可重试状态。
+- 提示词减少非必要逐行推导，增加背诵要点、教材证据支持的直观类比及章内对比联动，同时禁止无依据扩展和自拟题。
+- 独立 highlight.html 定位为本机产物；应用内重点页使用打包的 KaTeX，本机离线可显示，直接发送 HTML 不作为可移植分享格式。
+
+### Validation
+
+- 重点相关后端测试：18 passed。
+- 前端 TypeScript 与 Vite 生产构建通过。
+
+- 桌面 release 数据支持在 sample_data/mineru_output 中携带 OCR 产物；首次启动时会复制到用户 mineru_output 目录，GitHub sample_data 仍可只保留单本演示教材。

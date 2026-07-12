@@ -10,15 +10,18 @@ from .chapter_highlight_types import MAX_SECTION_INPUT_CHARS, ProgressCallback
 class ChapterHighlightGenerationMixin:
     """Runs section prompts and combines generated notes."""
 
-    def _generate_section_notes(self, source: dict, progress: ProgressCallback) -> list[dict]:
+    def _generate_section_notes(self, source: dict, progress: ProgressCallback, initial_notes: list[dict] | None = None, on_checkpoint=None) -> list[dict]:
         sections = source.get("sections", [])
         batches: list[list[dict]] = []
         for section in sections:
             for part in self._split_section_for_prompt(section, MAX_SECTION_INPUT_CHARS):
                 batches.append([part])
-        notes: list[dict] = []
+        notes: list[dict] = list(initial_notes or [])
+        completed = {int(note.get("batch_index", -1)) for note in notes}
         total = max(1, len(batches))
         for idx, batch in enumerate(batches):
+            if idx in completed:
+                continue
             section_title = batch[0].get("title") or "小节"
             percent = 24 + int(54 * idx / total)
             progress("sections", f"生成 {section_title} 重点 {idx + 1}/{total}", percent)
@@ -31,6 +34,8 @@ class ChapterHighlightGenerationMixin:
                 "section_titles": [str(section.get("title") or "小节") for section in batch],
                 "markdown": text,
             })
+            if on_checkpoint:
+                on_checkpoint(notes)
         return notes
 
     def _generate_final_markdown(self, source: dict, section_notes: list[dict]) -> str:
@@ -173,6 +178,8 @@ class ChapterHighlightGenerationMixin:
 生成范围：{scope.get('title') or chapter.get('title')}
 当前小节：{section_titles}
 
+复习表达要求：减少非必要的逐行公式推导，保留关键起点、转折和结论。优先增加便于背诵的口诀式要点、直观理解，以及本小节与本章其他内容的对比和联系；这些内容必须能由给定教材证据支持，不得虚构教材外事实。
+
 相关图片索引：
 {images}
 
@@ -187,7 +194,7 @@ OCR 正文：
 2. 先提炼定义、公式、条件、结论和方法，再整理教材已有例题/习题；不要为了填满栏目重复改写。
 3. 每条事实必须能在给定材料中找到依据，并在段末标注可读来源页码，如“来源：p12”。不要输出 chunk_id、UUID、collection 名等内部标识。
 4. 证据不足时明确写“本节教材材料未提供”，不得凭模型知识补齐。
-5. 禁止自拟题、补充例题、生活化类比和教材外扩展；没有完整教材题时省略题目栏目。
+5. 禁止自拟题、补充例题和无依据的教材外扩展；允许用教材事实支持的生活化类比，并可联系本章其他小节做对比，但必须明确依据且不得虚构。没有完整教材题时省略题目栏目。
 6. 公式使用可渲染 LaTeX：行内 $...$；独立公式使用成对的 $$...$$；不得把中文放进数学模式。
 7. 控制篇幅：相同结论只写一次，优先保留考研复习所需的定义、公式条件、典型方法和易错点。
 8. 图片确有助于理解时才单独写 [IMAGE:img_001]，且只能使用上方已有图片 id。

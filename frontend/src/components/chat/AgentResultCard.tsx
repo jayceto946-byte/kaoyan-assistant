@@ -49,7 +49,7 @@ export default function AgentResultCard({ card }: { card: ChatAgentCard }) {
           <span className="truncate text-sm font-semibold text-text-primary">工具编排</span>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="inline-flex items-center gap-1 rounded-full border border-[#c9d8bd] bg-[#eef5e8] px-2 py-0.5 text-xs text-[#557a46]">
+          <span className="status-success inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs">
             <ShieldCheck className="h-3 w-3" />
             只读
           </span>

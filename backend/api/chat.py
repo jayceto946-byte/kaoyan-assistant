@@ -109,17 +109,19 @@ def chat_stream(req: ChatRequest):
             event["request_id"] = request_id
             event["elapsed_ms"] = round((now - started) * 1000, 2)
 
+        graph_events = None
         try:
             yield f"data: {json.dumps({'stage': 'context', 'request_id': request_id, 'conversation_id': conversation_id, 'rewritten_question': rewritten_question if rewritten_question != req.question else ''}, ensure_ascii=False)}\n\n"
             append_message(conversation_id, "user", req.question, book_name=book_name, subject=subject)
-            for event in run_graph_stream(
+            graph_events = run_graph_stream(
                 user_input=rewritten_question,
                 book_name=book_name,
                 subject=subject,
                 conversation_id=conversation_id,
                 target_chapters=req.target_chapters or [],
                 use_textbook_context=use_textbook_context,
-            ):
+            )
+            for event in graph_events:
                 observe(event)
                 event["conversation_id"] = conversation_id
                 if event.get("stage") == "generate":
@@ -134,12 +136,21 @@ def chat_stream(req: ChatRequest):
                     if persistence_error:
                         event["persistence_error"] = persistence_error
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except GeneratorExit:
+            logger.info("chat stream disconnected", extra={"request_id": request_id})
+            raise
         except Exception as exc:
             logger.exception("chat stream failed", extra={"request_id": request_id})
             event = {"stage": "error", "message": str(exc), "done": True, "conversation_id": conversation_id}
             observe(event)
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         finally:
+            close = getattr(graph_events, "close", None)
+            if close:
+                try:
+                    close()
+                except Exception:
+                    logger.exception("failed to close chat graph stream", extra={"request_id": request_id})
             now = time.perf_counter()
             timings[last_stage] = round((now - stage_started) * 1000, 2)
             try:

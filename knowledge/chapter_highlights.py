@@ -76,7 +76,7 @@ class ChapterHighlightService(ChapterHighlightSourceMixin, ChapterHighlightGener
         resolved_chapter_id = chapter.id if chapter else chapter_id
         base = self.scope_dir(book_name, resolved_chapter_id, section_id)
         removed: list[str] = []
-        for filename in ("highlight.md", "highlight.html", "highlight.json", "metadata.json", "source_package.json"):
+        for filename in ("highlight.md", "highlight.html", "highlight.json", "metadata.json", "source_package.json", "generation_checkpoint.json"):
             path = base / filename
             if path.exists() and path.is_file():
                 path.unlink()
@@ -187,7 +187,16 @@ class ChapterHighlightService(ChapterHighlightSourceMixin, ChapterHighlightGener
         })
 
         progress("sections", "按目录小节拆分生成重点", 24)
-        section_notes = self._generate_section_notes(source, progress)
+        checkpoint_path = base / "generation_checkpoint.json"
+        checkpoint = self._read_json(checkpoint_path) or {}
+        resumable_notes = checkpoint.get("section_notes", []) if (
+            not force and checkpoint.get("source_hash") == source["source_hash"] and checkpoint.get("prompt_version") == PROMPT_VERSION
+        ) else []
+
+        def save_checkpoint(notes: list[dict]) -> None:
+            self._write_json(checkpoint_path, {"source_hash": source["source_hash"], "prompt_version": PROMPT_VERSION, "section_notes": notes, "updated_at": _now()})
+
+        section_notes = self._generate_section_notes(source, progress, resumable_notes, save_checkpoint)
 
         progress("combine", f"合成{scope_label}重点", 82)
         markdown = self._generate_final_markdown(source, section_notes)
@@ -228,6 +237,8 @@ class ChapterHighlightService(ChapterHighlightSourceMixin, ChapterHighlightGener
         }
 
         self._write_highlight_artifacts(base, book_name, markdown, source, metadata, highlight)
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
         progress("completed", f"{scope_label}重点生成完成", 100)
         return {"metadata": metadata, "highlight": highlight, "markdown": markdown}
 
