@@ -201,6 +201,15 @@ class ExerciseStatusRequest(BaseModel):
     status: str
 
 
+class ExerciseAnswerGenerateRequest(BaseModel):
+    id: str
+
+
+class ExerciseAnswerSaveRequest(BaseModel):
+    id: str
+    answer: str
+    explanation: str = ""
+
 class ExerciseFromMistakeRequest(BaseModel):
     mistake_id: str
 

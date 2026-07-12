@@ -407,7 +407,8 @@ body:has(.electron-titlebar) {
   overflow: hidden;
 }
 
-body:has(.electron-titlebar) .desktop-chat-header {
+body:has(.electron-titlebar) .desktop-chat-header,
+body:has(.electron-titlebar) .learning-page-header {
   padding-right: 7.25rem;
 }
 

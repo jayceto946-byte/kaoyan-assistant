@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookMarked, BookOpenCheck, BrainCircuit, CalendarDays, ClipboardList, Loader2, ListChecks, MessageSquareText, Shuffle, Sparkles } from 'lucide-react';
+import { BookMarked, BookOpenCheck, BrainCircuit, CalendarDays, ClipboardList, Loader2, Shuffle, Sparkles } from 'lucide-react';
 import { get } from '../../api/client';
 
 export type ChatHomeBookOption = { name: string; subject?: string };
@@ -31,6 +31,7 @@ export type ChatHomeLearningSummary = {
   weak_concepts?: Array<{ name: string; reasons?: string[] }>;
 };
 
+// Agentic planning actions are temporarily hidden; deterministic review entry points remain.
 type ChatHomePanelProps = {
   bookName: string;
   subject: string;
@@ -38,9 +39,7 @@ type ChatHomePanelProps = {
   isLoading: boolean;
   onReviewMistake: (mistake: ChatHomeDueMistake) => void;
   onReviewConcept: (concept: ChatHomeConceptPlan, summary: ChatHomeLearningSummary | null) => void;
-  onShowReviewPlan: (summary: ChatHomeLearningSummary | null) => void;
   onPracticeFromMemory: (summary: ChatHomeLearningSummary | null) => void;
-  onSummarizeMistakes: (summary: ChatHomeLearningSummary | null) => void;
   onShowReport: (mode: 'daily' | 'weekly') => void;
   onPickRandomExercise: () => void;
   onOpenHighlightDialog: () => void;
@@ -98,9 +97,7 @@ export default function ChatHomePanel({
   isLoading,
   onReviewMistake,
   onReviewConcept,
-  onShowReviewPlan,
   onPracticeFromMemory,
-  onSummarizeMistakes,
   onShowReport,
   onPickRandomExercise,
   onOpenHighlightDialog,
@@ -206,9 +203,7 @@ export default function ChatHomePanel({
         <section className="rounded-[18px] border border-border bg-bg-card p-4">
           <div className="type-section-title text-text-primary">{labels.directTitle}</div>
           <div className="mt-3 space-y-2">
-            <QuickAction icon={<ListChecks className="h-3.5 w-3.5" />} title={labels.reviewPlan} description={labels.reviewPlanDesc} disabled={isLoading} onClick={() => onShowReviewPlan(summary)} />
-            <QuickAction icon={<MessageSquareText className="h-3.5 w-3.5" />} title={labels.practiceMemory} description={labels.practiceMemoryDesc} disabled={isLoading} onClick={() => onPracticeFromMemory(summary)} />
-            <QuickAction icon={<ClipboardList className="h-3.5 w-3.5" />} title={labels.mistakeDigest} description={labels.mistakeDigestDesc} disabled={isLoading} onClick={() => onSummarizeMistakes(summary)} />
+            <QuickAction icon={<ClipboardList className="h-3.5 w-3.5" />} title={labels.practiceMemory} description={labels.practiceMemoryDesc} disabled={isLoading} onClick={() => onPracticeFromMemory(summary)} />
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <button type="button" onClick={() => onShowReport('daily')} disabled={isLoading} className="type-control inline-flex items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-primary px-3 py-2 text-text-secondary hover:border-accent/45 hover:text-text-primary disabled:opacity-55"><CalendarDays className="h-3.5 w-3.5" />{labels.daily}</button>

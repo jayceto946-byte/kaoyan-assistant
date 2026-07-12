@@ -1,4 +1,4 @@
-"""反馈节点 — 更新记忆 + 掌握度 + 优化策略"""
+﻿"""反馈节点 — 更新记忆 + 掌握度 + 优化策略"""
 from memory.study_memory import StudyMemory
 from memory.spaced_repetition import SpacedRepetition
 
@@ -79,7 +79,7 @@ def _strict_concepts(concepts: list[dict], question: str = "") -> list[dict]:
     question_text = (question or "").lower()
     for concept in concepts:
         try:
-            if float(concept.get("confidence", 0) or 0) < 0.999:
+            if float(concept.get("confidence", 0) or 0) < 0.85:
                 continue
         except (TypeError, ValueError):
             continue

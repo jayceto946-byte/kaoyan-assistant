@@ -129,3 +129,50 @@ def test_vector_store_collection_names_are_scoped_by_book():
     assert vs._title_to_collection(chapter, "book-a") == "scoped_col"
     assert vs._title_to_collection(chapter, "book-b") == "legacy_col"
 
+
+
+def test_highlight_source_uses_external_chunks_without_page_numbers(tmp_path):
+    from knowledge.chapter_highlights import ChapterHighlightService
+
+    progress = tmp_path / "progress"
+    output = tmp_path / "mineru"
+    book_dir = progress / "sensor"
+    external = output / "sensor" / "hybrid_auto_external"
+    book_dir.mkdir(parents=True)
+    external.mkdir(parents=True)
+    (book_dir / "_chapters.json").write_text(
+        json.dumps(
+            [{
+                "title": "第一章 测试",
+                "page_number": 7,
+                "end_page": 20,
+                "subsections": [
+                    {"title": "第一节 静态特性", "page": 7},
+                    {"title": "第二节 动态特性", "page": 11},
+                ],
+            }],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (external / "sensor_middle_chunks.json").write_text(
+        json.dumps(
+            [
+                {"chunk_id": "c0", "content": "第一章正文", "section_title": "第一章 测试", "page_idx": -1, "role": "reference"},
+                {"chunk_id": "c1", "content": "静态特性定义", "section_title": "第一节 静态特性", "page_idx": -1, "role": "definition"},
+                {"chunk_id": "c2", "content": "静态特性公式", "section_title": "线性度", "page_idx": -1, "role": "formula"},
+                {"chunk_id": "c3", "content": "动态特性定义", "section_title": "第二节 动态特性", "page_idx": -1, "role": "definition"},
+                {"chunk_id": "c4", "content": "下一章", "section_title": "第二章 其他", "page_idx": -1, "role": "reference"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    service = ChapterHighlightService(progress_path=progress, mineru_output_path=output)
+
+    chapter = service.build_source_package("sensor", "chapter_001", "all")
+    section = service.build_source_package("sensor", "chapter_001", "section_001")
+
+    assert service._find_mineru_output_dir("sensor") == external
+    assert sum(len(item["chunks"]) for item in chapter["sections"]) == 4
+    assert [item["text"] for item in section["sections"][0]["chunks"]] == ["第一章正文", "静态特性定义", "静态特性公式"]

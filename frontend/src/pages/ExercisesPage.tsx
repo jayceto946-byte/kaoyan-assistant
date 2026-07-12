@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Search, Sparkles, Trash2, Upload } from 'lucide-react';
+import { BookOpen, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Save, Search, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { del, get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
 import ScopeSelector from '../components/ScopeSelector';
@@ -70,12 +70,17 @@ const ExercisesPage: React.FC = () => {
   const [textbookChapter, setTextbookChapter] = useState('');
   const [textbookPageStart, setTextbookPageStart] = useState('');
   const [textbookPageEnd, setTextbookPageEnd] = useState('');
-  const sourcePdfUrl = activeName && activeName !== 'default' ? `/api/books/${encodeURIComponent(activeName)}/source-pdf#page=${textbookPageStart || '1'}` : '';
+  const [pdfOpen, setPdfOpen] = useState(false);
+  const [pdfPage, setPdfPage] = useState('1');
+  const sourcePdfUrl = activeName && activeName !== 'default' ? `/api/books/${encodeURIComponent(activeName)}/source-pdf#page=${pdfPage || '1'}` : '';
   const [textbookSourceMode, setTextbookSourceMode] = useState('exercise_sections');
   const [useLlmRepair, setUseLlmRepair] = useState(false);
   const [extractedPreview, setExtractedPreview] = useState('');
   const [candidates, setCandidates] = useState<ExerciseCandidate[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [answerDraft, setAnswerDraft] = useState('');
+  const [answerBusy, setAnswerBusy] = useState(false);
+  const [answerJobId, setAnswerJobId] = useState('');
   const searchKwRef = useRef(searchKw);
 
   useEffect(() => {
@@ -97,6 +102,61 @@ const ExercisesPage: React.FC = () => {
     if (practiceId) return records.find((item) => item.id === practiceId) || null;
     return practicePool.find((item) => item.status !== 'mastered') || practicePool[0] || null;
   }, [practiceId, practicePool, records]);
+
+  useEffect(() => {
+    setAnswerDraft(currentPractice?.answer || '');
+    setAnswerJobId('');
+    if (!currentPractice?.id) return;
+    let cancelled = false;
+    get('/exercises/answer/jobs/latest' + (bookQuery ? bookQuery + '&' : '?') + 'id=' + encodeURIComponent(currentPractice.id), 20000)
+      .then((res) => {
+        if (cancelled || !res?.success || !res.data) return;
+        const job = res.data;
+        if (job.status === 'queued' || job.status === 'running') {
+          setAnswerJobId(job.id);
+          setAnswerBusy(true);
+          setPracticeMessage(job.message || '标准答案正在后台生成');
+        } else if (job.status === 'completed' && !currentPractice.answer && job.result?.answer) {
+          setAnswerDraft(job.result.answer);
+          setPracticeMessage('后台答案草稿已完成，请检查修改后保存');
+        }
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [currentPractice?.id, currentPractice?.answer, bookQuery]);
+
+  useEffect(() => {
+    if (!answerJobId) return;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const res = await get('/exercises/answer/jobs/' + encodeURIComponent(answerJobId), 20000);
+        if (stopped || !res?.success) return;
+        const job = res.data;
+        if (job.status === 'completed') {
+          setAnswerDraft(job.result?.answer || '');
+          setPracticeMessage((job.message || '答案草稿已生成') + '（引用 ' + (job.result?.evidence_count || 0) + ' 条教材证据）');
+          setAnswerBusy(false);
+          setAnswerJobId('');
+        } else if (job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted') {
+          setPracticeMessage(job.message || job.error || '标准答案生成失败');
+          setAnswerBusy(false);
+          setAnswerJobId('');
+        } else {
+          setAnswerBusy(true);
+          setPracticeMessage(job.message || '标准答案正在后台生成');
+        }
+      } catch {
+        // Polling may stop during navigation; the durable backend job keeps running.
+      }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 1600);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [answerJobId]);
 
   const recordList = useVisibleList(records, 30, `${activeName}|${targetSubject}|${statusFilter}|${searchKw}`);
   const candidateList = useVisibleList(candidates, 20, `${activeName}|${importFile?.name || ''}|${textbookChapter}|${textbookPageStart}|${textbookPageEnd}|${importSummary.total}`);
@@ -168,6 +228,8 @@ const ExercisesPage: React.FC = () => {
       }
     }
     resetImportPreview();
+    setPdfPage(textbookPageStart || '1');
+    setPdfOpen(true);
   };
 
   const updateTargetSubject = (value: string) => {
@@ -245,6 +307,42 @@ const ExercisesPage: React.FC = () => {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
       setImporting(false);
+    }
+  };
+  const generateStandardAnswer = async () => {
+    if (!currentPractice || answerBusy) return;
+    setAnswerBusy(true);
+    setPracticeMessage('正在创建后台答案任务');
+    try {
+      const res = await post('/exercises/answer/jobs' + bookQuery, { id: currentPractice.id }, 20000);
+      if (!res?.success) {
+        setPracticeMessage(res?.message || '生成标准答案失败');
+        setAnswerBusy(false);
+        return;
+      }
+      setAnswerJobId(res.job_id || res.data?.id || '');
+      setPracticeMessage(res.message || '标准答案已转入后台生成');
+    } catch (e) {
+      setPracticeMessage(e instanceof Error ? e.message : String(e));
+      setAnswerBusy(false);
+    }
+  };
+  const saveStandardAnswer = async () => {
+    if (!currentPractice || !answerDraft.trim()) return;
+    setAnswerBusy(true);
+    setPracticeMessage('');
+    try {
+      const res = await post(`/exercises/answer/save${bookQuery}`, { id: currentPractice.id, answer: answerDraft, explanation: currentPractice.explanation || '' });
+      if (!res?.success) {
+        setPracticeMessage(res?.message || '保存标准答案失败');
+        return;
+      }
+      setRecords((items) => items.map((item) => item.id === currentPractice.id ? res.data : item));
+      setPracticeMessage('标准答案已保存');
+    } catch (e) {
+      setPracticeMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAnswerBusy(false);
     }
   };
   const importSelected = async () => {
@@ -394,9 +492,9 @@ const ExercisesPage: React.FC = () => {
             <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
               <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><ClipboardList className="h-4 w-4 text-accent" /> 从当前教材抽题</div>
               {sourcePdfUrl && (
-                <div className="overflow-hidden rounded-xl border border-border bg-bg-primary">
-                  <iframe title="教材 PDF 预览" src={sourcePdfUrl} className="h-[420px] w-full bg-white" />
-                </div>
+                <button type="button" onClick={() => { setPdfPage(textbookPageStart || '1'); setPdfOpen(true); }} className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm hover:border-accent">
+                  <BookOpen className="h-4 w-4 text-accent" /> 弹窗打开教材 PDF 并选择页码
+                </button>
               )}
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
                 <input placeholder="章节名/章节序号，可留空" value={textbookChapter} onChange={(e) => setTextbookChapter(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
@@ -405,7 +503,7 @@ const ExercisesPage: React.FC = () => {
                   <option value="examples">章节例题</option>
                   <option value="all_pages">整页文本</option>
                 </select>
-                <input type="number" min="1" placeholder="起始页" value={textbookPageStart} onChange={(e) => setTextbookPageStart(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
+                <input type="number" min="1" placeholder="起始页" value={textbookPageStart} onChange={(e) => setTextbookPageStart(e.target.value)} onBlur={() => { if (textbookPageStart) { setPdfPage(textbookPageStart); setPdfOpen(true); } }} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
                 <input type="number" min="1" placeholder="结束页" value={textbookPageEnd} onChange={(e) => setTextbookPageEnd(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
               </div>
               <button onClick={analyzeTextbookExercises} disabled={importing || !activeName || activeName === 'default'} className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
@@ -459,7 +557,7 @@ const ExercisesPage: React.FC = () => {
               <Metric label="已掌握" value={stats?.by_status?.mastered || 0} />
             </div>
 
-            <section className="space-y-4 rounded-[18px] border border-border bg-bg-card p-4">
+            <section className="space-y-5 rounded-[18px] border border-border bg-bg-card p-5">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-text-primary">练习</h3>
@@ -472,8 +570,8 @@ const ExercisesPage: React.FC = () => {
               </div>
 
               {currentPractice ? (
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-                  <div className="space-y-3">
+                <div className="grid gap-4">
+                  <div className="space-y-4 rounded-xl border border-border bg-bg-secondary p-4">
                     <div className="flex flex-wrap gap-2 text-xs text-text-secondary">
                       <span className="rounded border border-border px-2 py-0.5">{statusText[currentPractice.status] || currentPractice.status}</span>
                       <span className="rounded border border-border px-2 py-0.5">练习 {currentPractice.practice_count || 0} 次</span>
@@ -482,12 +580,25 @@ const ExercisesPage: React.FC = () => {
                     </div>
                     <ChatMessage role="assistant" content={currentPractice.question_text} linkedConcepts={currentPractice.linked_concepts || []} />
                   </div>
-                  <div className="space-y-3">
-                    <textarea value={practiceAnswer} onChange={(e) => setPracticeAnswer(e.target.value)} placeholder="写下你的答案或思路" className="min-h-[132px] w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent" />
+                  <div className="space-y-4 rounded-xl border border-border bg-bg-secondary p-4">
+                    <div><div className="text-sm font-semibold text-text-primary">你的作答</div><div className="mt-1 text-xs text-text-secondary">先独立完成，再展开教材答案进行核对。</div></div>
+                    <textarea value={practiceAnswer} onChange={(e) => setPracticeAnswer(e.target.value)} placeholder="写下你的答案或推导过程" className="min-h-[168px] w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent" />
                     <button onClick={() => setPracticeSolutionOpen((open) => !open)} className="w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm hover:border-accent">{practiceSolutionOpen ? '收起答案解析' : '查看答案解析'}</button>
                     {practiceSolutionOpen && (
-                      <div className="space-y-3 rounded-xl border border-border bg-bg-secondary p-3">
-                        <Block title="答案">{currentPractice.answer ? <ChatMessage role="assistant" content={currentPractice.answer} /> : <span className="text-sm text-text-secondary">暂无答案</span>}</Block>
+                      <div className="space-y-4 border-t border-border pt-4">
+                        <Block title="标准答案（可编辑）">
+                          <div className="space-y-2">
+                            <textarea value={answerDraft} onChange={(e) => setAnswerDraft(e.target.value)} placeholder="暂无答案，可基于教材 RAG 生成草稿" className="min-h-[220px] w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm leading-6 text-text-primary outline-none focus:border-accent" />
+                            <div className="flex flex-wrap gap-2">
+                              <button onClick={generateStandardAnswer} disabled={answerBusy} className="flex items-center gap-1.5 rounded-lg border border-border bg-bg-card px-3 py-1.5 text-xs hover:border-accent disabled:opacity-50">
+                                {answerBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 text-accent" />} 基于教材 RAG 生成
+                              </button>
+                              <button onClick={saveStandardAnswer} disabled={answerBusy || !answerDraft.trim()} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-xs text-white disabled:opacity-50">
+                                <Save className="h-3.5 w-3.5" /> 保存修改后的答案
+                              </button>
+                            </div>
+                          </div>
+                        </Block>
                         <Block title="解析">{currentPractice.explanation ? <ChatMessage role="assistant" content={currentPractice.explanation} linkedConcepts={currentPractice.linked_concepts || []} /> : <span className="text-sm text-text-secondary">暂无解析</span>}</Block>
                       </div>
                     )}
@@ -585,6 +696,23 @@ const ExercisesPage: React.FC = () => {
             </section>
           </div>
         </main>
+      {pdfOpen && sourcePdfUrl && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 p-3 sm:p-6" role="dialog" aria-modal="true" aria-label="教材 PDF 选页">
+          <div className="flex h-[64vh] w-[min(900px,92vw)] flex-col overflow-hidden rounded-2xl border border-border bg-bg-card shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+              <div><div className="text-sm font-semibold text-text-primary">{activeName} · PDF 选页</div><div className="text-xs text-text-secondary">输入 PDF 页码后预览；“用作起始页”会回填抽题范围。</div></div>
+              <div className="flex items-center gap-2">
+                <input type="number" min="1" value={pdfPage} onChange={(e) => setPdfPage(e.target.value)} className="w-24 rounded-lg border border-border bg-bg-primary px-2.5 py-1.5 text-sm outline-none focus:border-accent" />
+                <button onClick={() => setPdfPage((value) => String(Math.max(1, Number(value || 1) - 1)))} className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:border-accent">上一页</button>
+                <button onClick={() => setPdfPage((value) => String(Number(value || 1) + 1))} className="rounded-lg border border-border px-2.5 py-1.5 text-xs hover:border-accent">下一页</button>
+                <button onClick={() => { setTextbookPageStart(pdfPage || '1'); if (!textbookPageEnd) setTextbookPageEnd(pdfPage || '1'); setPdfOpen(false); }} className="rounded-lg bg-accent px-3 py-1.5 text-xs text-white">用作起始页</button>
+                <button onClick={() => setPdfOpen(false)} aria-label="关闭 PDF" className="rounded-lg border border-border p-1.5 hover:border-accent"><X className="h-4 w-4" /></button>
+              </div>
+            </div>
+            <iframe key={sourcePdfUrl} title="教材 PDF 预览" src={sourcePdfUrl} className="min-h-0 flex-1 bg-white" />
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );

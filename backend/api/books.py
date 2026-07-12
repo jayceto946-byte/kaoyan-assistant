@@ -8,6 +8,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import FileResponse
@@ -223,7 +224,9 @@ def _format_chapter(ch: dict) -> dict:
 def _save_chapters(name: str, chapters: list[dict]) -> None:
     path = safe_child_path(PROGRESS_PATH, safe_book_name(name), "_chapters.json")
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(path, chapters)
+    # External OCR produces one record per heading/chunk. Persist the real TOC
+    # instead so highlight/exercise UIs never mistake hundreds of chunks for chapters.
+    atomic_write_json(path, _normalize_loaded_chapters(name, chapters))
 
 
 def _book_meta_path(name: str) -> Path:
@@ -414,7 +417,11 @@ def source_pdf(book_name: str):
     pdf_path = _source_pdf_path(book_name)
     if not pdf_path:
         return {"success": False, "message": "未找到该教材对应的 origin.pdf 或源 PDF"}
-    return FileResponse(pdf_path, media_type="application/pdf", filename=pdf_path.name)
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(pdf_path.name)}"},
+    )
 
 
 @router.patch("/{book_name}")

@@ -5,6 +5,7 @@ import { get } from '../api/client';
 export type ScopeBookOption = {
   name: string;
   subject?: string;
+  displayName?: string;
 };
 
 type SubjectNode = {
@@ -199,20 +200,30 @@ export default function ScopeSelector({
     };
   }, [open]);
 
-  const tree = useMemo(() => mergeSubjectTree(managedSubjects, suggestions, books), [managedSubjects, suggestions, books]);
+  const scopeBooks = useMemo(() => {
+    const hasSensorCore = books.some((book) => book.name === '传感器短书');
+    if (!hasSensorCore) return books;
+    return books
+      .filter((book) => book.name !== '传感器长书')
+      .map((book) => book.name === '传感器短书'
+        ? { ...book, subject: '专业课/传感器', displayName: '传感器（短书重点 + 长书补充）' }
+        : book);
+  }, [books]);
+  const tree = useMemo(() => mergeSubjectTree(managedSubjects, suggestions, scopeBooks), [managedSubjects, suggestions, scopeBooks]);
   const active = useMemo(() => inferSubject(subject, tree), [subject, tree]);
   const activeParent = active.parent || (allowAllSubjects ? '' : tree[0]?.name || '');
   const activeNode = activeParent ? tree.find((node) => node.name === activeParent) : undefined;
   const activeSubject = active.value;
   const visibleBooks = useMemo(
-    () => books.filter((book) => {
+    () => scopeBooks.filter((book) => {
       const normalized = inferSubject(book.subject || '', tree).value || book.subject || '';
       return matchesSubject(normalized, activeSubject) || matchesSubject(book.subject || '', activeSubject);
     }),
-    [books, activeSubject, tree]
+    [scopeBooks, activeSubject, tree]
   );
 
-  const currentBook = books.find((book) => book.name === bookName);
+  const currentBook = scopeBooks.find((book) => book.name === bookName)
+    || (bookName === '传感器长书' ? scopeBooks.find((book) => book.name === '传感器短书') : undefined);
   const popupWidthClass = fullWidth ? 'w-full min-w-0' : 'w-[min(720px,calc(100vw-32px))]';
   const popupGridClass = fullWidth
     ? 'grid-cols-1 divide-y divide-border'
@@ -221,12 +232,12 @@ export default function ScopeSelector({
       : 'grid-cols-1 divide-y divide-border sm:grid-cols-[160px_190px_minmax(0,1fr)] sm:divide-x sm:divide-y-0';
   const valueText = bookMode === 'hidden'
     ? (activeSubject ? subjectLabel(activeSubject) : placeholder)
-    : `${activeSubject ? subjectLabel(activeSubject) : '全部学科'} · ${currentBook?.name || (bookName || '通用 QA')}`;
+    : `${activeSubject ? subjectLabel(activeSubject) : '全部学科'} · ${currentBook?.displayName || currentBook?.name || (bookName || '通用 QA')}`;
 
   const selectSubject = (nextSubject: string) => {
     onSubjectChange(nextSubject);
     if (onBookChange && bookName) {
-      const book = books.find((item) => item.name === bookName);
+      const book = scopeBooks.find((item) => item.name === bookName);
       const normalized = inferSubject(book?.subject || '', tree).value || book?.subject || '';
       if (book && !matchesSubject(normalized, nextSubject) && !matchesSubject(book.subject || '', nextSubject)) onBookChange('');
     }
@@ -234,7 +245,7 @@ export default function ScopeSelector({
 
   const selectBook = (name: string) => {
     if (!onBookChange) return;
-    const book = books.find((item) => item.name === name);
+    const book = scopeBooks.find((item) => item.name === name);
     if (book?.subject) onSubjectChange(inferSubject(book.subject, tree).value || book.subject);
     onBookChange(name);
     setOpen(false);
@@ -307,7 +318,7 @@ export default function ScopeSelector({
                 {visibleBooks.map((book) => (
                   <OptionButton key={book.name} active={book.name === bookName} onClick={() => selectBook(book.name)}>
                     <span className="min-w-0">
-                      <span className="block truncate">{book.name}</span>
+                      <span className="block truncate">{book.displayName || book.name}</span>
                       {book.subject && <span className="block truncate text-[11px] font-normal text-text-secondary">{subjectLabel(book.subject)}</span>}
                     </span>
                   </OptionButton>

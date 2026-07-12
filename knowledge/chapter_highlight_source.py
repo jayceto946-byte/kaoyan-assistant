@@ -25,7 +25,7 @@ class ChapterHighlightSourceMixin:
         content_items = self._load_first_json(output_dir, ["*content_list*.json", "*content-list*.json"]) if output_dir else None
         native_chunks = self._load_first_json(output_dir, ["*middle_chunks*.json"]) if output_dir else None
 
-        raw_sections = self._sections_from_chunks(native_chunks, chapter)
+        raw_sections = self._sections_from_chunks(native_chunks, chapter, subsection_refs)
         if not raw_sections:
             raw_sections = self._sections_from_saved_chapters(book_name, chapter)
         if not raw_sections and isinstance(content_items, list):
@@ -363,34 +363,73 @@ class ChapterHighlightSourceMixin:
     def _find_mineru_output_dir(self, book_name: str) -> Path | None:
         safe_name = safe_book_name(book_name)
         candidates = [
+            self.mineru_output_path / safe_name / "hybrid_auto_external",
             self.mineru_output_path / safe_name / "hybrid_auto",
-            self.mineru_output_path / book_name,
+            self.mineru_output_path / safe_name,
+            self.mineru_output_path / "hybrid_auto_external" / safe_name,
+            self.progress_path.parent.parent / "mineru_output" / safe_name / "hybrid_auto_external",
             self.progress_path.parent.parent / "mineru_output" / safe_name / "hybrid_auto",
         ]
         for candidate in candidates:
             if candidate.exists():
                 return candidate
         if self.mineru_output_path.exists():
-            for candidate in self.mineru_output_path.glob(f"*/hybrid_auto"):
+            for candidate in list(self.mineru_output_path.glob(f"*/hybrid_auto_external")) + list(self.mineru_output_path.glob(f"*/hybrid_auto")):
                 if candidate.parent.name in {book_name, safe_name}:
                     return candidate
         return None
 
-    def _sections_from_chunks(self, chunks: Any, chapter: ChapterRef) -> list[dict]:
+    def _sections_from_chunks(
+        self,
+        chunks: Any,
+        chapter: ChapterRef,
+        subsection_refs: list[SectionRef] | None = None,
+    ) -> list[dict]:
         if not isinstance(chunks, list):
             return []
         result: list[dict] = []
         current: dict | None = None
+        target_chapter = self._normalize_title(chapter.title)
+        section_pages = [
+            (self._normalize_title(section.title), section.page)
+            for section in (subsection_refs or [])
+            if self._normalize_title(section.title)
+        ]
+        inside_page_less_chapter = False
+        inferred_page = chapter.page
+
         for chunk in chunks:
             if not isinstance(chunk, dict):
                 continue
+            title = str(chunk.get("section_title") or "").strip()
+            normalized_title = self._normalize_title(title)
             page = self._page_from_record(chunk)
-            if not self._page_in_chapter(page, chapter):
+
+            if page <= 0:
+                is_chapter_heading = bool(re.match(r"^第[一二三四五六七八九十百千0-9]+章", normalized_title))
+                if is_chapter_heading:
+                    matches_target = normalized_title == target_chapter or normalized_title in target_chapter or target_chapter in normalized_title
+                    if matches_target:
+                        inside_page_less_chapter = True
+                        inferred_page = chapter.page
+                    elif inside_page_less_chapter:
+                        break
+                    else:
+                        continue
+                elif not inside_page_less_chapter:
+                    continue
+
+                for section_title, section_page in section_pages:
+                    if normalized_title == section_title or normalized_title in section_title or section_title in normalized_title:
+                        inferred_page = section_page
+                        break
+                page = inferred_page
+            elif not self._page_in_chapter(page, chapter):
                 continue
+
             text = str(chunk.get("text") or chunk.get("content") or "").strip()
             if not text:
                 continue
-            title = str(chunk.get("section_title") or "").strip()
             if not title or title == "(no title)":
                 title = chapter.title
             if current is None or current["title"] != title:
@@ -407,7 +446,6 @@ class ChapterHighlightSourceMixin:
                 "source_ref": self._source_ref(chunk, page),
             })
         return result
-
     def _sections_from_saved_chapters(self, book_name: str, chapter: ChapterRef) -> list[dict]:
         data = self._read_json(self.book_dir(book_name) / "_chapters.json")
         if not isinstance(data, list) or chapter.index >= len(data):

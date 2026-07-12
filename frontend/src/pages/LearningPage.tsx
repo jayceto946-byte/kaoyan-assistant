@@ -16,12 +16,11 @@ import {
   Loader2,
   RefreshCw,
 } from 'lucide-react';
-import { get, post, runReadOnlyAgent } from '../api/client';
+import { get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
-import AgentResultCard from '../components/chat/AgentResultCard';
 import ScopeSelector, { type ScopeBookOption } from '../components/ScopeSelector';
 import { useChatContext } from '../contexts/ChatContext';
-import type { ChatAgentCard, ConceptCandidate, ReviewHistoryItem } from '../types';
+import type { ConceptCandidate, ReviewHistoryItem } from '../types';
 
 interface LearningMistakeSummary {
   id: string;
@@ -93,6 +92,7 @@ interface LearningSummary {
   due_mistakes?: LearningMistakeSummary[];
 }
 
+// Agentic review planning is intentionally hidden until it is integrated into the chat workflow.
 const mistakeHref = (id: string) => `/mistakes?mistake_id=${encodeURIComponent(id)}`;
 
 const LearningPage: React.FC = () => {
@@ -103,8 +103,6 @@ const LearningPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [reviewMessage, setReviewMessage] = useState('');
-  const [agentCard, setAgentCard] = useState<ChatAgentCard | null>(null);
-  const [agentLoading, setAgentLoading] = useState(false);
   const [expandedDueId, setExpandedDueId] = useState('');
   const [selectedActivityDate, setSelectedActivityDate] = useState('');
 
@@ -193,20 +191,6 @@ const LearningPage: React.FC = () => {
     }
   };
 
-  const runLearningAgent = async () => {
-    if (!bookName || agentLoading) return;
-    const question = '生成今日复习计划并指出最近薄弱点';
-    setAgentLoading(true);
-    setReviewMessage('');
-    try {
-      const response = await runReadOnlyAgent(question, bookName, subjectFilter || subject, '', true);
-      setAgentCard({ question, response });
-    } catch (e) {
-      setReviewMessage(e instanceof Error ? e.message : String(e));
-    } finally {
-      setAgentLoading(false);
-    }
-  };
   const subjects = summary?.subjects || [];
   const subjectSuggestions = Array.from(new Set([...subjects, ...books.map((book) => book.subject || '').filter(Boolean)]));
 
@@ -229,14 +213,6 @@ const LearningPage: React.FC = () => {
             width="wide"
             disabled={loading && !books.length}
           />
-          <button
-            onClick={runLearningAgent}
-            disabled={agentLoading || loading || !bookName}
-            className="flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary transition-colors hover:border-accent disabled:opacity-50"
-          >
-            <BrainCircuit className={`h-4 w-4 ${agentLoading ? 'animate-pulse text-accent' : ''}`} />
-            AI 复习计划
-          </button>
           <button
             onClick={load}
             disabled={loading || !bookName}
@@ -268,8 +244,6 @@ const LearningPage: React.FC = () => {
 
         {bookName && !loading && !error && summary && (
           <div className="space-y-6">
-            {agentCard && <AgentResultCard card={agentCard} />}
-
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
               <Metric icon={BrainCircuit} label="严格概念" value={summary.stats.total_concepts} />
               <Metric icon={Activity} label="高置信接触" value={summary.stats.total_exposures} />

@@ -1,4 +1,4 @@
-"""知识图谱 — 本地预构建版（MinerU + 分层处理）
+﻿"""知识图谱 — 本地预构建版（MinerU + 分层处理）
 
 支持两种模式：
 1. 本地预构建模式：加载 mineru_output/<book>/hybrid_auto/<book>_knowledge_graph.json
@@ -43,7 +43,10 @@ class KnowledgeGraph:
     def _resolve_local_dir(book_name: str) -> Path:
         candidates = [
             Path(MINERU_OUTPUT_PATH) / book_name / "hybrid_auto",
+            Path(MINERU_OUTPUT_PATH) / book_name / "hybrid_auto_external",
+            Path(PROGRESS_PATH) / book_name / "hybrid_auto_external",
             Path(BASE_DIR) / "mineru_output" / book_name / "hybrid_auto",
+            Path(BASE_DIR) / "mineru_output" / book_name / "hybrid_auto_external",
         ]
         for candidate in candidates:
             if (candidate / f"{book_name}_knowledge_graph.json").exists():

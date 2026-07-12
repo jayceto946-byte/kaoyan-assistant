@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, UploadFile
 
+from backend.job_manager import get_job_manager
 from backend.schemas import (
     ExerciseAddRequest,
     ExerciseAnalyzeRequest,
+    ExerciseAnswerGenerateRequest,
+    ExerciseAnswerSaveRequest,
     ExerciseBatchAddRequest,
     ExerciseCandidateOut,
     ExerciseFromMistakeRequest,
@@ -33,6 +37,8 @@ from utils.thinking_filter import strip_thinking
 
 router = APIRouter(prefix="/exercises", tags=["exercises"])
 UPLOAD_DIR = DATA_DIR / "uploads" / "exercises"
+EXERCISE_ANSWER_JOB_TYPE = "exercise_answer"
+_answer_job_lock = threading.Lock()
 
 
 def _log_learning_event(event_type: str, *, book_name: str = "default", record: ExerciseRecord | None = None, source_type: str = "exercise", source_id: str = "", payload: dict | None = None) -> None:
@@ -342,6 +348,146 @@ def update_exercise_status(req: ExerciseStatusRequest, book_name: str = "default
     _bank(book_name).update(record)
     return {"success": True, "message": "状态已更新", "data": _record_to_out(record)}
 
+
+
+@router.post("/answer/generate")
+def generate_exercise_answer(req: ExerciseAnswerGenerateRequest, book_name: str = "default"):
+    """Generate an editable draft through the same grounded retrieval/generator path as QA."""
+    record = _bank(book_name).get(req.id)
+    if not record:
+        return {"success": False, "message": "未找到该习题"}
+    try:
+        from config import get_llm
+        from graph.generator import _build_generate_prompt, grounded_failure_message, has_textbook_evidence
+        from graph.main_graph import build_initial_state
+        from graph.retrieval_node import retrieve_node
+
+        sensor_scope = record.subject == "传感器" or record.subject.endswith("/传感器") or book_name in {"传感器", "传感器短书", "传感器长书"}
+        effective_book = "传感器短书" if sensor_scope else book_name
+        target_chapters = [record.chapter] if record.chapter else []
+        prompt_question = (
+            "请为下列习题生成可核对的标准答案。先给结论，再给必要步骤、公式条件和易错点；"
+            "只使用检索到的教材证据，不足之处明确说明。\n\n题目：\n" + record.question_text
+        )
+        state = build_initial_state(
+            user_input=record.question_text,
+            book_name=effective_book,
+            subject=record.subject,
+            target_chapters=target_chapters,
+            use_textbook_context=True,
+        )
+        state["intent"] = "application"
+        state.update(retrieve_node(state))
+        if not has_textbook_evidence(state):
+            return {"success": False, "message": grounded_failure_message(state), "retrieval_status": state.get("retrieval_status", "unavailable")}
+        state["user_input"] = prompt_question
+        draft = get_llm(temperature=0.1).invoke(_build_generate_prompt(state)).content
+        draft = sanitize_latex(strip_thinking(str(draft or "").strip()))
+        if not draft:
+            return {"success": False, "message": "模型未生成有效答案"}
+        return {
+            "success": True,
+            "data": {
+                "answer": draft,
+                "evidence_count": len(state.get("evidence_items", [])),
+                "sources": [
+                    {
+                        "chapter": item.get("chapter", ""),
+                        "section_title": item.get("section_title", ""),
+                        "page_idx": item.get("page_idx", -1),
+                        "book_role": item.get("book_role", ""),
+                    }
+                    for item in state.get("evidence_items", [])[:6]
+                ],
+            },
+            "message": "已生成教材 RAG 答案草稿，请检查修改后保存",
+        }
+    except Exception as exc:
+        return {"success": False, "message": f"生成标准答案失败：{exc}"}
+
+
+def _find_exercise_answer_job(exercise_id: str, book_name: str) -> dict | None:
+    for job in get_job_manager().list_jobs(job_type=EXERCISE_ANSWER_JOB_TYPE, limit=200):
+        if str(job.get("exercise_id") or "") == exercise_id and str(job.get("book_name") or "default") == book_name:
+            return job
+    return None
+
+
+def _run_exercise_answer_job(job_id: str) -> None:
+    jobs = get_job_manager()
+    job = jobs.get_job(job_id, job_type=EXERCISE_ANSWER_JOB_TYPE)
+    if not job:
+        return
+    with _answer_job_lock:
+        try:
+            jobs.update_job(job_id, status="running", stage="retrieving", progress=10, message="正在检索教材证据")
+            response = generate_exercise_answer(
+                ExerciseAnswerGenerateRequest(id=str(job.get("exercise_id") or "")),
+                book_name=str(job.get("book_name") or "default"),
+            )
+            if not response.get("success"):
+                message = str(response.get("message") or "标准答案生成失败")
+                jobs.update_job(job_id, status="failed", stage="failed", progress=100, message=message, error=message)
+                return
+            jobs.update_job(
+                job_id,
+                status="completed",
+                stage="completed",
+                progress=100,
+                message=str(response.get("message") or "标准答案草稿已生成"),
+                result=response.get("data") or {},
+            )
+        except Exception as exc:
+            jobs.update_job(job_id, status="failed", stage="failed", progress=100, message=f"标准答案生成失败：{exc}", error=str(exc))
+
+
+@router.post("/answer/jobs")
+def create_exercise_answer_job(req: ExerciseAnswerGenerateRequest, book_name: str = "default"):
+    if not _bank(book_name).get(req.id):
+        return {"success": False, "message": "未找到该习题"}
+    active = _find_exercise_answer_job(req.id, book_name)
+    if active and active.get("status") in {"queued", "running"}:
+        return {"success": True, "message": "标准答案正在后台生成", "job_id": active["id"], "data": active}
+    job = get_job_manager().create_job(
+        EXERCISE_ANSWER_JOB_TYPE,
+        {"exercise_id": req.id, "book_name": book_name},
+        status="queued",
+        stage="queued",
+        progress=0,
+        message="已加入标准答案生成队列",
+    )
+    threading.Thread(target=_run_exercise_answer_job, args=(job["id"],), daemon=True).start()
+    return {"success": True, "message": "标准答案已转入后台生成", "job_id": job["id"], "data": job}
+
+
+@router.get("/answer/jobs/latest")
+def latest_exercise_answer_job(id: str, book_name: str = "default"):
+    job = _find_exercise_answer_job(id, book_name)
+    return {"success": True, "data": job}
+
+
+@router.get("/answer/jobs/{job_id}")
+def get_exercise_answer_job(job_id: str):
+    job = get_job_manager().get_job(job_id, job_type=EXERCISE_ANSWER_JOB_TYPE)
+    if not job:
+        return {"success": False, "message": "未找到标准答案生成任务"}
+    return {"success": True, "data": job}
+
+
+@router.post("/answer/save")
+def save_exercise_answer(req: ExerciseAnswerSaveRequest, book_name: str = "default"):
+    record = _bank(book_name).get(req.id)
+    if not record:
+        return {"success": False, "message": "未找到该习题"}
+    answer = sanitize_latex(strip_thinking(req.answer.strip()))
+    if not answer:
+        return {"success": False, "message": "标准答案不能为空"}
+    record.answer = answer
+    if req.explanation.strip():
+        record.explanation = sanitize_latex(strip_thinking(req.explanation.strip()))
+    _bank(book_name).update(record)
+    _log_learning_event("exercise_answer_saved", book_name=book_name, record=record, payload={"answer_source": "rag_edited"})
+    return {"success": True, "message": "标准答案已保存", "data": _record_to_out(record)}
 
 
 @router.post("/practice")

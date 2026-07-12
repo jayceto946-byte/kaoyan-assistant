@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
@@ -185,4 +185,10 @@ for book_id, meta in BOOKS.items():
     summaries.append({'book_id': book_id, 'book_name': meta['book_name'], 'chapters': len(grouped), 'chunks': total})
 
 write_json(map_file, chapter_map)
-print(json.dumps({'success': True, 'vector_db_path': str(VECTOR_DB), 'books': summaries}, ensure_ascii=False, indent=2))
+
+# Keep concept linking and learning reports in sync with the rebuilt vector index.
+from build_external_ocr_knowledge_graph import build as build_external_ocr_kg
+kg_books = selected_books or set(BOOKS)
+kg_summaries = [build_external_ocr_kg(book_id, DELIVERABLES, ROOT / 'mineru_output') for book_id in BOOKS if book_id in kg_books]
+
+print(json.dumps({'success': True, 'vector_db_path': str(VECTOR_DB), 'books': summaries, 'knowledge_graphs': kg_summaries}, ensure_ascii=False, indent=2))

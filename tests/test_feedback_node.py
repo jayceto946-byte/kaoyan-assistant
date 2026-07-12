@@ -1,4 +1,4 @@
-def test_automatic_feedback_never_calls_llm_concept_extractor(monkeypatch):
+﻿def test_automatic_feedback_never_calls_llm_concept_extractor(monkeypatch):
     import graph.feedback_node as feedback
     import knowledge.concept_memory as concept_memory
     import memory.learning_events as learning_events
@@ -42,12 +42,14 @@ def test_response_concept_linking_is_local_and_strict(monkeypatch):
         "_link_concepts_locally",
         lambda state: [
             {"name": "梯度", "confidence": 1.0, "aliases": []},
+            {"name": "直接命中", "confidence": 0.88, "aliases": []},
             {"name": "候选词", "confidence": 0.8, "aliases": []},
         ],
     )
 
-    assert feedback.link_concepts_for_response({"user_input": "什么是梯度"}) == [
-        {"name": "梯度", "confidence": 1.0, "aliases": []}
+    assert feedback.link_concepts_for_response({"user_input": "什么是梯度和直接命中"}) == [
+        {"name": "梯度", "confidence": 1.0, "aliases": []},
+        {"name": "直接命中", "confidence": 0.88, "aliases": []},
     ]
 
 def test_feedback_node_survives_learning_storage_failure(monkeypatch):

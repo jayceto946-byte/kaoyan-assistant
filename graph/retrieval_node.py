@@ -59,6 +59,9 @@ def retrieve_node(state: dict) -> dict:
     target_chapters = state.get("target_chapters", [])
     user_input = state.get("user_input", "")
     book_name = state.get("book_name", "default")
+    subject = str(state.get("subject") or "").strip()
+    sensor_scope = subject == "传感器" or subject.endswith("/传感器") or book_name in {"传感器", "传感器短书", "传感器长书"}
+    primary_book = "传感器短书" if sensor_scope else book_name
     intent = state.get("intent", "qa")
 
     if not state.get("use_textbook_context", True):
@@ -79,16 +82,16 @@ def retrieve_node(state: dict) -> dict:
         retrieval_errors.append(str(state.get("retrieval_error")))
 
     vs, vector_error = get_safe_vector_store()
-    kg, kg_error = get_safe_kg(book_name)
+    kg, kg_error = get_safe_kg(primary_book)
     if vector_error:
         retrieval_errors.append(f"vector_store: {vector_error}")
     if kg_error:
         retrieval_errors.append(f"knowledge_graph: {kg_error}")
 
     index_stats = {}
-    if book_name and book_name != "default" and hasattr(vs, "get_book_index_stats"):
+    if primary_book and primary_book != "default" and hasattr(vs, "get_book_index_stats"):
         try:
-            index_stats = vs.get_book_index_stats(book_name)
+            index_stats = vs.get_book_index_stats(primary_book)
         except Exception as exc:
             retrieval_errors.append(f"index_health: {exc}")
         if index_stats and not index_stats.get("healthy") and not getattr(kg, "_is_local", False):
@@ -102,14 +105,14 @@ def retrieve_node(state: dict) -> dict:
             }
 
     precise_results, matched_concepts = _kg_precise_retrieval(kg, user_input, intent=intent)
-    retrieval_books = [book_name]
-    if state.get("subject") == "传感器" or book_name in {"传感器短书", "传感器长书"}:
+    retrieval_books = [primary_book]
+    if sensor_scope:
         retrieval_books = ["传感器短书", "传感器长书"]
     vector_results: list[dict] = []
     lexical_results: list[dict] = []
     neighbor_results: list[dict] = []
     for candidate_book in retrieval_books:
-        is_primary = candidate_book == book_name
+        is_primary = candidate_book == primary_book
         candidate_vectors = _vector_retrieval(
             vs, user_input, intent=intent, book_name=candidate_book,
             target_chapters=target_chapters if is_primary else [],
@@ -119,7 +122,16 @@ def retrieve_node(state: dict) -> dict:
         vector_results.extend(candidate_vectors)
         candidate_lexical = search_book(candidate_book, user_input, k=20 if is_primary else 12, chapters=(target_chapters or None) if is_primary else None)
         lexical_results.extend(candidate_lexical)
-        neighbor_results.extend(expand_neighbors(candidate_book, [item.get("chunk_id", "") for item in candidate_lexical[:3]], window=1))
+        candidate_neighbors = expand_neighbors(candidate_book, [item.get("chunk_id", "") for item in candidate_lexical[:3]], window=1)
+        default_role = "core" if candidate_book == "传感器短书" else ("reference" if candidate_book == "传感器长书" else "")
+        default_priority = 1.0 if default_role != "reference" else 0.55
+        for item in candidate_vectors + candidate_lexical + candidate_neighbors:
+            if default_role and not item.get("book_role"):
+                item["book_role"] = default_role
+            if default_role and item.get("rag_priority") in {None, ""}:
+                item["rag_priority"] = default_priority
+            item.setdefault("book_name", candidate_book)
+        neighbor_results.extend(candidate_neighbors)
     chapter_contents, retrieval_debug_items = _merge_and_rerank(
         precise_results,
         vector_results + lexical_results + neighbor_results,
@@ -155,7 +167,7 @@ def retrieve_node(state: dict) -> dict:
                 "chunk_id": debug.get("chunk_id", "") if debug else "",
             })
 
-    history_results = _load_history(book_name, target_chapters)
+    history_results = _load_history(primary_book, target_chapters)
 
     return {
         "chapter_contents": chapter_contents,

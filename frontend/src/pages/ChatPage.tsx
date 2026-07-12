@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { BookMarked, CalendarDays, GraduationCap, ImagePlus, Send, Shuffle, Square } from 'lucide-react';
-import { get, post, runReadOnlyAgent } from '../api/client';
+import { get, post } from '../api/client';
 
 import HighlightRepositoryDialog from '../components/HighlightRepositoryDialog';
 import ChatHomePanel, { type ChatHomeConceptPlan, type ChatHomeDueMistake, type ChatHomeLearningSummary } from '../components/chat/ChatHomePanel';
@@ -13,7 +13,7 @@ import type { ExerciseRecord } from '../types';
 
 type BookOption = { name: string; subject?: string };
 type ReportMode = 'daily' | 'weekly';
-type ActionMode = ReportMode | 'exercise' | 'agent-review' | 'agent-digest' | 'agent-weak';
+type ActionMode = ReportMode | 'exercise';
 
 function firstLine(value = '', maxLength = 48) {
   const line = value.replace(/\s+/g, ' ').trim();
@@ -205,10 +205,6 @@ const ChatPage: React.FC = () => {
   };
 
 
-  const showReviewPlanFromSummary = () => {
-    void runAgentWorkflow('生成今日复习计划', 'agent-review');
-  };
-
   const reviewMistakeFromSummary = (mistake: ChatHomeDueMistake) => {
     if (actionLoading) return;
     const concepts = (mistake.linked_concepts || []).map((item) => item.name).filter(Boolean);
@@ -245,10 +241,6 @@ const ChatPage: React.FC = () => {
       '下一步：先用自己的话说出定义、适用条件和常见误区，再抽一道相关题检查。',
     ].filter(Boolean).join('\n');
     addLocalExchange(`复习概念：${concept.name}`, assistantContent, { linkedConcepts: [{ name: concept.name }] });
-  };
-
-  const summarizeMistakesFromSummary = () => {
-    void runAgentWorkflow('分析最近薄弱点和错因', 'agent-digest');
   };
 
   const practiceFromMemory = async (summary: ChatHomeLearningSummary | null) => {
@@ -304,20 +296,6 @@ const ChatPage: React.FC = () => {
     void persistLocalExchange(userContent, assistantContent);
   };
 
-  const runAgentWorkflow = async (question: string, mode: ActionMode) => {
-    if (actionLoading) return;
-    addMessage({ role: 'user', content: question });
-    setActionLoading(mode);
-    try {
-      const response = await runReadOnlyAgent(question, bookName || 'default', subject, conversationId, true);
-      addMessage({ role: 'assistant', content: '', stage: 'done', agentCard: { question, response } });
-      void persistLocalExchange(question, response.answer || '工具编排已完成。');
-    } catch (err) {
-      addMessage({ role: 'assistant', content: `出错了：${err instanceof Error ? err.message : String(err)}`, stage: 'error' });
-    } finally {
-      setActionLoading(null);
-    }
-  };
   const openHighlightDialog = () => {
     if (actionLoading) return;
     setHighlightDialogOpen(true);
@@ -349,9 +327,7 @@ const ChatPage: React.FC = () => {
                 isLoading={isLoading || Boolean(actionLoading)}
                 onReviewMistake={reviewMistakeFromSummary}
                 onReviewConcept={reviewConceptFromSummary}
-                onShowReviewPlan={showReviewPlanFromSummary}
                 onPracticeFromMemory={practiceFromMemory}
-                onSummarizeMistakes={summarizeMistakesFromSummary}
                 onShowReport={showReport}
                 onPickRandomExercise={pickRandomExercise}
                 onOpenHighlightDialog={openHighlightDialog}

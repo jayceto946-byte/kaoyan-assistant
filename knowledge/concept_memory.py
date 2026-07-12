@@ -1,4 +1,4 @@
-"""ConceptMemory — 概念记忆系统
+﻿"""ConceptMemory — 概念记忆系统
 
 核心能力：
 1. 概念提取：每次回答后自动提取涉及的关键概念
@@ -76,7 +76,7 @@ _GENERIC_ALIAS_TERMS = {
 
 def _is_strict_confidence(value) -> bool:
     try:
-        return float(value) >= 0.999
+        return float(value) >= 0.85
     except (TypeError, ValueError):
         return False
 

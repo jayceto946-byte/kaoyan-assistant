@@ -111,3 +111,42 @@ def test_exercise_subject_hierarchy_filters_and_stats(tmp_path):
     stats = bank.stats(subject="\u6570\u5b66")
     assert stats["total"] == 2
     assert stats["by_status"]["needs_review"] == 1
+
+
+def test_exercise_answer_job_runs_after_request_returns(monkeypatch, tmp_path):
+    import time
+    from backend.job_manager import JobManager
+    from backend.schemas import ExerciseAnswerGenerateRequest
+
+    bank = ExerciseBank(tmp_path / "answer_jobs_exercises.db")
+    exercise_id = bank.add(ExerciseRecord(question_text="解释霍尔效应", subject="专业课/传感器"))
+    jobs = JobManager(tmp_path / "answer_jobs.sqlite3")
+    monkeypatch.setattr(exercises, "_bank", lambda book_name="default": bank)
+    monkeypatch.setattr(exercises, "get_job_manager", lambda: jobs)
+    monkeypatch.setattr(
+        exercises,
+        "generate_exercise_answer",
+        lambda req, book_name="default": {
+            "success": True,
+            "message": "draft ready",
+            "data": {"answer": "教材答案", "evidence_count": 2},
+        },
+    )
+
+    created = exercises.create_exercise_answer_job(
+        ExerciseAnswerGenerateRequest(id=exercise_id),
+        book_name="传感器短书",
+    )
+    assert created["success"] is True
+    job_id = created["job_id"]
+
+    deadline = time.time() + 3
+    job = jobs.get_job(job_id)
+    while job and job["status"] not in {"completed", "failed"} and time.time() < deadline:
+        time.sleep(0.02)
+        job = jobs.get_job(job_id)
+
+    assert job is not None
+    assert job["status"] == "completed"
+    assert job["result"]["answer"] == "教材答案"
+    assert exercises.latest_exercise_answer_job(exercise_id, "传感器短书")["data"]["id"] == job_id

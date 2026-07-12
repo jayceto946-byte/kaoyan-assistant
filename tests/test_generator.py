@@ -125,8 +125,8 @@ def test_teach_prompt_adds_intuitive_examples_and_keeps_examples_primary():
     assert "不要把讲解写成概念清单" in TEACH_PROMPT
 
 
-def test_chapter_highlight_prompt_uses_v4_and_problem_centered_examples(tmp_path):
-    """章节重点页需要生活化引入，同时保留以题讲知识点结构。"""
+def test_chapter_highlight_prompt_uses_v5_and_textbook_evidence_only(tmp_path):
+    """章节重点页必须严格依赖教材证据，不能用模型知识补齐。"""
     service = ChapterHighlightService(progress_path=tmp_path / "progress", mineru_output_path=tmp_path / "mineru")
     source = {
         "book_name": "demo-book",
@@ -154,12 +154,12 @@ def test_chapter_highlight_prompt_uses_v4_and_problem_centered_examples(tmp_path
 
     prompt = service._section_prompt(source, sections)
 
-    assert PROMPT_VERSION == "chapter_highlights_v4"
-    assert "直观例子" in prompt
-    assert "生活化类比" in prompt
-    assert "知识点地图”不要写成术语清单" in prompt
-    assert "以题讲知识点" in prompt
-    assert "不要把重点页主要写成概念罗列" in prompt
+    assert PROMPT_VERSION == "chapter_highlights_v5_grounded"
+    assert "不得使用模型记忆补充教材外知识" in prompt
+    assert "每条事实必须能在给定材料中找到依据" in prompt
+    assert "禁止自拟题" in prompt
+    assert "不要输出 chunk_id" in prompt
+    assert "控制篇幅" in prompt
 
 def test_general_qa_prompt_uses_subject_without_textbook_context():
     state = {

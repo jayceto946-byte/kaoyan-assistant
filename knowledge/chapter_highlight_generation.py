@@ -166,7 +166,32 @@ class ChapterHighlightGenerationMixin:
         images = self._section_images_text(source, sections)
         examples = self._section_examples_text(sections)
         section_titles = " / ".join(str(section.get("title") or "小节") for section in sections)
-        return f"""你是考研数学与专业课教材重点整理助手。请基于给定 OCR 正文，为下面小节生成可直接复习的详细重点页。必须使用中文输出。不要寒暄，不要 thinking。\n\n教材：{source.get('book_name')}\n章节：{chapter.get('title')}\n生成范围：{scope.get('title') or chapter.get('title')}\n当前小节：{section_titles}\n\n相关图片索引：\n{images}\n\n本节教材例题/习题片段：\n{examples}\n\nOCR 正文：\n{section_text}\n\n输出要求：\n1. 只输出 Markdown。只允许使用上方 OCR 正文对应的小节标题作为唯一的二级标题“## 小节标题”；不要输出“# 本章重点”“# 本节重点”“## 分节重点”“## 总章节”“## 整体总结”。\n2. 不要输出“教材例题与习题资源”“本章学习要点参考”“本章学习要点”这些附录式栏目。\n3. 内容要比普通摘要更完整：核心概念写定义、适用条件、常见考法；公式写变量含义、成立条件和使用限制；方法步骤能指导做题。\n4. 遇到学习者可能第一次接触、或本身比较抽象陌生的概念时，在“核心概念与公式”中补一句“直观例子”或“生活化类比”，用日常场景说明它具体怎么体现；例子要简短准确，不能替代教材定义、公式条件或后面的解题过程。\n5. 小节内固定结构：### 知识点地图、### 核心概念与公式、### 方法步骤、### 以题讲知识点、### 典型考法、### 易错点、### 复习清单。\n6. “知识点地图”不要写成术语清单，要说明概念之间如何服务于后续题目、公式或方法步骤。\n7. “以题讲知识点”必须有题，并作为本节重点的主线：若上方教材例题/习题片段里有相对完整题目，选一道最能覆盖本节方法的教材题，写题目摘录、考点、解法步骤、易错点和来源；若没有完整题目，可以生成一道“自拟巩固题”，但必须明确标注“自拟巩固题”，且只能基于本节材料。不要把重点页主要写成概念罗列。\n8. 如图片、表格、流程图对理解有帮助，必须在对应位置单独写一行 [IMAGE:img_001] 这样的占位符；只能使用上方图片 id，不要编造图片编号。\n9. 公式在生成阶段就要校正为可渲染 LaTeX：行内公式使用 $...$；独立公式必须单独成行，格式为 $$ 换行 公式 换行 $$。不要把中文解释放进数学模式，不要输出空公式、半截美元符号或中文全角美元符号。\n10. 每个重点、公式、例题或方法后尽量标注来源页码或 chunk_id，如“来源：p12 / chunk_3”。\n"""
+        return f"""你是教材证据整理助手。只能整理下方提供的 OCR 正文、公式候选、图片索引和教材题目，不得使用模型记忆补充教材外知识。必须使用中文，不要寒暄，不要 thinking。
+
+教材：{source.get('book_name')}
+章节：{chapter.get('title')}
+生成范围：{scope.get('title') or chapter.get('title')}
+当前小节：{section_titles}
+
+相关图片索引：
+{images}
+
+本节教材例题/习题片段：
+{examples}
+
+OCR 正文：
+{section_text}
+
+输出要求：
+1. 只输出 Markdown；不要重复章节总标题，只保留必要的三级标题。
+2. 先提炼定义、公式、条件、结论和方法，再整理教材已有例题/习题；不要为了填满栏目重复改写。
+3. 每条事实必须能在给定材料中找到依据，并在段末标注可读来源页码，如“来源：p12”。不要输出 chunk_id、UUID、collection 名等内部标识。
+4. 证据不足时明确写“本节教材材料未提供”，不得凭模型知识补齐。
+5. 禁止自拟题、补充例题、生活化类比和教材外扩展；没有完整教材题时省略题目栏目。
+6. 公式使用可渲染 LaTeX：行内 $...$；独立公式使用成对的 $$...$$；不得把中文放进数学模式。
+7. 控制篇幅：相同结论只写一次，优先保留考研复习所需的定义、公式条件、典型方法和易错点。
+8. 图片确有助于理解时才单独写 [IMAGE:img_001]，且只能使用上方已有图片 id。
+"""
 
     def _format_section_for_prompt(self, section: dict) -> str:
         lines = [f"## {section.get('title') or '未命名小节'}"]
@@ -219,7 +244,7 @@ class ChapterHighlightGenerationMixin:
                     ref = chunk.get("source_ref") or chunk.get("chunk_id") or ""
                     candidates.append(f"[来源 {ref}; role={role or 'problem'}]\n{text}")
         if not candidates:
-            return "未检出完整教材例题/习题；本节可以生成一道明确标注的自拟巩固题。"
+            return "未检出完整教材例题/习题；不要自拟题，省略题目栏目。"
         text = "\n\n".join(candidates)
         return text[:max_chars] + ("\n\n[例题/习题片段因长度限制已截断。]" if len(text) > max_chars else "")
 

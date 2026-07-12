@@ -1,3 +1,55 @@
+﻿## 2026-07-12 - Harden PDF preview, durable answer generation, and OCR highlight lookup
+
+- Served textbook PDFs with an explicit inline content disposition and reduced the exercise PDF modal to a compact desktop-friendly size.
+- Hid the unfinished agentic review-plan actions and reserved title-bar space for Electron window controls.
+- Reworked the exercise workspace into a full-width question followed by editable user-answer and standard-answer areas.
+- Moved standard-answer generation to persistent background jobs. The frontend resumes queued/running jobs after navigation and only saves the generated draft after user review.
+- Fixed chapter and subsection highlight source discovery to prefer the populated external OCR output and infer chapter boundaries for legacy chunks without page metadata.
+
+### Validation
+
+- Confirmed the packaged sensor PDF exists and is returned as application/pdf with an inline filename header; Chromium rendered it in the page-select modal.
+- Confirmed the real short-book OCR source returns 32 chunks for chapter 1 and 18 chunks for its first subsection.
+- Added regression coverage for durable answer jobs and page-less external OCR chunks; the full backend suite passed with 81 tests and the frontend production build passed.
+
+---
+## 2026-07-12 - Merge sensor course scope, restore TOC, and ground exercise answers
+
+- Unified the normal frontend scope selector into one 专业课/传感器 entry displayed as “传感器（短书重点 + 长书补充）”; the highlight repository intentionally keeps the two physical books separate.
+- Canonicalized sensor retrieval to use 传感器短书 as the primary KG/vector/BM25 source and 传感器长书 as the lower-priority reference source, including legacy long-book selections.
+- Kept the existing core/reference reranking bias so short-book evidence wins when both books cover the same concept, while long-book chunks can fill missing details.
+- Restored data/progress/传感器短书/_chapters.json from Chapter.md: 13 chapters and 65 subsections. The former 479-item OCR-heading file is preserved as _chapters.bak_before_chapter_md_restore_20260712.json.
+- Changed chapter persistence to collapse external OCR heading/chunk records into a real TOC before saving, preventing future reimports from exposing hundreds of chunks as chapters.
+- Tightened chapter-highlight generation to evidence-only OCR summarization: no model-memory completion, self-authored questions, external analogies, or internal chunk identifiers. Bumped the prompt version so old artifacts are marked stale.
+- Replaced the inline exercise PDF iframe with a large modal viewer that opens on textbook selection or page entry, supports direct page navigation, and can copy the selected page into the extraction range.
+- Added exercise answer draft APIs and UI: retrieve with the same hybrid textbook strategy as QA, enforce the evidence gate, generate an editable answer draft, and save only after user review.
+
+### Validation
+
+- Python AST validation passed for all changed backend/retrieval/highlight modules; the full backend suite passed: 79 tests, 1 deprecation warning.
+- Frontend TypeScript and Vite production build passed; this is the static frontend served by the Electron backend.
+- The actual highlight service returned 13 chapters / 65 subsections, including “第二节 等效电路与测量电路” at p107.
+- A read-only “霍尔效应是什么” probe returned 6 grounded evidence items; short-book evidence occupied the top two ranks. Runtime role fallback now labels legacy long-book lexical rows as reference without requiring an index rebuild.
+
+---
+## 2026-07-12 - Restore chat concept feedback after external OCR index rebuild
+
+- Backed up the three imported textbooks' existing learning metadata under `data/backups/kg_learning/20260711-235745` before generating knowledge graphs.
+- Added `scripts/build_external_ocr_knowledge_graph.py` to assemble runtime knowledge graphs from the existing reviewed OCR concept candidates and long-book concept links without repeating LLM extraction.
+- Generated local runtime graphs for 传感器短书 (282 concepts), 传感器长书 (86 linked concepts), and 误差理论与数据处理 (184 concepts) under each book's `hybrid_auto_external` directory.
+- Updated `KnowledgeGraph` discovery to load `hybrid_auto_external` graphs and updated the three-book OCR index rebuild script to regenerate matching graphs after vector indexing.
+- Mirrored runtime graphs into each book's progress seed and desktop/sample_data_three_books, so packaged Electron installs can load the same graphs from user data without relying on the repository-level MinerU directory.
+- Changed strict chat exposure acceptance from confidence 1.0 to 0.85 while retaining the direct question mention requirement and generic-alias exclusion. Uncertain or indirect matches remain candidates.
+- Preserved stable concept IDs using canonical-name hashes so repeated rebuilds do not break existing ConceptMemory links.
+
+### Validation
+
+- Runtime graph loading passed for all three books; concept counts were 282 / 86 / 184.
+- Concept-link quality probes found 压阻效应, 传感器, 系统误差, and 随机误差 from representative questions.
+- End-to-end learning write probe for “什么是压阻效应” linked the canonical concept at confidence 0.88 and increased the formal exposure count from 0 to 1.
+- Targeted feedback and system-health tests passed: 5 passed, 1 warning.
+
+---
 ## 2026-07-10 - CPU-only desktop installer with three-book sample data
 
 - Audited the desktop release changes after the previous CUDA DLL packaging failure.
