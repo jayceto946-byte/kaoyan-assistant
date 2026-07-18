@@ -826,3 +826,42 @@ The detailed historical notes for this period were damaged by mojibake before th
 - Frontend: 3 files / 9 tests passed; ESLint passed; TypeScript and Vite production build passed.
 - Electron main-process syntax and changed Python source syntax passed.
 - git diff --check passed (line-ending warnings only).
+## 2026-07-18 - 开源发布材料与桌面入口实测
+
+### 项目审计与展示材料
+
+- 基于实际目录、入口、API、持久化和调用链新增 PROJECT_AUDIT.md，并重写根 README。
+- 新增 docs/images 下六张 1440 × 900 实机截图，覆盖工作台、资料库、教材问答会话、习题、错题和学习情况。
+- 新增无构建工具的 site/ 静态项目页，包含响应式布局、系统明暗模式、真实截图、功能边界与 Roadmap。
+- 新增 scripts/seed_docs_demo.py，用稳定 ID 向显式隔离目录写入非个人展示数据，并拒绝正式 data/ 与 desktop/sample_data。
+
+### Electron
+
+- 修复 desktop/main.cjs 中 desktopAppUrl 被错误定义在 loadAppUrl 内部的问题。
+- 修复前 Electron 窗口停留在未进入应用的状态；移动为模块级函数后，dev:existing 已进入真实 React 应用并显示首次使用引导。
+
+### Validation
+
+- Python 3.10.11；后端完整测试 137 passed，1 条既有弃用警告。
+- 前端 Vitest 3 files / 9 passed；ESLint 和 TypeScript/Vite 生产构建通过。
+- FastAPI 隔离实例 health 返回 200；Electron dev:existing 实机进入应用。
+- 浏览器自动化在 1440 × 900 和 390 × 844 下通过；主要页面与静态宣传页无控制台错误。
+- README 六张图片、site 本地资源和页内锚点均存在；六张 PNG 均为 1440 × 900。
+- demo seed 直接运行、幂等运行和受保护路径拒绝均通过。
+- 未调用真实付费 LLM、OCR、MinerU，没有构建 Docker、PyInstaller 或 NSIS 产物。
+## 2026-07-18 - 静态宣传页截图与配色调整
+
+### 展示体验
+
+- 将截图从 Hero 和功能文本卡中移除，统一放入独立截图资源区。
+- 六张缩略图使用固定 16:10 容器，点击后通过原生 dialog 按原始比例展开。
+- 功能区保留三个文本入口，可直接打开对应截图；灯箱支持关闭按钮、Escape、点击背景关闭和焦点恢复。
+- 页面配色从绿色倾向调整为冷白、灰蓝和单一钴蓝强调色；暗色模式改为中性石墨与海军蓝，不再使用深绿色 token。
+
+### Validation
+
+- 桌面 1440 × 900 与移动 390 × 844 均无横向溢出。
+- 6 个截图卡、9 个预览入口和 6 个唯一截图资源均通过检查。
+- 所有截图容器比例均为 1.6，灯箱图片成功加载为 1440 × 900。
+- 移动导航、灯箱打开/关闭、焦点恢复和控制台检查通过。
+- site 本地资源无缺失，JavaScript 语法通过，页面可见文案不含 em dash。

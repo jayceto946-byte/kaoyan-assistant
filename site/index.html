@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="考研智能辅助系统：围绕教材问答、习题、错题和复习记录构建的本地优先学习工具。">
+  <meta name="theme-color" content="#f6f8fc">
+  <title>考研智能辅助系统 | 本地学习工作台</title>
+  <link rel="stylesheet" href="assets/styles.css">
+  <script src="assets/script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+
+  <header class="site-header">
+    <div class="shell nav-wrap">
+      <a class="brand" href="#top" aria-label="返回顶部">
+        <span class="brand-mark" aria-hidden="true">研</span>
+        <span>考研智能辅助系统</span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
+        <span class="nav-toggle-label">菜单</span>
+      </button>
+      <nav id="site-nav" class="site-nav" aria-label="主导航">
+        <a href="#features">功能</a>
+        <a href="#workflow">流程</a>
+        <a href="#architecture">架构</a>
+        <a href="#status">状态</a>
+        <a class="nav-cta" href="https://github.com/jayceto946-byte/kaoyan-assistant">查看 GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section id="top" class="hero shell">
+      <div class="hero-copy">
+        <p class="eyebrow">LOCAL FIRST STUDY WORKSPACE</p>
+        <h1>把教材、练习与复习记录接成一条学习线索。</h1>
+        <p class="hero-lead">围绕教材问答、习题、错题和概念记忆构建的本地优先桌面系统。</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="https://github.com/jayceto946-byte/kaoyan-assistant">查看 GitHub</a>
+          <a class="button button-secondary" href="#screens">浏览界面截图</a>
+        </div>
+      </div>
+
+      <aside class="hero-facts" aria-label="项目事实">
+        <p class="hero-facts-title">当前项目范围</p>
+        <dl>
+          <div>
+            <dt>主要入口</dt>
+            <dd>Electron 桌面端</dd>
+          </div>
+          <div>
+            <dt>应用架构</dt>
+            <dd>React + FastAPI</dd>
+          </div>
+          <div>
+            <dt>本地存储</dt>
+            <dd>ChromaDB、SQLite、JSON</dd>
+          </div>
+          <div>
+            <dt>生成能力</dt>
+            <dd>按需配置 LLM 与 OCR</dd>
+          </div>
+        </dl>
+        <p class="hero-facts-note">个人项目持续开发中。核心本地数据闭环已通过实际运行验证。</p>
+      </aside>
+    </section>
+
+    <section class="proof-strip" aria-label="项目边界">
+      <div class="shell proof-grid">
+        <p><strong>本地数据闭环</strong><span>教材、习题、错题与学习记录</span></p>
+        <p><strong>实际代码驱动</strong><span>FastAPI、React、Electron 与 ChromaDB</span></p>
+        <p><strong>状态透明</strong><span>条件式能力与 Roadmap 明确标注</span></p>
+      </div>
+    </section>
+
+    <section id="features" class="section shell">
+      <div class="section-heading">
+        <h2>不是聊天壳，而是学习对象之间的连接。</h2>
+        <p>教材范围提供上下文，习题与错题形成长期记录，概念记忆和复习队列连接下一次行动。</p>
+      </div>
+
+      <div class="feature-layout">
+        <article class="feature-primary">
+          <p class="feature-label">教材问答</p>
+          <h3>在选定教材范围内检索、生成并保留来源。</h3>
+          <p>问答链组合知识图谱精确命中、向量检索、词法索引、语义角色与相邻片段。SSE 按阶段返回，单个检索源异常时可以降级。</p>
+          <button class="preview-link" type="button" data-preview-src="assets/images/03-rag-chat.png" data-preview-title="教材问答会话">查看教材问答界面</button>
+        </article>
+
+        <div class="feature-secondary">
+          <article>
+            <p class="feature-label">习题工作区</p>
+            <h3>从题目导入到练习会话。</h3>
+            <p>保留来源、章节、题型、难度、概念、状态与练习历史，支持批量导入和回滚。</p>
+            <button class="preview-link" type="button" data-preview-src="assets/images/04-exercises.png" data-preview-title="习题工作区">查看习题界面</button>
+          </article>
+          <article>
+            <p class="feature-label">错题复习</p>
+            <h3>记录错因，并按到期队列复习。</h3>
+            <p>手动录入、筛选、复习历史和 SM-2 兼容调度已形成闭环。OCR 结果必须人工校正。</p>
+            <button class="preview-link" type="button" data-preview-src="assets/images/05-mistakes.png" data-preview-title="错题本">查看错题界面</button>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="screens" class="section section-tint">
+      <div class="shell">
+        <div class="section-heading">
+          <p class="eyebrow">REAL INTERFACE</p>
+          <h2>六个真实页面，点击查看完整截图。</h2>
+          <p>所有图片来自统一的 1440 × 900 浏览器视口和隔离演示数据。缩略图只用于定位，展开后按原始比例查看。</p>
+        </div>
+
+        <div class="screenshot-grid" aria-label="项目截图资源">
+          <button class="screenshot-card screenshot-wide" type="button" data-preview-src="assets/images/01-dashboard.png" data-preview-title="主工作台">
+            <span class="screenshot-media"><img src="assets/images/01-dashboard.png" alt="" width="1440" height="900" loading="lazy"></span>
+            <span class="screenshot-caption"><strong>主工作台</strong><small>范围选择、历史与下一步行动</small></span>
+          </button>
+          <button class="screenshot-card" type="button" data-preview-src="assets/images/02-library.png" data-preview-title="教材与资料库">
+            <span class="screenshot-media"><img src="assets/images/02-library.png" alt="" width="1440" height="900" loading="lazy"></span>
+            <span class="screenshot-caption"><strong>教材与资料库</strong><small>教材切换、章节和数据状态</small></span>
+          </button>
+          <button class="screenshot-card" type="button" data-preview-src="assets/images/03-rag-chat.png" data-preview-title="教材问答">
+            <span class="screenshot-media"><img src="assets/images/03-rag-chat.png" alt="" width="1440" height="900" loading="lazy"></span>
+            <span class="screenshot-caption"><strong>教材问答</strong><small>会话、公式渲染与教材来源</small></span>
+          </button>
+          <button class="screenshot-card screenshot-wide" type="button" data-preview-src="assets/images/04-exercises.png" data-preview-title="习题工作区">
+            <span class="screenshot-media"><img src="assets/images/04-exercises.png" alt="" width="1440" height="900" loading="lazy"></span>
+            <span class="screenshot-caption"><strong>习题工作区</strong><small>题库筛选、状态和练习入口</small></span>
+          </button>
+          <button class="screenshot-card screenshot-wide" type="button" data-preview-src="assets/images/05-mistakes.png" data-preview-title="错题本">
+            <span class="screenshot-media"><img src="assets/images/05-mistakes.png" alt="" width="1440" height="900" loading="lazy"></span>
+            <span class="screenshot-caption"><strong>错题本</strong><small>错因、概念和复习记录</small></span>
+          </button>
+          <button class="screenshot-card" type="button" data-preview-src="assets/images/06-learning.png" data-preview-title="学习情况">
+            <span class="screenshot-media"><img src="assets/images/06-learning.png" alt="" width="1440" height="900" loading="lazy"></span>
+            <span class="screenshot-caption"><strong>学习情况</strong><small>概念、薄弱信号和复习队列</small></span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section id="workflow" class="section shell">
+      <div class="section-heading">
+        <h2>一次问答如何变成可继续的学习记录。</h2>
+        <p>每一步对应仓库中已经存在的数据对象和调用链。模型生成不是唯一入口，本地错题和习题功能可以独立使用。</p>
+      </div>
+
+      <ol class="steps">
+        <li>
+          <h3>导入与整理</h3>
+          <p>导入教材或已有 MinerU 结果，建立章节、片段与索引。</p>
+        </li>
+        <li>
+          <h3>范围内问答</h3>
+          <p>在学科和教材范围内规划意图，执行混合检索并流式生成。</p>
+        </li>
+        <li>
+          <h3>练习与归因</h3>
+          <p>将题目保存在习题库，把错误答案、错因和来源沉淀到错题本。</p>
+        </li>
+        <li>
+          <h3>复习与回看</h3>
+          <p>按到期队列复习，在学习情况中回看概念接触和薄弱信号。</p>
+        </li>
+      </ol>
+    </section>
+
+    <section id="architecture" class="section architecture-section">
+      <div class="shell architecture-grid">
+        <div class="architecture-copy">
+          <h2>桌面壳、本地 API 与学习数据分层。</h2>
+          <p>Electron 负责桌面生命周期和用户数据目录；React 提供交互；FastAPI 编排教材、练习与复习服务；不同存储保存不同类型的数据。</p>
+          <div class="tech-list" aria-label="主要技术栈">
+            <span>Electron 37</span>
+            <span>React 19</span>
+            <span>TypeScript 6</span>
+            <span>FastAPI</span>
+            <span>LangGraph</span>
+            <span>ChromaDB</span>
+            <span>SQLite</span>
+            <span>KaTeX</span>
+          </div>
+        </div>
+
+        <div class="architecture-map" aria-label="系统架构图">
+          <div class="arch-node arch-client">
+            <small>客户端</small>
+            <strong>Electron + React</strong>
+            <span>桌面生命周期、REST、SSE、KaTeX</span>
+          </div>
+          <div class="arch-connector" aria-hidden="true">REST + SSE</div>
+          <div class="arch-node arch-api">
+            <small>应用层</small>
+            <strong>FastAPI + LangGraph</strong>
+            <span>规划、检索、生成、任务与数据边界</span>
+          </div>
+          <div class="arch-branches">
+            <div class="arch-node"><small>知识层</small><strong>教材与检索</strong><span>MinerU、KG、词法、向量</span></div>
+            <div class="arch-node"><small>学习层</small><strong>习题与复习</strong><span>错题、SM-2、概念记忆</span></div>
+            <div class="arch-node"><small>存储层</small><strong>本地持久化</strong><span>Chroma、SQLite、JSON、文件</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="status" class="section shell">
+      <div class="section-heading">
+        <h2>当前可用范围与边界。</h2>
+        <p>代码链完整不等于所有外部服务已经配置。以下状态按实际仓库和运行结果划分。</p>
+      </div>
+
+      <div class="status-board">
+        <article class="status-column">
+          <p class="status-title">已实现</p>
+          <ul>
+            <li>教材列表、生命周期和多教材隔离</li>
+            <li>教材问答调用链与混合检索降级</li>
+            <li>习题库、练习会话和批量回滚</li>
+            <li>错题 CRUD、复习历史与间隔调度</li>
+            <li>学习情况、规则周报与系统健康检查</li>
+            <li>Electron 本地 API 令牌边界</li>
+          </ul>
+        </article>
+        <article class="status-column">
+          <p class="status-title">依赖条件</p>
+          <ul>
+            <li>LLM 回答、答案草稿和章节讲解</li>
+            <li>MinerU 教材解析与扫描件 OCR</li>
+            <li>图片错题识别和图片讲解</li>
+            <li>章节重点与知识图谱增强</li>
+            <li>自动更新需要真实发布仓库</li>
+          </ul>
+        </article>
+        <article class="status-column">
+          <p class="status-title">Roadmap</p>
+          <ul>
+            <li>完整 Agent 工具调用闭环</li>
+            <li>PWA、离线缓存和推送提醒</li>
+            <li>依赖拆分与锁定环境</li>
+            <li>可授权的公开演示教材与题库</li>
+            <li>开源许可证与贡献指南</li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="caveat">
+        <strong>发布前提示</strong>
+        <p>仓库当前没有 LICENSE，内置教材和派生数据的公开分发授权也需要确认。项目代码可公开查看，不等同于已授予开源使用许可。</p>
+      </div>
+    </section>
+
+    <section class="section use-cases section-tint">
+      <div class="shell use-case-grid">
+        <div>
+          <h2>适合愿意维护本地学习数据的人。</h2>
+        </div>
+        <div class="use-case-list">
+          <p><strong>考研学习者</strong><span>希望把教材问答、错题和复习记录放在一个本地工具中。</span></p>
+          <p><strong>个人开发者</strong><span>想参考 FastAPI、React、Electron、RAG 和本地数据建模。</span></p>
+          <p><strong>项目贡献者</strong><span>愿意自行配置模型和文档解析服务，并接受持续开发状态。</span></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta shell">
+      <div>
+        <h2>从代码、审计记录和真实限制开始了解项目。</h2>
+      </div>
+      <div class="cta-actions">
+        <a class="button button-primary" href="https://github.com/jayceto946-byte/kaoyan-assistant">查看 GitHub</a>
+        <a class="text-link" href="https://github.com/jayceto946-byte/kaoyan-assistant">查看仓库文档</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell footer-row">
+      <p>考研智能辅助系统</p>
+      <p>本地优先，持续开发，状态透明。</p>
+      <a href="#top">返回顶部</a>
+    </div>
+  </footer>
+
+  <dialog class="image-lightbox" aria-labelledby="lightbox-title">
+    <div class="lightbox-toolbar">
+      <div>
+        <strong id="lightbox-title">项目截图</strong>
+        <span>原始尺寸 1440 × 900</span>
+      </div>
+      <button type="button" data-lightbox-close>关闭</button>
+    </div>
+    <div class="lightbox-stage">
+      <img data-lightbox-image alt="">
+      <p class="lightbox-error" data-lightbox-error hidden style="margin:0;color:#f1f5fb;font-size:14px">截图资源未能加载。</p>
+    </div>
+  </dialog>
+</body>
+</html>

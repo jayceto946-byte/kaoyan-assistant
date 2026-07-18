@@ -314,7 +314,6 @@ async function fetchWithTimeout(url, timeoutMs = 2500) {
   }
 }
 
-async function loadAppUrl(targetUrl) {
 function desktopAppUrl(targetUrl) {
   const target = new URL(targetUrl);
   const hash = new URLSearchParams(target.hash.replace(/^#/, ''));
@@ -323,6 +322,7 @@ function desktopAppUrl(targetUrl) {
   return target.toString();
 }
 
+async function loadAppUrl(targetUrl) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   try {
     await mainWindow.webContents.executeJavaScript("document.body.classList.add('is-leaving')", true);
