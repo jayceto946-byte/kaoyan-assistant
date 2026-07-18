@@ -10,7 +10,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useChatContext, type ChatMessage as ContextChatMessage } from '../contexts/ChatContext';
 import { useChat } from '../hooks/useChat';
 import type { ExerciseRecord } from '../types';
-import { buildTextbookScopeOptions, type TextbookRecord } from '../utils/textbookScopes';
+import { buildTextbookScopeOptions, findDefaultTextbookScope, scopeContainsBook, type TextbookRecord } from '../utils/textbookScopes';
 type ReportMode = 'daily' | 'weekly';
 type ActionMode = ReportMode | 'exercise';
 
@@ -64,6 +64,7 @@ function recordMatchesTerms(record: ExerciseRecord, terms: string[]) {
 const ChatPage: React.FC = () => {
   const [input, setInput] = useState('');
   const [books, setBooks] = useState<TextbookRecord[]>([]);
+  const [booksLoaded, setBooksLoaded] = useState(false);
   const [highlightDialogOpen, setHighlightDialogOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState<ActionMode | null>(null);
   const { messages, isLoading, sendMessage, stop } = useChat();
@@ -80,6 +81,8 @@ const ChatPage: React.FC = () => {
         if (res?.success) setBooks(res.data || []);
       } catch {
         setBooks([]);
+      } finally {
+        setBooksLoaded(true);
       }
     };
     const onChanged = () => loadBooks();
@@ -131,15 +134,14 @@ const ChatPage: React.FC = () => {
   }, [setBookName, setSubject]);
 
   useEffect(() => {
-    if (bookName || !scopeBooks.length) return;
-    const selectedSubject = subject.trim();
-    const preferred = scopeBooks.find((book) => {
-      const bookSubject = (book.subject || '').trim();
-      return bookSubject === selectedSubject || Boolean(selectedSubject && bookSubject.startsWith(`${selectedSubject}/`));
-    });
-    const target = preferred || scopeBooks[0];
-    void switchBook(target.name);
-  }, [bookName, scopeBooks, subject, switchBook]);
+    if (!booksLoaded) return;
+    if (bookName) {
+      if (!scopeBooks.some((scope) => scopeContainsBook(scope, bookName))) setBookName('');
+      return;
+    }
+    const target = findDefaultTextbookScope(scopeBooks, subject);
+    if (target) void switchBook(target.name);
+  }, [bookName, booksLoaded, scopeBooks, setBookName, subject, switchBook]);
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();

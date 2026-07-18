@@ -98,7 +98,7 @@ const MainLayout: React.FC = () => {
 
   const sidebarContent = (mode: 'desktop' | 'drawer') => (
     <>
-      <div className="app-brand-header flex h-[52px] items-center border-b border-border bg-bg-card/86 px-3 backdrop-blur">
+      <div className="app-brand-header flex h-16 min-h-16 shrink-0 items-center border-b border-border bg-bg-card/86 px-3 backdrop-blur">
         <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--surface-black)]">
           <BookOpen className="h-4.5 w-4.5 text-white" />
         </div>
@@ -140,7 +140,7 @@ const MainLayout: React.FC = () => {
   );
 
   const rail = (mode: 'desktop' | 'compact') => (
-    <aside className={`app-sidebar-rail ${mode === 'desktop' ? 'w-[68px]' : 'w-[52px]'} relative z-20 flex flex-shrink-0 flex-col items-center border-r border-black bg-[var(--surface-black)] py-2`}>
+    <aside className={`app-sidebar-rail ${mode === 'desktop' ? 'w-[68px]' : 'w-[52px]'} relative z-20 flex h-full flex-shrink-0 flex-col items-center border-r border-black bg-[var(--surface-black)] py-2`}>
       <button
         type="button"
         onClick={() => setSidebarExpanded(true)}

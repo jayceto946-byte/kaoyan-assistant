@@ -349,12 +349,13 @@ def _mistake_summary(record) -> dict:
 @router.get("/learning-summary")
 def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30):
     """Return strict concept memory activity plus mistake weak-point context."""
-    if not book_name:
-        return {"success": False, "message": "\u8bf7\u5148\u9009\u62e9\u6559\u6750", "data": None}
+    memory_book = book_name or "default"
     try:
         from collections import Counter, defaultdict
         from knowledge.concept_memory import ConceptMemory
+        from memory.learning_events import get_learning_event_store
         from memory.mistake_book import get_mistake_book
+        from utils.subject_catalog import subject_matches
 
         generic_alias_terms = {
             "\u65b9\u6cd5", "\u6b65\u9aa4", "\u8fed\u4ee3", "\u8fed\u4ee3\u6b65\u9aa4", "\u7a0b\u5e8f\u6846\u56fe", "\u539f\u7406", "\u8fc7\u7a0b", "\u7b97\u6cd5", "\u7ea6\u675f", "\u4f18\u5316", "\u4f18\u5316\u65b9\u6cd5", "\u6700\u4f18\u5316\u65b9\u6cd5", "\u95ee\u9898", "\u6761\u4ef6",
@@ -379,11 +380,14 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
             direct_terms = [name, *[a for a in aliases if a not in generic_alias_terms]]
             return any(term and term.lower() in question for term in direct_terms)
 
-        cm = ConceptMemory(book_name)
+        cm = ConceptMemory(memory_book)
         data = cm._data
         raw_exposures = list(data.get("exposures", []))
         concepts = data.get("concepts", {})
-        strict_exposures = [e for e in raw_exposures if is_strict(e, concepts)]
+        strict_exposures = [
+            e for e in raw_exposures
+            if is_strict(e, concepts) and subject_matches(str(e.get("subject", "")), subject)
+        ]
         recent_exposures = strict_exposures[-limit:]
         strict_names = {e.get("concept", "") for e in strict_exposures if e.get("concept")}
 
@@ -429,6 +433,34 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
 
         recent_questions = [question_map[k] for k in question_order]
         recent_questions.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+        qa_events = get_learning_event_store().list_recent(
+            event_type="chat_qa",
+            subject=subject,
+            limit=max(limit * 10, 200),
+        )
+        if memory_book == "default":
+            qa_events = [event for event in qa_events if event.book_name in {"", "default"}]
+        else:
+            qa_events = [event for event in qa_events if event.book_name == memory_book]
+        known_questions = {(item.get("question") or "").strip() for item in recent_questions}
+        for event in qa_events:
+            question = str(event.payload.get("question") or "").strip()
+            if not question or question in known_questions:
+                continue
+            known_questions.add(question)
+            recent_questions.append({
+                "question": question,
+                "intent": event.payload.get("intent", "qa"),
+                "source": "qa",
+                "weak": False,
+                "timestamp": event.timestamp,
+                "concepts": [
+                    {"name": name, "confidence": 1.0, "weak": False, "source": "qa_event", "evidence": question}
+                    for name in event.concept_names
+                ],
+            })
+        recent_questions.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         recent_questions = recent_questions[:limit]
 
         effective_weak_names = {item["name"] for item in cm.get_weak_points()}
@@ -441,9 +473,13 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
         review_queue = [item for item in cm.get_review_queue(limit=30) if item.get("name") in strict_names][:12]
 
         try:
-            mb = get_mistake_book(book_name, str(PROGRESS_PATH))
+            mb = get_mistake_book(memory_book, str(PROGRESS_PATH))
             all_mistakes = mb.list_all(limit=10000)
-            subjects = sorted({r.subject for r in all_mistakes if r.subject})
+            subjects = sorted(
+                {r.subject for r in all_mistakes if r.subject}
+                | {str(e.get("subject", "")) for e in strict_exposures if e.get("subject")}
+                | {event.subject for event in qa_events if event.subject}
+            )
             subject_mistakes = [r for r in all_mistakes if not subject or r.subject == subject]
             mistake_stats = mb.get_stats(subject=subject or None)
             mistake_weak_points = mb.get_weak_points(subject=subject or None, top_n=10)
@@ -473,8 +509,10 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
         def exposure_source(e: dict) -> str:
             return "mistake" if e.get("source") == "mistake" or e.get("intent") == "mistake" else "qa"
 
-        def exposure_book(_: dict) -> str:
-            return book_name or "未选择教材"
+        def exposure_book(e: dict) -> str:
+            if memory_book == "default":
+                return str(e.get("subject") or "通用问答")
+            return memory_book
 
         daily_detail_map = defaultdict(lambda: {"qa": 0, "mistake": 0, "total": 0, "books": defaultdict(lambda: {"qa": 0, "mistake": 0, "total": 0, "concepts": Counter()})})
         for e in strict_exposures:
@@ -492,6 +530,28 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
             book_item["total"] += 1
             if concept:
                 book_item["concepts"][concept] += 1
+
+        strict_question_days = {
+            ((e.get("timestamp", "") or "")[:10], (e.get("question") or "").strip())
+            for e in strict_exposures
+        }
+        for event in qa_events:
+            day = (event.timestamp or "")[:10]
+            question = str(event.payload.get("question") or "").strip()
+            if not day or not question or (day, question) in strict_question_days:
+                continue
+            daily[day]["qa"] += 1
+            daily[day]["total"] += 1
+            label = event.subject or "通用问答"
+            daily_item = daily_detail_map[day]
+            daily_item["qa"] += 1
+            daily_item["total"] += 1
+            book_item = daily_item["books"][label]
+            book_item["qa"] += 1
+            book_item["total"] += 1
+            for concept in event.concept_names:
+                if concept:
+                    book_item["concepts"][concept] += 1
 
         daily_details = []
         for day, item in sorted(daily_detail_map.items(), reverse=True)[:120]:
@@ -516,7 +576,7 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
                 "subjects": subjects_detail,
             })
         concept_review_plan = _build_concept_review_plan(
-            book_name,
+            memory_book,
             concepts,
             strict_exposures,
             concept_counts,
@@ -575,8 +635,7 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
 @router.post("/concept-review")
 def mark_concept_review(payload: dict, book_name: str = ""):
     """Record that the user reviewed a concept from the Learning page."""
-    if not book_name:
-        return {"success": False, "message": "请先选择教材", "data": None}
+    memory_book = book_name or "default"
     name = str(payload.get("name", "")).strip()
     if not name:
         return {"success": False, "message": "缺少概念名", "data": None}
@@ -584,7 +643,7 @@ def mark_concept_review(payload: dict, book_name: str = ""):
     note = str(payload.get("note", ""))
     try:
         from knowledge.concept_memory import ConceptMemory
-        updated = ConceptMemory(book_name).mark_reviewed(name, quality=quality, note=note)
+        updated = ConceptMemory(memory_book).mark_reviewed(name, quality=quality, note=note)
         return {"success": True, "message": "已记录概念复习", "data": updated}
     except Exception as e:
         return {"success": False, "message": str(e), "data": None}

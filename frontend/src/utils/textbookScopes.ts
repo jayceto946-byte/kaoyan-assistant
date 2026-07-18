@@ -74,3 +74,12 @@ export function buildTextbookScopeOptions(books: TextbookRecord[]): TextbookScop
 export function scopeContainsBook(scope: TextbookScopeOption, bookName: string) {
   return scope.name === bookName || Boolean(scope.sourceNames?.includes(bookName));
 }
+
+export function findDefaultTextbookScope(scopes: TextbookScopeOption[], subject: string) {
+  const selectedSubject = clean(subject);
+  if (!selectedSubject) return undefined;
+  return scopes.find((scope) => {
+    const bookSubject = clean(scope.subject || '');
+    return bookSubject === selectedSubject || bookSubject.startsWith(`${selectedSubject}/`);
+  });
+}

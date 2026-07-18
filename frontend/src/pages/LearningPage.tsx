@@ -93,6 +93,13 @@ interface LearningSummary {
     concept_reviewed?: string;
   };
   due_mistakes?: LearningMistakeSummary[];
+  recent_questions?: Array<{
+    question: string;
+    source: string;
+    timestamp: string;
+    intent?: string;
+    concepts?: Array<{ name: string; confidence?: number }>;
+  }>;
 }
 
 // Agentic review planning is intentionally hidden until it is integrated into the chat workflow.
@@ -177,12 +184,11 @@ const LearningPage: React.FC = () => {
   };
 
   const load = useCallback(async () => {
-    if (!bookName) return;
     setLoading(true);
     setError('');
     setReviewMessage('');
     try {
-      const params = new URLSearchParams({ book_name: bookName });
+      const params = new URLSearchParams({ book_name: bookName || 'default' });
       if (subjectFilter) params.set('subject', subjectFilter);
       const res = await get(`/kg/learning-summary?${params.toString()}`, 90000);
       if (res?.success) setSummary(res.data);
@@ -242,11 +248,10 @@ const LearningPage: React.FC = () => {
   };
 
   const handleConceptReview = async (name: string, quality = 4) => {
-    if (!bookName) return;
     setReviewMessage('');
     setReviewingConcept(name);
     try {
-      const res = await post(`/kg/concept-review?book_name=${encodeURIComponent(bookName)}`, { name, quality });
+      const res = await post(`/kg/concept-review?book_name=${encodeURIComponent(bookName || 'default')}`, { name, quality });
       if (!res?.success) {
         setReviewMessage(res?.message || '概念复习记录失败');
         return;
@@ -282,7 +287,7 @@ const LearningPage: React.FC = () => {
           />
           <button
             onClick={load}
-            disabled={loading || !bookName}
+            disabled={loading}
             className="flex items-center gap-1.5 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary transition-colors hover:border-accent disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -305,10 +310,7 @@ const LearningPage: React.FC = () => {
         {kgJob && <TaskStatus title="完善知识关联" detail={kgJob.message || kgJob.status} progress={kgJob.progress} state={kgJob.status === 'failed' ? 'error' : kgJob.status === 'completed' ? 'success' : 'loading'} />}
 
         {error && !loading && <StatusBanner kind="error" title="学习情况加载失败" description={error} action={<button onClick={load} className="app-secondary-button">重试</button>} />}
-
-        {!bookName && !loading && !error && <PageState kind="empty" title="请选择教材" description="选择教材后可查看概念、错题和复习队列。" />}
-
-        {bookName && !loading && !error && summary && (
+        {!loading && !error && summary && (
           <div className="space-y-6">
             <section className="learning-metrics grid grid-cols-2 border-y border-border bg-bg-card xl:grid-cols-4">
               <Metric icon={BrainCircuit} label="严格概念" value={summary.stats.total_concepts} help={summary.review_rules?.strict_concepts} />
@@ -320,6 +322,26 @@ const LearningPage: React.FC = () => {
             {reviewMessage && <div className="border-l-2 border-[var(--success)] bg-[#eef5e8] px-3 py-2 text-sm text-[#557a46]">{reviewMessage}</div>}
 
             <div className="learning-review-sections divide-y divide-border border-y border-border bg-bg-card">
+              <ExpandableSection title="最近问答题干" count={summary.recent_questions?.length || 0} defaultOpen={!bookName}>
+                <div className="divide-y divide-border px-4">
+                  {summary.recent_questions?.length ? (
+                    summary.recent_questions.map((item, index) => (
+                      <div key={`${item.timestamp}-${index}`} className="space-y-2 px-1 py-3">
+                        <p className="text-sm leading-6 text-text-primary">{item.question}</p>
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs text-text-secondary">
+                          <span>{item.source === 'mistake' ? '错题' : '通用问答'}</span>
+                          {item.timestamp && <span>{item.timestamp.slice(0, 10)}</span>}
+                          {item.concepts?.map((concept) => (
+                            <span key={concept.name} className="rounded border border-accent/25 bg-accent/10 px-2 py-0.5 text-accent-hover">{concept.name}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <Empty text="暂无问答记录" compact />
+                  )}
+                </div>
+              </ExpandableSection>
               <ExpandableSection title="待复习错题" count={summary.due_mistakes?.length || 0} defaultOpen={Boolean(summary.due_mistakes?.length)}>
                 <div className="divide-y divide-border px-4">
                   {summary.due_mistakes?.length ? (

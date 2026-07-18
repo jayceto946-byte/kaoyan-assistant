@@ -251,14 +251,14 @@ export default function ScopeSelector({
       : 'grid-cols-1 divide-y divide-border sm:grid-cols-[160px_190px_minmax(0,1fr)] sm:divide-x sm:divide-y-0';
   const valueText = bookMode === 'hidden'
     ? (activeSubject ? subjectLabel(activeSubject) : placeholder)
-    : `${activeSubject ? subjectLabel(activeSubject) : '全部学科'} · ${currentBook?.displayName || currentBook?.name || (scopeBooks.length ? '选择教材' : '通用 QA')}`;
+    : `${activeSubject ? subjectLabel(activeSubject) : '全部学科'} · ${currentBook?.displayName || currentBook?.name || (visibleBooks.length ? '选择教材' : '通用 QA')}`;
 
   const selectSubject = (nextSubject: string) => {
     onSubjectChange(nextSubject);
     if (onBookChange && bookName) {
       const book = scopeBooks.find((item) => scopeContainsBook(item, bookName));
       const normalized = inferSubject(book?.subject || '', tree).value || book?.subject || '';
-      if (book && !matchesSubject(normalized, nextSubject) && !matchesSubject(book.subject || '', nextSubject)) onBookChange('');
+      if (!book || (!matchesSubject(normalized, nextSubject) && !matchesSubject(book.subject || '', nextSubject))) onBookChange('');
     }
   };
 
@@ -328,7 +328,7 @@ export default function ScopeSelector({
 
             {bookMode !== 'hidden' && (
               <Column title="教材范围">
-                {!scopeBooks.length && (
+                {!visibleBooks.length && (
                   <OptionButton active={!bookName} onClick={() => selectBook('')}>
                     <span className="flex min-w-0 items-center gap-2">
                       <BookOpen className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
@@ -344,7 +344,6 @@ export default function ScopeSelector({
                     </span>
                   </OptionButton>
                 ))}
-                {!visibleBooks.length && scopeBooks.length > 0 && <EmptyLine text="该科目暂无教材，请切换科目" />}
               </Column>
             )}
           </div>

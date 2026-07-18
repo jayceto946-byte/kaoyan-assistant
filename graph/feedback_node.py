@@ -99,7 +99,8 @@ def _record_concept_memory(state: dict) -> list[dict]:
         from knowledge.concept_memory import ConceptMemory, has_explicit_weak_signal
         from memory.learning_events import LearningEvent, concept_names, get_learning_event_store
 
-        book_name = state.get("book_name", "default")
+        book_name = str(state.get("book_name") or "").strip()
+        memory_book = book_name or "default"
         intent = state.get("intent", "qa")
         subject = state.get("subject", "")
         conversation_id = state.get("conversation_id", "")
@@ -108,8 +109,16 @@ def _record_concept_memory(state: dict) -> list[dict]:
         raw_concepts = _link_concepts_locally(state)
         explicit_weak = has_explicit_weak_signal(question)
 
-        memory = ConceptMemory(book_name)
+        memory = ConceptMemory(memory_book)
         concepts = _strict_concepts(raw_concepts, question)
+        if not book_name and not concepts:
+            extracted = memory.extract_concepts(question, answer)
+            for item in extracted:
+                if isinstance(item, dict):
+                    item.setdefault("source", "general_qa_llm")
+                    item.setdefault("aliases", [])
+            raw_concepts = [*raw_concepts, *extracted]
+            concepts = _strict_concepts(raw_concepts, question)
         if concepts:
             memory.log_exposure(
                 concepts,
@@ -128,7 +137,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
                 candidates,
                 question,
                 intent,
-                source="qa_linker_candidate" if raw_concepts else "qa_llm_candidate",
+                source="qa_general_candidate" if not book_name else "qa_linker_candidate",
                 subject=subject,
                 conversation_id=conversation_id,
                 answer=answer,
@@ -137,7 +146,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
         store = get_learning_event_store()
         store.append(LearningEvent(
             event_type="chat_qa",
-            book_name=book_name,
+            book_name=memory_book,
             subject=subject,
             conversation_id=conversation_id,
             source_type="conversation",
@@ -145,7 +154,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
             concept_names=concept_names(concepts),
             payload={
                 "intent": intent,
-                "question": question[:300],
+                "question": question,
                 "answer_preview": answer[:500],
                 "target_chapters": state.get("target_chapters", []),
                 "retrieval_status": state.get("retrieval_status", ""),
@@ -155,7 +164,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
         for item in concepts:
             store.append(LearningEvent(
                 event_type="concept_exposure",
-                book_name=book_name,
+                book_name=memory_book,
                 subject=subject,
                 conversation_id=conversation_id,
                 source_type="conversation",
@@ -163,7 +172,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
                 concept_names=concept_names([item]),
                 payload={
                     "intent": intent,
-                    "question": question[:300],
+                    "question": question,
                     "confidence": item.get("confidence", 0),
                     "link_source": item.get("source", ""),
                     "weak": explicit_weak,
@@ -172,7 +181,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
         if candidates:
             store.append(LearningEvent(
                 event_type="concept_candidates",
-                book_name=book_name,
+                book_name=memory_book,
                 subject=subject,
                 conversation_id=conversation_id,
                 source_type="conversation",
@@ -180,7 +189,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
                 concept_names=concept_names(candidates),
                 payload={
                     "intent": intent,
-                    "question": question[:300],
+                    "question": question,
                     "candidate_count": len(candidates),
                 },
             ))
@@ -192,7 +201,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
 
 
 def _link_concepts_locally(state: dict) -> list[dict]:
-    """Use only the local KG linker; automatic feedback must never add an LLM call."""
+    """Use the local KG linker first; generic QA may use a background LLM fallback."""
     from knowledge.concept_linker import ConceptLinker
 
     chapter_contents = state.get("chapter_contents", {}) or {}

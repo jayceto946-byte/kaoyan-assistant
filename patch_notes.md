@@ -1,3 +1,14 @@
+# 2026-07-18 无教材通用问答学习记录修复
+
+- 无教材科目的通用问答统一写入 `default` 学习空间；学习情况页不再强制要求选择教材，并可按科目查看概念、活动与复习队列。
+- 学习情况页新增“最近问答题干”，通用问答即使没有形成严格概念，也会保留完整问题并参与每日问答统计。
+- 通用问答在回答完成后的后台反馈阶段启用概念抽取降级；仅保留置信度不低于 0.85、且概念名或有效别名直接出现在问题中的严格概念，其余仅存为候选，不影响复习统计。
+- 有教材问答仍优先使用本地知识图谱关联，不新增 LLM 调用；知识关联增强仍只对真实教材开放。
+
+### Validation
+
+- 后端定向回归：7 passed（反馈节点与学习记忆 API）。
+- 前端 TypeScript 与 Vite 生产构建：通过。
 # 2026-07-18 Electron sidebar and window-control fixes
 
 - Standardized expanded and collapsed sidebar navigation icons at 18px, including the sidebar toggle icons.
@@ -879,3 +890,30 @@ The detailed historical notes for this period were damaged by mojibake before th
 - GitHub Actions `Deploy Project Site` 第二次运行成功，耗时 17 秒。
 - 公开页面标题、样式表、6 张截图与 9 个预览入口加载正常。
 - 1440 × 900 截图灯箱在公开站点实测可打开，浏览器控制台无错误。
+
+## 2026-07-18 - 隐藏教材默认范围修复
+
+### Fix
+
+- 教材隐藏后若仍是当前对话范围，前端在教材列表刷新完成后会清除该失效选择。
+- 切换学科时会同时清除已隐藏或已移除的教材，不再保留陈旧的教材名称。
+- 学科没有匹配教材时保持通用问答，不再回退到全局第一本教材。
+
+### Validation
+
+- `npm.cmd test -- textbookScopes.test.ts`：4 项测试全部通过，覆盖父/子科目匹配和无关科目不得回退。
+- `npm.cmd run build`：TypeScript 检查与 Vite 生产构建通过。
+
+## 2026-07-18 - Electron 原生窗口控制与折叠侧栏对齐
+
+### Fix
+
+- 放弃容易被拖拽命中区吞掉点击事件的 React 自绘窗口按钮，改用 Electron `titleBarStyle: hidden` 与 Windows/Linux 原生 `titleBarOverlay`。
+- 保留页面标题区域的 drag/no-drag 划分，并为原生窗口按钮预留安全间距。
+- 折叠侧栏 rail 补充全高约束，避免折叠后导航内容按自身高度向顶部收缩。
+- 左右桌面标题栏统一为不可收缩的 64px 高度，避免窗口变矮时左侧品牌栏被 flex 压缩而导致分隔线错位。
+
+### Validation
+
+- `desktop/main.cjs` 与 `desktop/preload.cjs` Node 语法检查通过。
+- 前端 TypeScript 与生产构建通过。

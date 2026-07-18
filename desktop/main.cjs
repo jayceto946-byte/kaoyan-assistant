@@ -339,7 +339,14 @@ function createWindow() {
     height: 820,
     minWidth: 720,
     minHeight: 560,
-    frame: false,
+    titleBarStyle: 'hidden',
+    ...(process.platform !== 'darwin' ? {
+      titleBarOverlay: {
+        color: '#f5f5f700',
+        symbolColor: '#5f6368',
+        height: 42,
+      },
+    } : {}),
     show: false,
     backgroundColor: '#f5f5f7',
     title: '考研智能辅助系统',
