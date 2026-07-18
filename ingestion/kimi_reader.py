@@ -80,7 +80,7 @@ class KimiReader:
 
         content = [{"type": "text", "text": prompt}] + images
         resp = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL_NAME", "kimi-k2.6"),
+            model=os.getenv("KIMI_VISION_MODEL", "kimi-k2.5"),
             messages=[{"role": "user", "content": content}],
             timeout=120,
         )
@@ -136,7 +136,7 @@ class KimiReader:
 
         content = [{"type": "text", "text": prompt}] + images
         resp = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL_NAME", "kimi-k2.6"),
+            model=os.getenv("KIMI_VISION_MODEL", "kimi-k2.5"),
             messages=[{"role": "user", "content": content}],
         )
         raw = resp.choices[0].message.content or ""
@@ -188,5 +188,6 @@ class KimiReader:
         from openai import OpenAI
         from dotenv import load_dotenv
         load_dotenv()
-        key = os.getenv("MOONSHOT_API_KEY")
-        return OpenAI(api_key=key, base_url="https://api.moonshot.cn/v1") if key else None
+        key = os.getenv("MOONSHOT_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+        base_url = os.getenv("MOONSHOT_API_BASE", "https://api.moonshot.cn/v1")
+        return OpenAI(api_key=key, base_url=base_url) if key else None

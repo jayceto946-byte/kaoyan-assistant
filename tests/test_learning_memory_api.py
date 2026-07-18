@@ -63,3 +63,35 @@ def test_learning_summary_returns_actionable_concept_review_plan(monkeypatch, tm
     reloaded = ConceptMemory(book_name)
     assert reloaded._data["concepts"]["导数"]["review_count"] == 1
     assert reloaded._data["concepts"]["导数"]["last_review_quality"] == 4
+
+    refreshed = client.get(f"/api/kg/learning-summary?book_name={book_name}").json()
+    assert all(item["name"] != "导数" for item in refreshed["data"]["concept_review_plan"])
+    assert all(item["name"] != "导数" for item in refreshed["data"]["review_queue"])
+
+
+def test_definition_question_is_strict_but_not_automatically_weak(monkeypatch, tmp_path):
+    book_name = "definition-book"
+    progress_root = tmp_path / "progress"
+
+    import config
+    import backend.api.kg as kg_api
+    import knowledge.concept_memory as concept_memory_module
+
+    monkeypatch.setattr(config, "PROGRESS_PATH", progress_root)
+    monkeypatch.setattr(kg_api, "PROGRESS_PATH", progress_root)
+    monkeypatch.setattr(concept_memory_module, "PROGRESS_PATH", progress_root)
+
+    cm = ConceptMemory(book_name)
+    cm.log_exposure(
+        [{"name": "压阻效应", "confidence": 0.88}],
+        "什么是压阻效应",
+        "definition",
+        source="qa",
+        weak=True,
+    )
+
+    summary = TestClient(app).get(f"/api/kg/learning-summary?book_name={book_name}").json()["data"]
+    assert summary["stats"]["total_concepts"] == 1
+    assert summary["stats"]["total_exposures"] == 1
+    assert summary["stats"]["weak_count"] == 0
+    assert summary["concept_review_plan"][0]["weak"] is False

@@ -1,16 +1,17 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, CircleX, RefreshCw, Save, Wrench, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, CircleX, RefreshCw, Save } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { createPortal } from 'react-dom';
 import { del, get, patch, post } from '../api/client';
 import { useSystemHealth } from '../hooks/useSystemHealth';
 import { useChatContext } from '../contexts/ChatContext';
 import type { SystemHealthStatus } from '../types';
 import LibraryManager from './settings/LibraryManager';
+import DataSafety from './settings/DataSafety';
+import { PageState, StatusBanner } from './ui/AsyncState';
 
 type SubjectNode = { name: string; children: string[] };
-type ManagedBook = { name: string; subject?: string; path?: string; has_pdf?: boolean; chapter_count?: number; size?: number };
-type Tab = 'health' | 'version' | 'subjects' | 'models';
+type ManagedBook = { name: string; book_id?: string; storage_name?: string; display_name?: string; lifecycle_status?: 'active' | 'archived'; subject?: string; path?: string; has_pdf?: boolean; chapter_count?: number; size?: number; book_role?: 'standalone' | 'core' | 'reference'; rag_priority?: number; resource_group?: string };
+type Tab = 'health' | 'version' | 'data' | 'subjects' | 'models';
 
 const statusMeta: Record<SystemHealthStatus, { label: string; icon: typeof CheckCircle2; iconClass: string; className: string }> = {
   healthy: { label: '系统正常', icon: CheckCircle2, iconClass: 'text-[var(--success)]', className: 'status-success' },
@@ -18,11 +19,17 @@ const statusMeta: Record<SystemHealthStatus, { label: string; icon: typeof Check
   error: { label: '系统异常', icon: CircleX, iconClass: 'text-[var(--danger)]', className: 'border-red-300 bg-red-50 text-[var(--danger)]' },
 };
 
-const componentLabels: Record<string, string> = { vector_store: '向量检索', mistake_book: '错题库', exercise_bank: '习题库' };
+const componentLabels: Record<string, string> = { vector_store: '向量检索', mistake_book: '错题库', rag_trace: '检索记录', runtime_config: '模型连接', exercise_bank: '习题库' };
+
+function componentMessage(key: string, message = '') {
+  if (key === 'runtime_config' && /LLM configuration is ready/i.test(message)) return '模型配置已就绪';
+  return message;
+}
 const secretKeys = ['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'OPENAI_API_KEY'];
 const SETTINGS_TABS: Array<{ id: Tab; label: string }> = [
   { id: 'health', label: '服务器健康' },
   { id: 'version', label: '版本更新' },
+  { id: 'data', label: '备份恢复' },
   { id: 'subjects', label: '资料库' },
   { id: 'models', label: '模型配置' },
 ];
@@ -41,11 +48,10 @@ function bookBelongsTo(book: ManagedBook, parent: string, child = '') {
   return value === parent || value.startsWith(`${parent}/`);
 }
 
-const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
+const SettingsPage: React.FC = () => {
+  const { bookName, setBookName, setSubject } = useChatContext();
   const { health, loading, loadHealth } = useSystemHealth(bookName);
-  const { setBookName, setSubject } = useChatContext();
   const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<Tab>('health');
   const [version, setVersion] = useState<any>(null);
   const [settings, setSettings] = useState<any>(null);
@@ -86,7 +92,7 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
   }, []);
 
   const loadBooks = useCallback(async () => {
-    const res = await get('/books/list', 20000);
+    const res = await get('/books/list?include_archived=true', 20000);
     if (!res?.success) return;
     const nextBooks: ManagedBook[] = res.data || [];
     setBooks(nextBooks);
@@ -94,14 +100,13 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
   }, []);
 
   useEffect(() => {
-    if (!open) return;
     loadSettings().catch(() => setMessage('设置加载失败'));
     loadVersion().catch(() => undefined);
     loadBooks().catch(() => undefined);
-  }, [open, loadSettings, loadVersion, loadBooks]);
+  }, [loadSettings, loadVersion, loadBooks]);
 
   useEffect(() => {
-    if (!open || !window.kaoyanDesktop?.getUpdateStatus) return;
+    if (!window.kaoyanDesktop?.getUpdateStatus) return;
     let mounted = true;
     window.kaoyanDesktop.getUpdateStatus().then((status) => { if (mounted) setDesktopUpdate(status); }).catch(() => undefined);
     const unsubscribe = window.kaoyanDesktop.onUpdateStatus?.((status) => setDesktopUpdate(status));
@@ -109,7 +114,7 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
       mounted = false;
       unsubscribe?.();
     };
-  }, [open]);
+  }, []);
 
   useEffect(() => {
     if (selectedSubjectIndex < 0) return;
@@ -219,6 +224,47 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
     }
   };
 
+  const renameManagedBook = async (name: string, currentDisplayName: string) => {
+    const next = window.prompt('教材展示名称（不会移动文件、数据库或索引）', currentDisplayName)?.trim();
+    if (!next || next === currentDisplayName) return;
+    setMessage('');
+    const res = await patch(`/books/${encodeURIComponent(name)}`, { display_name: next }, 20000);
+    setMessage(res?.message || (res?.success ? '教材名称已更新' : '教材重命名失败'));
+    if (res?.success) {
+      await loadBooks();
+      window.dispatchEvent(new Event('books:changed'));
+    }
+  };
+
+  const restoreManagedBook = async (reference: string) => {
+    setMessage('');
+    const res = await post(`/books/${encodeURIComponent(reference)}/restore`, {}, 20000);
+    setMessage(res?.message || (res?.success ? '教材已恢复' : '教材恢复失败'));
+    if (res?.success) {
+      await loadBooks();
+      window.dispatchEvent(new Event('books:changed'));
+    }
+  };
+  const setBookRole = async (name: string, role: 'standalone' | 'core' | 'reference') => {
+    setMessage('');
+    const res = await patch(`/books/${encodeURIComponent(name)}`, { book_role: role }, 20000);
+    setMessage(res?.message || (res?.success ? '教材检索角色已保存' : '检索角色保存失败'));
+    if (res?.success) {
+      await loadBooks();
+      window.dispatchEvent(new Event('books:changed'));
+    }
+  };
+
+  const setBookResourceGroup = async (name: string, resourceGroup: string) => {
+    setMessage('');
+    const res = await patch(`/books/${encodeURIComponent(name)}`, { resource_group: resourceGroup }, 20000);
+    setMessage(res?.message || (res?.success ? '教材检索组已保存' : '检索组保存失败'));
+    if (res?.success) {
+      await loadBooks();
+      window.dispatchEvent(new Event('books:changed'));
+    }
+  };
+
   const switchManagedBook = async (name: string) => {
     setMessage('');
     const res = await get(`/books/switch/${encodeURIComponent(name)}`, 20000);
@@ -232,7 +278,6 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
   };
 
   const openBookImport = () => {
-    setOpen(false);
     navigate('/books');
   };
 
@@ -273,130 +318,129 @@ const SystemHealth: React.FC<{ bookName?: string }> = ({ bookName = '' }) => {
     }
   };
   return (
-    <>
-      <button type="button" onClick={() => setOpen(true)} className={`inline-flex h-8 w-8 items-center justify-center rounded-lg border transition-colors ${meta.className}`} aria-label="设置" title="设置">
-        {loading && !health ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Wrench className="h-4 w-4" />}
-      </button>
+    <div className="flex h-full min-w-0 flex-col bg-bg-primary">
+      <header className="app-page-header border-b border-border bg-bg-card">
+        <h2 className="app-page-title">设置</h2>
+      </header>
+      <div className="mx-auto grid min-h-0 w-full max-w-6xl flex-1 grid-cols-1 md:grid-cols-[200px_minmax(0,1fr)]">
+        <SettingsSidebar tab={tab} onTabChange={setTab} />
+  <main className="min-h-0 overflow-y-auto p-5">
+    {message && <div className="mb-4"><StatusBanner kind={message.includes('失败') || message.includes('异常') ? 'error' : message.includes('正在') ? 'loading' : 'success'} title={message} /></div>}
 
-      {open && createPortal(
-        <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/35 p-4">
-          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-border bg-bg-primary">
-            <div className="flex items-center justify-between border-b border-border bg-bg-card px-5 py-4">
-              <div className="flex items-center gap-2 text-base font-semibold text-text-primary"><Wrench className="h-5 w-5 text-accent" />设置</div>
-              <button onClick={() => setOpen(false)} className="rounded-lg p-1 text-text-secondary hover:bg-bg-secondary hover:text-text-primary"><X className="h-5 w-5" /></button>
-            </div>
-            <div className="grid min-h-0 flex-1 grid-cols-[180px_minmax(0,1fr)]">
-              <SettingsSidebar tab={tab} onTabChange={setTab} />
-              <main className="min-h-0 overflow-y-auto p-5">
-                {message && <div className="mb-4 rounded-lg border border-border bg-bg-card px-3 py-2 text-sm text-text-secondary">{message}</div>}
-
-                {tab === 'health' && (
-                  <section className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><StatusIcon className={`h-4 w-4 ${meta.iconClass}`} />{meta.label}</div>
-                      <button onClick={loadHealth} className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm hover:border-accent"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />重新检查</button>
-                    </div>
-                    <div className="grid gap-3 md:grid-cols-3">
-                      {health && Object.entries(health.components).map(([key, item]) => {
-                        const itemMeta = statusMeta[item.status] || statusMeta.degraded;
-                        const ItemIcon = itemMeta.icon;
-                        return (
-                          <div key={key} className="rounded-xl border border-border bg-bg-card p-4">
-                            <ItemIcon className={`mb-2 h-5 w-5 ${itemMeta.iconClass}`} />
-                            <div className="text-sm font-medium text-text-primary">{componentLabels[key] || '后端服务'}</div>
-                            <div className="mt-1 text-xs leading-5 text-text-secondary">{item.message}</div>
-                            {key === 'vector_store' && (
-                              <button type="button" onClick={reloadVectorStore} className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:border-accent hover:text-text-primary">
-                                <RefreshCw className="h-3.5 w-3.5" />重载向量库
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </section>
+    {tab === 'health' && (
+      <section className="space-y-4">
+        {loading && !health && <PageState kind="loading" title="正在检查系统状态" />}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><StatusIcon className={`h-4 w-4 ${meta.iconClass}`} />{meta.label}</div>
+          <button onClick={loadHealth} className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-1.5 text-sm hover:border-accent"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />重新检查</button>
+        </div>
+        <div className="app-panel divide-y divide-border overflow-hidden">
+          {health && Object.entries(health.components).map(([key, item]) => {
+            const itemMeta = statusMeta[item.status] || statusMeta.degraded;
+            const ItemIcon = itemMeta.icon;
+            return (
+              <div key={key} className="flex items-start gap-3 px-4 py-3.5">
+                <ItemIcon className={`mt-0.5 h-4 w-4 flex-shrink-0 ${itemMeta.iconClass}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-text-primary">{componentLabels[key] || '系统组件'}</div>
+                  <div className="mt-0.5 text-xs leading-5 text-text-secondary">{componentMessage(key, item.message)}</div>
+                </div>
+                {key === 'vector_store' && (
+                  <button type="button" onClick={reloadVectorStore} className="app-secondary-button min-h-8 flex-shrink-0 px-3 text-xs"><RefreshCw className="h-3.5 w-3.5" />重载</button>
                 )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    )}
 
-                {tab === 'version' && (
-                  <section className="space-y-4">
-                    <div className="rounded-xl border border-border bg-bg-card p-4 text-sm text-text-primary">
-                      <div>当前版本：{desktopUpdate?.currentVersion || version?.version || '未知'}</div>
-                      <div className="mt-2 text-text-secondary">分支：{version?.branch || '未知'} / 提交：{version?.commit || '未知'}</div>
-                      <div className="mt-2 text-xs text-text-secondary">{desktopUpdate?.message || version?.message || '正在读取版本信息...'}</div>
-                    </div>
-                    {desktopUpdate?.updateInfo?.version && <div className="rounded-xl border border-[#bfd4c6] bg-[#edf6f0] p-4 text-sm text-[var(--success)]">可更新到：{desktopUpdate.updateInfo.version}</div>}
-                    {desktopUpdate?.status === 'downloading' && (
-                      <div className="rounded-xl border border-border bg-bg-card p-4">
-                        <div className="mb-2 flex justify-between text-xs text-text-secondary"><span>下载进度</span><span>{Math.round(desktopUpdate?.progress?.percent || 0)}%</span></div>
-                        <div className="h-2 overflow-hidden rounded-full bg-bg-secondary"><div className="h-full rounded-full bg-accent" style={{ width: `${Math.round(desktopUpdate?.progress?.percent || 0)}%` }} /></div>
-                      </div>
-                    )}
-                    <div className="flex flex-wrap gap-2">
-                      <button onClick={loadVersion} className="rounded-lg border border-border px-3 py-2 text-sm hover:border-accent">读取版本</button>
-                      <button onClick={updateApp} className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover">检查更新</button>
-                      {desktopUpdate?.status === 'available' && <button onClick={downloadUpdate} className="rounded-lg border border-border px-3 py-2 text-sm hover:border-accent">下载更新</button>}
-                      {desktopUpdate?.status === 'downloaded' && <button onClick={installUpdate} className="rounded-lg border border-border px-3 py-2 text-sm hover:border-accent">重启安装</button>}
-                    </div>
-                  </section>
-                )}
-
-                {tab === 'subjects' && (
-                  <LibraryManager
-                    subjects={subjects}
-                    books={books}
-                    selectedSubjectIndex={selectedSubjectIndex}
-                    selectedChildIndex={selectedChildIndex}
-                    onSelect={(subjectIndex, childIndex) => { setSelectedSubjectIndex(subjectIndex); setSelectedChildIndex(childIndex); }}
-                    onAddSubject={addSubject}
-                    onAddChild={addChild}
-                    onRenameSubject={updateSubjectName}
-                    onRenameChild={updateChildName}
-                    onDeleteSubject={deleteSubject}
-                    onDeleteChild={deleteChild}
-                    onSaveSubjects={() => saveSubjects()}
-                    onImportBook={openBookImport}
-                    onRefresh={loadBooks}
-                    onMoveBook={moveBookToTarget}
-                    onSwitchBook={switchManagedBook}
-                    onArchiveBook={deleteManagedBook}
-                  />
-                )}
-
-                {tab === 'models' && (
-                  <section className="space-y-4">
-                    <div className="rounded-lg border border-border bg-bg-card p-3 text-xs leading-5 text-text-secondary">API Key 只写入本地 .env；界面只显示是否已配置，不回显密钥。保存后新请求会读取新配置，已有长任务可能需要重启后端。</div>
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <Field label="推理后端"><select value={envDraft.LLM_BACKEND || 'deepseek'} onChange={(e) => setEnvDraft({ ...envDraft, LLM_BACKEND: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm"><option value="deepseek">DeepSeek</option><option value="moonshot">Moonshot/Kimi</option><option value="openai">OpenAI</option><option value="ollama">Ollama</option></select></Field>
-                      <Field label="DeepSeek 模型"><input value={envDraft.DEEPSEEK_MODEL_NAME || ''} onChange={(e) => setEnvDraft({ ...envDraft, DEEPSEEK_MODEL_NAME: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
-                      <Field label={`DeepSeek API Key（${settings?.env?.DEEPSEEK_API_KEY?.configured ? '已配置' : '未配置'}）`}><input type="password" value={envDraft.DEEPSEEK_API_KEY || ''} onChange={(e) => setEnvDraft({ ...envDraft, DEEPSEEK_API_KEY: e.target.value })} placeholder="留空则不修改" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
-                      <Field label="DeepSeek Base URL"><input value={envDraft.DEEPSEEK_API_BASE || ''} onChange={(e) => setEnvDraft({ ...envDraft, DEEPSEEK_API_BASE: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
-                      <Field label={`OCR/Kimi API Key（${settings?.env?.MOONSHOT_API_KEY?.configured ? '已配置' : '未配置'}）`}><input type="password" value={envDraft.MOONSHOT_API_KEY || ''} onChange={(e) => setEnvDraft({ ...envDraft, MOONSHOT_API_KEY: e.target.value })} placeholder="留空则不修改" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
-                      <Field label="OCR/Kimi 模型"><input value={envDraft.KIMI_VISION_MODEL || ''} onChange={(e) => setEnvDraft({ ...envDraft, KIMI_VISION_MODEL: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
-                      <Field label="MinerU API URL（推荐外部服务）"><input value={envDraft.MINERU_API_URL || ''} onChange={(e) => setEnvDraft({ ...envDraft, MINERU_API_URL: e.target.value })} placeholder="Example: http://gpu-host:8000" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
-                      <Field label="本地 MinerU CLI（高级，可选）"><input value={envDraft.MINERU_CLI_COMMAND || ''} onChange={(e) => setEnvDraft({ ...envDraft, MINERU_CLI_COMMAND: e.target.value })} placeholder="Example: mineru -p {input} -o {output}" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
-                      <Field label={`OpenAI API Key（${settings?.env?.OPENAI_API_KEY?.configured ? '已配置' : '未配置'}）`}><input type="password" value={envDraft.OPENAI_API_KEY || ''} onChange={(e) => setEnvDraft({ ...envDraft, OPENAI_API_KEY: e.target.value })} placeholder="留空则不修改" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
-                      <Field label="通用模型名"><input value={envDraft.LLM_MODEL_NAME || ''} onChange={(e) => setEnvDraft({ ...envDraft, LLM_MODEL_NAME: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
-                    </div>
-                    <button onClick={saveEnv} className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover"><Save className="h-4 w-4" />保存模型配置</button>
-                  </section>
-                )}
-              </main>
-            </div>
+    {tab === 'version' && (
+      <section className="space-y-4">
+        <div className="rounded-xl border border-border bg-bg-card p-4 text-sm text-text-primary">
+          <div>当前版本：{desktopUpdate?.currentVersion || version?.version || '未知'}</div>
+          <div className="mt-2 text-text-secondary">分支：{version?.branch || '未知'} / 提交：{version?.commit || '未知'}</div>
+          <div className="mt-2 text-xs text-text-secondary">{desktopUpdate?.message || version?.message || '正在读取版本信息...'}</div>
+        </div>
+        {desktopUpdate?.updateInfo?.version && <div className="rounded-xl border border-[#bfd4c6] bg-[#edf6f0] p-4 text-sm text-[var(--success)]">可更新到：{desktopUpdate.updateInfo.version}</div>}
+        {desktopUpdate?.status === 'downloading' && (
+          <div className="rounded-xl border border-border bg-bg-card p-4">
+            <div className="mb-2 flex justify-between text-xs text-text-secondary"><span>下载进度</span><span>{Math.round(desktopUpdate?.progress?.percent || 0)}%</span></div>
+            <div className="h-2 overflow-hidden rounded-full bg-bg-secondary"><div className="h-full rounded-full bg-accent" style={{ width: `${Math.round(desktopUpdate?.progress?.percent || 0)}%` }} /></div>
           </div>
-        </div>,
-        document.body,
-      )}
-    </>
+        )}
+        <div className="flex flex-wrap gap-2">
+          <button onClick={loadVersion} className="rounded-lg border border-border px-3 py-2 text-sm hover:border-accent">读取版本</button>
+          <button onClick={updateApp} className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover">检查更新</button>
+          {desktopUpdate?.status === 'available' && <button onClick={downloadUpdate} className="rounded-lg border border-border px-3 py-2 text-sm hover:border-accent">下载更新</button>}
+          {desktopUpdate?.status === 'downloaded' && <button onClick={installUpdate} className="rounded-lg border border-border px-3 py-2 text-sm hover:border-accent">重启安装</button>}
+        </div>
+      </section>
+    )}
+
+    {tab === 'data' && (
+      <DataSafety />
+    )}
+
+    {tab === 'subjects' && (
+      <LibraryManager
+        subjects={subjects}
+        books={books}
+        selectedSubjectIndex={selectedSubjectIndex}
+        selectedChildIndex={selectedChildIndex}
+        onSelect={(subjectIndex, childIndex) => { setSelectedSubjectIndex(subjectIndex); setSelectedChildIndex(childIndex); }}
+        onAddSubject={addSubject}
+        onAddChild={addChild}
+        onRenameSubject={updateSubjectName}
+        onRenameChild={updateChildName}
+        onDeleteSubject={deleteSubject}
+        onDeleteChild={deleteChild}
+        onSaveSubjects={() => saveSubjects()}
+        onImportBook={openBookImport}
+        onRefresh={loadBooks}
+        onMoveBook={moveBookToTarget}
+        onSwitchBook={switchManagedBook}
+        onArchiveBook={deleteManagedBook}
+        onRestoreBook={restoreManagedBook}
+        onRenameBook={renameManagedBook}
+        onSetRole={setBookRole}
+        onSetResourceGroup={setBookResourceGroup}
+      />
+    )}
+
+    {tab === 'models' && (
+      <section className="space-y-4">
+        <div className="rounded-lg border border-border bg-bg-card p-3 text-xs leading-5 text-text-secondary">API Key 只写入本地 .env；界面只显示是否已配置，不回显密钥。保存后新请求会读取新配置，已有长任务可能需要重启后端。</div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="推理后端"><select value={envDraft.LLM_BACKEND || 'deepseek'} onChange={(e) => setEnvDraft({ ...envDraft, LLM_BACKEND: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm"><option value="deepseek">DeepSeek</option><option value="moonshot">Moonshot/Kimi</option><option value="openai">OpenAI</option><option value="ollama">Ollama</option></select></Field>
+          <Field label="DeepSeek 模型"><input value={envDraft.DEEPSEEK_MODEL_NAME || ''} onChange={(e) => setEnvDraft({ ...envDraft, DEEPSEEK_MODEL_NAME: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+          <Field label={`DeepSeek API Key（${settings?.env?.DEEPSEEK_API_KEY?.configured ? '已配置' : '未配置'}）`}><input type="password" value={envDraft.DEEPSEEK_API_KEY || ''} onChange={(e) => setEnvDraft({ ...envDraft, DEEPSEEK_API_KEY: e.target.value })} placeholder="留空则不修改" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+          <Field label="DeepSeek Base URL"><input value={envDraft.DEEPSEEK_API_BASE || ''} onChange={(e) => setEnvDraft({ ...envDraft, DEEPSEEK_API_BASE: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+          <Field label={`OCR/Kimi API Key（${settings?.env?.MOONSHOT_API_KEY?.configured ? '已配置' : '未配置'}）`}><input type="password" value={envDraft.MOONSHOT_API_KEY || ''} onChange={(e) => setEnvDraft({ ...envDraft, MOONSHOT_API_KEY: e.target.value })} placeholder="留空则不修改" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+          <Field label="OCR/Kimi 模型"><input value={envDraft.KIMI_VISION_MODEL || ''} onChange={(e) => setEnvDraft({ ...envDraft, KIMI_VISION_MODEL: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+          <Field label="MinerU API URL（推荐外部服务）"><input value={envDraft.MINERU_API_URL || ''} onChange={(e) => setEnvDraft({ ...envDraft, MINERU_API_URL: e.target.value })} placeholder="Example: http://gpu-host:8000" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+          <Field label="本地 MinerU CLI（高级，可选）"><input value={envDraft.MINERU_CLI_COMMAND || ''} onChange={(e) => setEnvDraft({ ...envDraft, MINERU_CLI_COMMAND: e.target.value })} placeholder="Example: mineru -p {input} -o {output}" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+          <Field label={`OpenAI API Key（${settings?.env?.OPENAI_API_KEY?.configured ? '已配置' : '未配置'}）`}><input type="password" value={envDraft.OPENAI_API_KEY || ''} onChange={(e) => setEnvDraft({ ...envDraft, OPENAI_API_KEY: e.target.value })} placeholder="留空则不修改" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+          <Field label="通用模型名"><input value={envDraft.LLM_MODEL_NAME || ''} onChange={(e) => setEnvDraft({ ...envDraft, LLM_MODEL_NAME: e.target.value })} className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm" /></Field>
+        </div>
+        <button onClick={saveEnv} className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover"><Save className="h-4 w-4" />保存模型配置</button>
+      </section>
+    )}
+        </main>
+      </div>
+    </div>
   );
 };
 
 const SettingsSidebar = ({ tab, onTabChange }: { tab: Tab; onTabChange: (tab: Tab) => void }) => (
-  <aside className="border-r border-border bg-bg-secondary/80 p-3">
-    {SETTINGS_TABS.map((item) => (
-      <button key={item.id} onClick={() => onTabChange(item.id)} className={`mb-1 w-full rounded-lg px-3 py-2 text-left text-sm ${tab === item.id ? 'bg-[var(--accent-soft)] text-accent' : 'text-text-secondary hover:bg-bg-card hover:text-text-primary'}`}>
-        {item.label}
-      </button>
-    ))}
+  <aside className="overflow-x-auto border-b border-border bg-bg-secondary/80 p-3 md:border-b-0 md:border-r">
+    <div className="flex min-w-max gap-1 md:block md:min-w-0">
+      {SETTINGS_TABS.map((item) => (
+        <button key={item.id} onClick={() => onTabChange(item.id)} className={`w-auto whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm md:mb-1 md:w-full ${tab === item.id ? 'bg-[var(--accent-soft)] text-accent' : 'text-text-secondary hover:bg-bg-card hover:text-text-primary'}`}>
+          {item.label}
+        </button>
+      ))}
+    </div>
   </aside>
 );
 
@@ -404,4 +448,4 @@ const Field = ({ label, children }: { label: string; children: React.ReactNode }
   <label className="block space-y-1.5 text-sm text-text-primary"><span className="text-xs font-medium text-text-secondary">{label}</span>{children}</label>
 );
 
-export default SystemHealth;
+export default SettingsPage;

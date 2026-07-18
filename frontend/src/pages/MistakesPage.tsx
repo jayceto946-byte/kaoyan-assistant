@@ -10,11 +10,9 @@ import {
   Crop,
   ImagePlus,
   Loader2,
-  Pencil,
   Plus,
   Search,
   SlidersHorizontal,
-  Sparkles,
   TrendingUp,
   Trash2,
   Upload,
@@ -23,6 +21,7 @@ import {
 import { del, get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
 import ScopeSelector, { type ScopeBookOption } from '../components/ScopeSelector';
+import { StatusBanner } from '../components/ui/AsyncState';
 import { useChatContext } from '../contexts/ChatContext';
 import { useVisibleList } from '../hooks/useVisibleList';
 import type { MistakeRecord, MistakeStats, WeakPoint } from '../types';
@@ -175,6 +174,7 @@ const MistakesPage: React.FC = () => {
   const focusMistakeId = searchParams.get('mistake_id') || '';
   const bookQuery = bookName ? `?book_name=${encodeURIComponent(bookName)}` : '';
   const [activeTab, setActiveTab] = useState<Tab>('录入');
+  const [entryStep, setEntryStep] = useState<1 | 2 | 3>(1);
   const [records, setRecords] = useState<MistakeRecord[]>([]);
   const [dueRecords, setDueRecords] = useState<MistakeRecord[]>([]);
   const [stats, setStats] = useState<MistakeStats | null>(null);
@@ -201,8 +201,6 @@ const MistakesPage: React.FC = () => {
   const [reviewMessage, setReviewMessage] = useState('');
   const [savedRecord, setSavedRecord] = useState<MistakeRecord | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [editDraft, setEditDraft] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const cropStageRef = useRef<HTMLDivElement>(null);
   const cropDragRef = useRef<CropDragState | null>(null);
@@ -375,14 +373,13 @@ const MistakesPage: React.FC = () => {
 
   const resetForm = () => {
     setForm(EMPTY_FORM);
+    setEntryStep(1);
     setRawFile(null);
     setImageFile(null);
     setUploadMessage('');
     setExplanation('');
     explanationRef.current = '';
     setSavedRecord(null);
-    setEditorOpen(false);
-    setEditDraft('');
     if (rawPreview) URL.revokeObjectURL(rawPreview);
     if (imagePreview) URL.revokeObjectURL(imagePreview);
     setRawPreview('');
@@ -416,6 +413,7 @@ const MistakesPage: React.FC = () => {
       setUploadMessage(data.message || (data.success ? '处理完成' : '处理失败'));
       if (data.image_path) setField('image_path', data.image_path);
       if (data.ocr_text) {
+        setEntryStep(2);
         setField('question_text', data.ocr_text);
         setField('ocr_text', data.ocr_text);
       }
@@ -502,44 +500,12 @@ const MistakesPage: React.FC = () => {
     await loadStats();
   };
 
-  const openQuestionEditor = () => {
-    setEditDraft(form.question_text);
-    setEditorOpen(true);
-  };
-
-  const confirmQuestionEdit = () => {
-    setField('question_text', editDraft);
-    setEditorOpen(false);
-  };
-
   const toggleMistakeType = (type: string, checked: boolean) => {
     setForm((prev) => ({
       ...prev,
       mistake_type: checked ? [...prev.mistake_type, type] : prev.mistake_type.filter((item) => item !== type),
     }));
   };
-
-  const renderQuestionPreview = () => (
-    <section className="rounded-xl border border-border bg-bg-secondary/95 p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="text-sm font-medium text-text-primary">LaTeX 题干预览</div>
-        <button
-          onClick={openQuestionEditor}
-          disabled={!form.question_text.trim()}
-          className="flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary hover:border-accent disabled:opacity-45"
-        >
-          <Pencil className="h-4 w-4" /> 修改
-        </button>
-      </div>
-      {form.question_text.trim() ? (
-        <ChatMessage role="assistant" content={form.question_text} />
-      ) : (
-        <div className="rounded-xl border border-dashed border-border bg-bg-primary px-4 py-10 text-center text-sm text-text-secondary">
-          识别题干后会在这里显示 LaTeX 预览。需要改 OCR 文本时点右上角“修改”。
-        </div>
-      )}
-    </section>
-  );
 
   const renderExplanation = () => {
     if (!explanation && !solveLoading) return null;
@@ -560,8 +526,6 @@ const MistakesPage: React.FC = () => {
   };
 
   const renderMetadataAndSave = () => {
-    const currentExplanation = form.explanation || explanation;
-    if (!currentExplanation && !savedRecord) return null;
     return (
       <section className="space-y-4 rounded-xl border border-border bg-bg-card p-4">
         <div className="text-sm font-medium text-text-primary">归档信息</div>
@@ -656,30 +620,6 @@ const MistakesPage: React.FC = () => {
       </div>
     </div>
   );
-  const renderQuestionEditor = () => {
-    if (!editorOpen) return null;
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-        <div className="w-full max-w-4xl rounded-xl border border-border bg-bg-primary p-4">
-          <div className="mb-3 flex items-center justify-between">
-            <div className="text-sm font-medium text-text-primary">修改 OCR 题干</div>
-            <button onClick={() => setEditorOpen(false)} className="rounded p-1 text-text-secondary hover:text-text-primary"><X className="h-5 w-5" /></button>
-          </div>
-          <textarea
-            value={editDraft}
-            onChange={(e) => setEditDraft(e.target.value)}
-            className="min-h-[320px] w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
-          />
-          <div className="mt-4 flex justify-end gap-2">
-            <button onClick={() => setEditorOpen(false)} className="rounded-xl border border-border px-4 py-2 text-sm text-text-secondary hover:border-accent hover:text-text-primary">取消</button>
-            <button onClick={confirmQuestionEdit} className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">确认</button>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-
   const pointToCropPercent = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = cropStageRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) return null;
@@ -811,10 +751,8 @@ const MistakesPage: React.FC = () => {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-bg-primary px-5 py-4">
-        <div>
-          <h2 className="text-sm font-semibold text-text-primary">错题本</h2>
-        </div>
+      <div className="app-page-header border-b border-border bg-bg-primary">
+        <h2 className="app-page-title">错题本</h2>
         <ScopeSelector
           subject={subjectFilter}
           bookName={bookName}
@@ -836,54 +774,86 @@ const MistakesPage: React.FC = () => {
       <div className="flex-1 overflow-y-auto p-6">
         {activeTab === '录入' && (
           <div className="mx-auto max-w-6xl space-y-5">
-            <div className="grid grid-cols-1 gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
-              <div className="space-y-3">
-                <div
+            <div className="app-panel flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+              <div className="flex items-center gap-2">
+                {([1, 2, 3] as const).map((step) => (
+                  <React.Fragment key={step}>
+                    <button type="button" onClick={() => step < entryStep && setEntryStep(step)} disabled={step > entryStep} className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm ${entryStep === step ? 'bg-[var(--accent-soft)] font-medium text-accent' : step < entryStep ? 'text-text-primary hover:bg-bg-secondary' : 'cursor-not-allowed text-text-secondary/55'}`}>
+                      <span className={`flex h-6 w-6 items-center justify-center rounded-md border text-xs ${entryStep >= step ? 'border-accent/35 bg-bg-card text-accent' : 'border-border'}`}>{step}</span>
+                      {step === 1 ? '添加题目' : step === 2 ? '校对内容' : '归因保存'}
+                    </button>
+                    {step < 3 && <span className="h-px w-5 bg-border" />}
+                  </React.Fragment>
+                ))}
+              </div>
+              <button type="button" onClick={resetForm} className="app-secondary-button">清空本题</button>
+            </div>
+
+            {entryStep === 1 && (
+              <section className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+                <button
+                  type="button"
                   onClick={() => inputRef.current?.click()}
                   onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
                   onDragLeave={() => setDragActive(false)}
                   onDrop={(e) => { e.preventDefault(); setDragActive(false); const file = e.dataTransfer.files?.[0]; if (file) acceptFile(file); }}
-                  className={`cursor-pointer rounded-lg border-2 border-dashed bg-bg-card p-5 text-center transition-colors ${dragActive ? 'border-accent' : 'border-border hover:border-accent/60'}`}
+                  className={`app-panel flex min-h-[300px] w-full flex-col items-center justify-center p-6 text-center ${dragActive ? 'border-accent bg-[var(--accent-softer)]' : 'hover:border-accent/60'}`}
                 >
-                  {imagePreview || rawPreview ? (
-                    <img src={imagePreview || rawPreview} alt="错题预览" className="mx-auto max-h-[340px] w-full rounded border border-border bg-bg-primary object-contain" />
-                  ) : (
-                    <div className="flex min-h-[240px] flex-col items-center justify-center text-text-secondary">
-                      <ImagePlus className="mb-3 h-10 w-10" />
-                      <div className="text-sm font-medium text-text-primary">拖拽图片到这里，或点击上传/拍照</div>
-                      <div className="mt-1 text-xs">电脑端支持拖拽，手机端可调用相机</div>
-                    </div>
-                  )}
-                  <input ref={inputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} className="hidden" />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => inputRef.current?.click()} className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-card px-3 py-2 text-sm text-text-primary hover:border-accent"><Camera className="h-4 w-4" /> 上传/拍照</button>
-                  <button onClick={() => rawFile && setCropOpen(true)} disabled={!rawFile} className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-card px-3 py-2 text-sm text-text-primary hover:border-accent disabled:opacity-45"><Crop className="h-4 w-4" /> 重新裁剪</button>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => uploadForOcr(false)} disabled={!imageFile || ocrLoading || solveLoading} className="flex items-center justify-center gap-2 rounded-xl border border-border bg-bg-card px-3 py-2 text-sm text-text-primary hover:border-accent disabled:opacity-45">{ocrLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} 识别题干</button>
-                  <button onClick={() => uploadForOcr(true)} disabled={!imageFile || ocrLoading || solveLoading} className="flex items-center justify-center gap-2 rounded-xl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-45">{solveLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} 看图解题</button>
-                </div>
-                {uploadMessage && <div className="rounded-xl border border-border bg-bg-secondary px-3 py-2 text-sm text-text-secondary">{uploadMessage}</div>}
-              </div>
+                  {imagePreview || rawPreview ? <img src={imagePreview || rawPreview} alt="错题预览" className="max-h-[270px] w-full object-contain" /> : <><ImagePlus className="mb-3 h-9 w-9 text-text-secondary" /><span className="type-section-title text-text-primary">上传错题图片</span><span className="type-caption mt-2 text-text-secondary">拖入图片，或点击调用文件选择与相机。</span></>}
+                </button>
+                <input ref={inputRef} type="file" accept="image/*" capture="environment" onChange={handleFileChange} className="hidden" />
 
+                <div className="app-panel space-y-3 p-5">
+                  <h3 className="type-section-title text-text-primary">处理方式</h3>
+                  <p className="type-caption leading-5 text-text-secondary">图片会先裁剪和增强。识别结果必须在下一步人工校对。</p>
+                  <button onClick={() => inputRef.current?.click()} className="app-secondary-button w-full"><Camera className="h-4 w-4" />选择图片或拍照</button>
+                  <button onClick={() => rawFile && setCropOpen(true)} disabled={!rawFile} className="app-secondary-button w-full disabled:opacity-45"><Crop className="h-4 w-4" />调整裁剪区域</button>
+                  <button onClick={() => uploadForOcr(false)} disabled={!imageFile || ocrLoading || solveLoading} className="app-primary-button w-full disabled:opacity-45">{ocrLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}识别并校对</button>
+                  <button onClick={() => { setField('question_text', ''); setEntryStep(2); }} className="app-secondary-button w-full">跳过图片，手动录入</button>
+                  {uploadMessage && <StatusBanner kind={uploadMessage.includes('失败') ? 'error' : 'info'} title={uploadMessage} />}
+                </div>
+              </section>
+            )}
+
+            {entryStep === 2 && (
+              <section className="app-panel overflow-hidden">
+                <div className="border-b border-border px-5 py-4">
+                  <h3 className="type-section-title text-text-primary">校对题目内容</h3>
+                  <p className="type-caption mt-1 text-text-secondary">逐字检查题干、公式和符号；OCR 内容不会被直接当作最终题目。</p>
+                </div>
+                <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+                  <div className="space-y-3">
+                    <label className="block type-caption text-text-secondary">题干</label>
+                    <textarea value={form.question_text} onChange={(e) => setField('question_text', e.target.value)} placeholder="粘贴或输入完整题干，公式可使用 LaTeX" className="min-h-[220px] w-full rounded-xl border border-border bg-bg-primary px-3 py-2 type-body text-text-primary outline-none focus:border-accent" />
+                    {form.question_text.trim() && <div className="rounded-xl border border-border bg-bg-secondary p-3"><ChatMessage role="assistant" content={form.question_text} /></div>}
+                  </div>
+                  <div className="space-y-3">
+                    {(imagePreview || rawPreview) && <img src={imagePreview || rawPreview} alt="错题原图对照" className="max-h-[190px] w-full rounded-lg border border-border bg-bg-primary object-contain" />}
+                    <textarea placeholder="你的答案，可选" value={form.user_answer} onChange={(e) => setField('user_answer', e.target.value)} className="min-h-[90px] w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
+                    <textarea placeholder="正确答案，可选" value={form.correct_answer} onChange={(e) => setField('correct_answer', e.target.value)} className="min-h-[90px] w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
+                    <button onClick={() => uploadForOcr(true)} disabled={!imageFile || ocrLoading || solveLoading} className="app-secondary-button w-full disabled:opacity-45">{solveLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <BrainCircuit className="h-4 w-4" />}根据图片生成讲解</button>
+                  </div>
+                </div>
+                <div className="flex justify-between border-t border-border px-5 py-3">
+                  <button onClick={() => setEntryStep(1)} className="app-secondary-button">返回添加题目</button>
+                  <button onClick={() => setEntryStep(3)} disabled={!form.question_text.trim()} className="app-primary-button disabled:opacity-45">继续归因</button>
+                </div>
+              </section>
+            )}
+
+            {entryStep === 3 && (
               <div className="space-y-4">
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="flex items-center gap-2 text-lg font-semibold"><Plus className="h-5 w-5 text-accent" /> 录入错题</h2>
-                  <button onClick={resetForm} className="rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary hover:border-accent hover:text-text-primary">清空</button>
+                <div className="flex items-center justify-between">
+                  <div><h3 className="type-section-title text-text-primary">补充归档信息</h3><p className="type-caption mt-1 text-text-secondary">标记来源、知识点和错因，以便后续筛选与间隔复习。</p></div>
+                  <button onClick={() => setEntryStep(2)} className="app-secondary-button">返回校对</button>
                 </div>
-                {renderQuestionPreview()}
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <textarea placeholder="用户答案，可选" value={form.user_answer} onChange={(e) => setField('user_answer', e.target.value)} className="min-h-[80px] rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none placeholder-text-secondary focus:border-accent" />
-                  <textarea placeholder="正确答案，可选" value={form.correct_answer} onChange={(e) => setField('correct_answer', e.target.value)} className="min-h-[80px] rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none placeholder-text-secondary focus:border-accent" />
-                </div>
+                {renderExplanation()}
+                {renderMetadataAndSave()}
+                {uploadMessage && <StatusBanner kind={savedRecord ? 'success' : uploadMessage.includes('失败') ? 'error' : 'info'} title={uploadMessage} />}
               </div>
-            </div>
-            {renderExplanation()}
-            {renderMetadataAndSave()}
+            )}
           </div>
         )}
-
         {activeTab === '列表' && (
           <div className="mx-auto max-w-5xl space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3 text-text-secondary">
@@ -934,7 +904,7 @@ const MistakesPage: React.FC = () => {
                   </button>
                 </div>
               )}
-              {records.length === 0 && <div className="py-12 text-center text-text-secondary">还没有错题，先上传或手动录入一题。</div>}
+              {records.length === 0 && <div className="app-panel px-4 py-8 text-center text-text-secondary"><p>还没有错题。</p><button onClick={() => setActiveTab('录入')} className="app-secondary-button mt-3">录入第一道错题</button></div>}
             </div>
           </div>
         )}
@@ -980,7 +950,7 @@ const MistakesPage: React.FC = () => {
                   </button>
                 </div>
               )}
-              {dueRecords.length === 0 && <div className="py-12 text-center text-text-secondary">今日暂无待复习错题</div>}
+              {dueRecords.length === 0 && <div className="app-panel px-4 py-8 text-center text-text-secondary">今日没有到期错题，可以继续整理新错题或前往习题库练习。</div>}
             </div>
           </div>
         )}
@@ -995,7 +965,6 @@ const MistakesPage: React.FC = () => {
         )}
       </div>
       {renderCropModal()}
-      {renderQuestionEditor()}
     </div>
   );
 };

@@ -1,17 +1,92 @@
 """Knowledge Graph API — 知识图谱
 
+
 包装 knowledge/knowledge_graph.py 和 knowledge/kg_visualizer.py
 """
+from __future__ import annotations
+
+from datetime import datetime
 from pathlib import Path
+import threading
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from backend.schemas import KGGraphOut, KGRefreshOut
 from config import PROGRESS_PATH
+from backend.job_manager import JobCancelled, get_job_manager
+from knowledge.kg_enhancement import enhance_book, estimate_enhancement
+
+KG_ENHANCEMENT_JOB_TYPE = "textbook_kg_enhancement"
 from utils.path_safety import safe_book_name, safe_child_path
 
 router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
 
+
+class KGEnhancementRequest(BaseModel):
+    book_name: str
+    allow_external_llm: bool = False
+
+
+def _run_enhancement_job(job_id: str, book_name: str) -> None:
+    manager = get_job_manager()
+
+    def progress(stage: str, message: str, percent: int) -> None:
+        manager.raise_if_cancelled(job_id)
+        manager.update_job(job_id, status="running", stage=stage, message=message, progress=percent)
+
+    try:
+        manager.update_job(job_id, status="running", stage="prepare", progress=3, message="Preparing textbook knowledge enhancement")
+        result = enhance_book(
+            book_name,
+            progress=progress,
+            check_cancelled=lambda: manager.raise_if_cancelled(job_id),
+        )
+        manager.update_job(job_id, status="completed", stage="completed", progress=100, message="Textbook knowledge enhancement completed", result=result)
+    except JobCancelled as exc:
+        manager.update_job(job_id, status="cancelled", stage="cancelled", progress=100, message=str(exc) or "Knowledge enhancement cancelled", error=str(exc))
+    except Exception as exc:
+        manager.update_job(job_id, status="failed", stage="failed", progress=100, message=f"Knowledge enhancement failed: {exc}", error=str(exc))
+
+
+@router.get("/enhance/estimate")
+def get_enhancement_estimate(book_name: str = ""):
+    if not book_name:
+        return {"success": False, "message": "Please select a textbook"}
+    try:
+        return {"success": True, "data": estimate_enhancement(book_name)}
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}
+
+
+@router.post("/enhance")
+def start_enhancement(req: KGEnhancementRequest):
+    if not req.allow_external_llm:
+        return {"success": False, "message": "Explicit consent is required before sending selected textbook excerpts to the configured external LLM"}
+    book_name = safe_book_name(req.book_name)
+    estimate = estimate_enhancement(book_name)
+    if not estimate.get("total_chunks"):
+        return {"success": False, "message": "No textbook chunks are available for enhancement"}
+    manager = get_job_manager()
+    for existing in manager.list_jobs(job_type=KG_ENHANCEMENT_JOB_TYPE, limit=100):
+        if existing.get("book_name") == book_name and existing.get("status") in {"queued", "running", "cancelling"}:
+            return {"success": True, "message": "An enhancement job is already active for this textbook", "job_id": existing["id"], "data": existing}
+    job = manager.create_job(
+        KG_ENHANCEMENT_JOB_TYPE,
+        {"book_name": book_name, "allow_external_llm": True, "estimate": estimate},
+        status="queued", stage="queued", progress=0, message="Knowledge enhancement queued",
+    )
+    thread = threading.Thread(target=_run_enhancement_job, args=(job["id"], book_name), daemon=True)
+    thread.start()
+    return {"success": True, "message": "Knowledge enhancement started", "job_id": job["id"], "data": job}
+
+
+@router.get("/enhance/jobs/{job_id}")
+def get_enhancement_job(job_id: str):
+    job = get_job_manager().get_job(job_id, job_type=KG_ENHANCEMENT_JOB_TYPE)
+    if not job:
+        return {"success": False, "message": "Knowledge enhancement job not found"}
+    return {"success": True, "data": job}
 
 def _kg_html_path(book_name: str) -> Path:
     return safe_child_path(PROGRESS_PATH, safe_book_name(book_name), "kg_graph.html")
@@ -139,12 +214,12 @@ def _days_since(value: str) -> int | None:
     return max(0, (datetime.now() - dt).days)
 
 
-def _build_concept_review_plan(book_name: str, concepts: dict, strict_exposures: list[dict], concept_counts, mistake_weak_points: list[dict], subject: str = "", limit: int = 8) -> list[dict]:
+def _build_concept_review_plan(book_name: str, concepts: dict, strict_exposures: list[dict], concept_counts, mistake_weak_points: list[dict], subject: str = "", limit: int = 8, weak_names: set[str] | None = None) -> list[dict]:
     """Build actionable concept review cards from memory, mistakes, and KG metadata."""
     from config import PROGRESS_PATH
     from memory.mistake_book import get_mistake_book
 
-    weak_names = {name for name, info in concepts.items() if info.get("weak_flag")}
+    weak_names = weak_names if weak_names is not None else {name for name, info in concepts.items() if info.get("weak_flag")}
     mistake_counts = {item.get("name", ""): int(item.get("count", 0) or 0) for item in mistake_weak_points}
     candidate_names = set(weak_names) | {name for name, _ in concept_counts.most_common(12)} | {name for name, count in mistake_counts.items() if count > 0}
 
@@ -159,6 +234,8 @@ def _build_concept_review_plan(book_name: str, concepts: dict, strict_exposures:
         if not name:
             continue
         info = concepts.get(name, {})
+        if str(info.get("last_reviewed_at", ""))[:10] == datetime.now().date().isoformat():
+            continue
         exposure_count = int(info.get("exposure_count", 0) or concept_counts.get(name, 0) or 0)
         days_since_seen = _days_since(info.get("last_exposed_at", ""))
         days_since_review = _days_since(info.get("last_reviewed_at", ""))
@@ -210,7 +287,7 @@ def _build_concept_review_plan(book_name: str, concepts: dict, strict_exposures:
 
         reasons = []
         priority = 0
-        if info.get("weak_flag") or name in weak_names:
+        if name in weak_names:
             reasons.append("已标记为薄弱概念")
             priority += 45
         if related_mistakes:
@@ -245,7 +322,7 @@ def _build_concept_review_plan(book_name: str, concepts: dict, strict_exposures:
             "days_since_review": days_since_review,
             "exposure_count": exposure_count,
             "mastery_level": info.get("mastery_level", 0),
-            "weak": bool(info.get("weak_flag")),
+            "weak": name in weak_names,
             "recent_questions": recent_questions,
             "related_mistakes": related_mistakes,
             "textbook_snippets": textbook_snippets[:3],
@@ -286,7 +363,7 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
 
         def is_strict(e: dict, concepts: dict) -> bool:
             try:
-                if float(e.get("confidence", 0)) < 0.999:
+                if float(e.get("confidence", 0)) < 0.85:
                     return False
             except (TypeError, ValueError):
                 return False
@@ -354,9 +431,10 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
         recent_questions.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         recent_questions = recent_questions[:limit]
 
+        effective_weak_names = {item["name"] for item in cm.get_weak_points()}
         weak = []
         for name, info in concepts.items():
-            if name in strict_names and info.get("weak_flag"):
+            if name in strict_names and name in effective_weak_names:
                 weak.append({"name": name, **info})
         weak.sort(key=lambda x: x.get("last_weak_at", x.get("last_exposed_at", "")), reverse=True)
 
@@ -445,6 +523,7 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
             mistake_weak_points,
             subject=subject,
             limit=8,
+            weak_names=effective_weak_names,
         )
         return {
             "success": True,
@@ -477,9 +556,12 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
                 "subjects": subjects,
                 "selected_subject": subject,
                 "review_rules": {
+                    "strict_concepts": "去重后的概念数。仅统计置信度不低于 0.85，且概念名或有效别名直接出现在问题中的接触；错题中明确关联的概念也计入。",
+                    "high_confidence_exposures": "符合严格条件的接触事件总数。同一概念每次符合条件的问答或错题各计 1 次，因此可能大于严格概念数。",
+                    "weak_concepts": "严格概念中，来自错题、用户明确表示不会/不懂/不熟、复习质量评为 0–2，或被手动标记的概念。仅询问定义、公式或区别不会自动标为薄弱。",
                     "mistake_due": "错题复习采用 SM-2：next_review 小于等于今天即进入待复习。评分 0-2 会重置间隔，3-5 会按掌握度拉长间隔。",
                     "concept_due": "概念复习按优先级推荐：薄弱标记、关联错题、7 天以上未接触或未复习、累计接触次数较高的概念会优先出现。",
-                    "concept_reviewed": "点击已复习会写入 ConceptMemory 的 last_reviewed_at 与 review_history，并按质量更新 mastery_level/weak_flag。"
+                    "concept_reviewed": "点击已复习会记录本次复习并从今天的队列移除。默认质量为 4，会提高掌握度但保留薄弱标记；质量 5 才表示已掌握并解除薄弱。"
                 },
                 "due_mistakes": [_mistake_summary(r) for r in due_mistakes[:50]],
                 "mistake_stats": mistake_stats,

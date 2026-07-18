@@ -2,6 +2,34 @@ import type { AgentToolResult, AgentToolSpec, ReadOnlyAgentResponse, ConceptCand
 
 const API_BASE = normalizeApiBase(import.meta.env.VITE_API_BASE_URL || '/api');
 const DEFAULT_TIMEOUT_MS = 20000;
+const API_TOKEN_KEY = 'kaoyan_api_token';
+
+function bootstrapApiToken() {
+  if (typeof window === 'undefined') return;
+  const hash = window.location.hash.replace(/^#/, '');
+  const params = new URLSearchParams(hash);
+  const token = params.get('access_token')?.trim();
+  if (!token) return;
+  window.localStorage.setItem(API_TOKEN_KEY, token);
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+}
+
+bootstrapApiToken();
+
+function authHeaders(initial?: HeadersInit): Headers {
+  const headers = new Headers(initial);
+  if (typeof window !== 'undefined') {
+    const token = window.localStorage.getItem(API_TOKEN_KEY)?.trim();
+    if (token) headers.set('X-Kaoyan-Token', token);
+  }
+  return headers;
+}
+
+async function responseError(response: Response, fallback: string): Promise<Error> {
+  const payload = await response.clone().json().catch(() => null);
+  const message = payload?.message || payload?.detail || `${fallback}: ${response.status}`;
+  return new Error(message);
+}
 
 function normalizeApiBase(value: string): string {
   const trimmed = (value || '/api').trim().replace(/\/+$/, '');
@@ -35,7 +63,7 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   const ctrl = new AbortController();
   const timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(input, { ...init, signal: init.signal || ctrl.signal });
+    return await fetch(input, { ...init, headers: authHeaders(init.headers), signal: init.signal || ctrl.signal });
   } finally {
     window.clearTimeout(timer);
   }
@@ -43,7 +71,7 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
 
 export async function get(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<any> {
   const res = await fetchWithTimeout(apiUrl(path), {}, timeoutMs);
-  if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
+  if (!res.ok) throw await responseError(res, `GET ${path} failed`);
   return res.json();
 }
 
@@ -53,7 +81,7 @@ export async function post(path: string, body: unknown, timeoutMs = DEFAULT_TIME
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }, timeoutMs);
-  if (!res.ok) throw new Error(`POST ${path} failed: ${res.status}`);
+  if (!res.ok) throw await responseError(res, `POST ${path} failed`);
   return res.json();
 }
 
@@ -63,13 +91,13 @@ export async function patch(path: string, body: unknown, timeoutMs = DEFAULT_TIM
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }, timeoutMs);
-  if (!res.ok) throw new Error(`PATCH ${path} failed: ${res.status}`);
+  if (!res.ok) throw await responseError(res, `PATCH ${path} failed`);
   return res.json();
 }
 
 export async function del(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<any> {
   const res = await fetchWithTimeout(apiUrl(path), { method: 'DELETE' }, timeoutMs);
-  if (!res.ok) throw new Error(`DELETE ${path} failed: ${res.status}`);
+  if (!res.ok) throw await responseError(res, `DELETE ${path} failed`);
   return res.json();
 }
 
@@ -135,12 +163,12 @@ export function chatStream(
     try {
       const res = await fetch(apiUrl('/chat/stream'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ question, book_name: bookName, subject, conversation_id: conversationId }),
         signal: ctrl.signal,
       });
 
-      if (!res.ok || !res.body) throw new Error(`SSE failed: ${res.status}`);
+      if (!res.ok || !res.body) throw await responseError(res, 'SSE failed');
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -180,11 +208,11 @@ export async function chatAsk(
 ): Promise<{ content: string; intent: string; chapters: string[]; linked_concepts?: ConceptCandidate[]; conversation_id?: string; rewritten_question?: string }> {
   const res = await fetch(apiUrl('/chat/ask'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ question, book_name: bookName, subject, conversation_id: conversationId }),
     signal,
   });
-  if (!res.ok) throw new Error(`chatAsk failed: ${res.status}`);
+  if (!res.ok) throw await responseError(res, 'chatAsk failed');
   return res.json();
 }
 export async function listAgentTools(includeWrite = false): Promise<AgentToolSpec[]> {

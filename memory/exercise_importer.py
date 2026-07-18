@@ -45,6 +45,8 @@ class ExerciseCandidate:
     refined_by_llm: bool = False
     split_confidence: float = 0.0
     split_reasons: list[str] = field(default_factory=list)
+    validation_issues: list[str] = field(default_factory=list)
+    duplicate_of: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -80,6 +82,7 @@ MATH_RE = re.compile("(\\\\frac|\\\\sum|\\\\int|\\\\lim|[=<>\u2264\u2265\u2248]|
 S_CHOICE = "\u9009\u62e9\u9898"
 S_COMPOSITE = "\u7efc\u5408\u9898"
 S_UNKNOWN = "\u672a\u786e\u5b9a"
+NUMBERED_ENTRY_RE = re.compile(r"(?m)^\s*(?:第\s*(\d+)\s*题|(\d+)\s*[\.、．\)])\s*")
 
 
 def _normalize_import_text(raw_text: str) -> str:
@@ -282,6 +285,19 @@ def analyze_candidate(
     else:
         reasons.append("rule confidence is acceptable for quick review")
 
+    validation_issues: list[str] = []
+    option_count = len(OPTION_RE.findall(text))
+    if len(text) < 12:
+        validation_issues.append("题干过短，可能切分不完整")
+    if suggested_type == S_CHOICE and option_count < 3:
+        validation_issues.append("选择题选项不足")
+    if len(QUESTION_START_RE.findall(text)) > 1:
+        validation_issues.append("一个候选块中可能包含多道题")
+    if split_confidence and split_confidence < 0.55:
+        validation_issues.append("切题边界置信度较低")
+    if not tags:
+        validation_issues.append("未识别知识点")
+
     return ExerciseCandidate(
         id=str(uuid.uuid4())[:8],
         question_text=text,
@@ -297,6 +313,7 @@ def analyze_candidate(
         needs_llm=needs_llm,
         split_confidence=split_confidence,
         split_reasons=list(split_reasons or []),
+        validation_issues=validation_issues,
     )
 
 
@@ -327,6 +344,33 @@ def analyze_candidates(
         if len(results) >= limit:
             break
     return results
+
+
+def attach_answers_by_number(candidates: list[ExerciseCandidate], raw_answer_text: str) -> int:
+    """Attach a separate answer sheet by explicit question numbers only."""
+    text = _normalize_import_text(raw_answer_text)
+    matches = list(NUMBERED_ENTRY_RE.finditer(text))
+    answers: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        number = match.group(1) or match.group(2) or ""
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        value = text[match.end():end].strip()
+        value = re.sub(r"^\s*(?:答案|答)\s*[:：]?\s*", "", value).strip()
+        if number and value:
+            answers[number] = value
+
+    paired = 0
+    for candidate in candidates:
+        match = NUMBERED_ENTRY_RE.match(candidate.question_text)
+        number = (match.group(1) or match.group(2) or "") if match else ""
+        answer = answers.get(number, "")
+        if answer:
+            candidate.answer = answer
+            candidate.validation_issues = [issue for issue in candidate.validation_issues if issue != "答案文件中未找到匹配答案"]
+            paired += 1
+        elif "答案文件中未找到匹配答案" not in candidate.validation_issues:
+            candidate.validation_issues.append("答案文件中未找到匹配答案")
+    return paired
 
 
 def _clean_json_payload(raw: str) -> Any:

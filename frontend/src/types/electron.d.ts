@@ -15,6 +15,7 @@ declare global {
       minimize: () => Promise<void>;
       toggleMaximize: () => Promise<boolean>;
       close: () => Promise<void>;
+      restart?: () => Promise<boolean>;
       getUpdateStatus?: () => Promise<DesktopUpdateStatus>;
       checkForUpdates?: () => Promise<DesktopUpdateStatus>;
       downloadUpdate?: () => Promise<DesktopUpdateStatus>;

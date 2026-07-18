@@ -1,3 +1,105 @@
+# 2026-07-18 Electron sidebar and window-control fixes
+
+- Standardized expanded and collapsed sidebar navigation icons at 18px, including the sidebar toggle icons.
+- Kept desktop sidebar states mounted and added a restrained width/cross-fade transition, with a `prefers-reduced-motion` fallback.
+- Restored reliable frameless-window control hit testing by giving the title-bar overlay its real 52px height and explicitly keeping the control capsule and buttons out of Electron drag regions.
+# 2026-07-18 Learning-summary concept criteria and review feedback
+
+- Unified strict concept/exposure criteria at confidence >= 0.85 plus a direct concept or meaningful alias mention; explicit mistake links remain eligible. Strict concepts count unique names, while high-confidence exposures count events.
+- Stopped treating ordinary definition/formula/property requests as automatic weakness. Weak concepts now come from mistakes, explicit learner difficulty, review quality 0-2, or manual marking. Legacy QA-only false positives are ignored in statistics and queues.
+- Added an in-progress state and durable success feedback for concept review. Concepts reviewed today are removed from both concept-review queues to prevent repeated no-op clicks.
+- Added criterion help text to the three concept metric cards.
+## 2026-07-16 - 扫描教材按页抽题与桌面标题栏避让
+
+- 修复扫描教材已选择 PDF 页码、但既有 OCR 切分缺少页码元数据时无法抽题的问题：现有 source package、MinerU、外部 OCR 和 PDF 文本层均未命中后，对明确选择的最多 8 页执行 Kimi Vision 按页 OCR，并复用页面缓存。
+- Kimi 按需阅读统一使用 `KIMI_VISION_MODEL` 与 `MOONSHOT_API_BASE`，避免把正文 LLM 模型名错误发送到 Moonshot Vision 接口。
+- 习题工作区顶部增加 Electron 窗口控件安全区，右上角刷新按钮不再被最大化/关闭状态栏遮挡。
+- 不修改教材索引、向量库、外部 OCR 切分或学习记录。
+
+### Validation
+
+- 教材抽题定向回归：6 passed。
+- 后端完整回归：119 passed，1 条第三方 TestClient 弃用警告。
+- 前端 ESLint：通过。
+- 前端 TypeScript 与 Vite 生产构建：通过。
+
+## 2026-07-15 - 存储版本治理与稳定教材身份 P0-P1
+
+### P0：版本、备份与原子写入
+
+- 新增 `data/storage_manifest.json`，统一记录业务组件版本，并明确区分不可重建数据、昂贵派生产物和可重建检索索引。
+- 学习进度、测验历史、聊天历史和间隔复习卡片改用临时文件 + `fsync` + 原子替换；保持旧 JSON 数组/对象形状，现有直接读取路径无需迁移。
+- 备份格式升级到 v2，加入数据 schema、组件版本和数据分类；恢复端可在内存中将 v1 manifest 迁移到 v2，旧备份继续可用。
+- 默认备份新增存储组件清单；Chroma 仍是可选的可重建派生索引，未迁入 SQLite。
+- 错题库、习题库、学习事件、后台任务和 RAG trace SQLite 文件接入统一迁移执行器，并写入 `PRAGMA user_version = 1`；遇到比程序更新的数据库版本会拒绝静默打开。
+
+### P1：稳定教材身份与生命周期
+
+- 新增版本化 `book_registry.json`，教材使用 UUID `book_id` 作为稳定身份，物理 `storage_name` 与可修改 `display_name` 分离。
+- 启动时为现有教材补齐 `book_id` 和元数据；不移动 PDF、进度目录、SQLite 文件或 Chroma collection。损坏的 metadata 会跳过并报告，不会被静默覆盖。
+- 教材列表、当前教材、切换和更新响应返回 `book_id`；相关接口兼容旧存储名与新 ID。
+- 资料库支持逻辑重命名、归档列表和恢复。逻辑重命名只更新展示名称，物理存储名保持不变。
+- 新错题和习题自动写入对应 `book_id`，旧 JSON blob 记录缺少该字段时继续按默认值读取。
+- 彻底删除增加影响预览、精确 `book_id` 二次确认和删除前完整安全备份；归档仍不删除任何文件、索引或学习记录。
+
+### Compatibility and validation
+
+- 未执行现有教材文件搬迁、Chroma 重建或真实数据删除。
+- v1 备份、无 `book_id` 的教材元数据、旧错题/习题记录及旧学习 JSON 均保留兼容路径。
+- 后端最终全量回归：117 passed，1 条第三方 TestClient 弃用警告。
+- 前端 ESLint 通过；Vitest 3 个测试文件共 9 项通过；TypeScript 与 Vite 生产构建通过。
+- `git diff --check` 通过。
+## 2026-07-13 - v1.0.0 教材范围与桌面端体验修复
+
+- 将问答范围从“物理教材文件”提升为逻辑教材范围。具有相同资料组，或同一科目下的主要教材与辅助教材，在对话界面合并为一个范围；当前传感器短书与长书统一显示为“传感器”。
+- 保留检索层的主辅优先级：短书继续作为主要来源，长书作为辅助来源参与补充，不删除、不迁移任何教材索引。
+- 设置页将“检索角色”改为更易理解的“教材用途”，使用“主要教材 / 辅助教材 / 独立使用”，并直接说明辅助教材补充的资料组及其在问答中的行为。
+- 有教材时不再提供通用 QA 入口。首次进入会优先选择当前学科下的逻辑教材范围；只有尚未导入任何教材时才保留通用 QA。
+- 合并范围兼容既有历史会话：短书和长书下保存的旧传感器对话会一起显示，加载后归一为传感器学科范围。
+- 桌面模式下，新建会话和加载历史会话不再自动折叠侧边栏；紧凑布局仍保持抽屉式自动关闭行为。
+- 教材范围菜单改为基于视口定位的浮层，自动选择向上或向下展开，并限制在窗口边界内，修复非全屏时左侧菜单被裁切的问题。
+- 收紧“考研助手”和“学习对话”的标题字号，提高学科范围字号，使标题、导航和选择器层级更均衡。
+- Electron 顶部标题区域支持标准双击最大化或还原；右上角按钮行为保持不变。
+
+### Compatibility
+
+- 无数据迁移，无索引重建，不修改已有教材、错题、向量库或学习记录。
+- 旧会话中保存的传感器短书或长书名称继续有效。
+- 显式资料组优先于科目分组；没有有效主要教材的辅助教材组不会被错误隐藏。
+
+### Validation
+
+- Frontend production build passed: `tsc -b && vite build`.
+- Frontend lint passed: `eslint .`.
+- Frontend unit tests passed: 9 tests across 3 files, including logical textbook-scope grouping and invalid-group fallback.
+- Local UI regression passed at 1280x720 and 900x650: sensor scope appeared once, the menu stayed inside the viewport, old short/long-book conversations remained visible, and the desktop sidebar stayed expanded after new/load conversation actions.
+- Settings UI regression confirmed the primary/auxiliary labels and the explicit “辅助传感器” guidance.
+
+## 2026-07-13 - Generalize textbook indexing, retrieval groups, and KG enhancement
+
+- Removed inferred prerequisite/extension KG paths from answer generation and concept linking. Runtime KG retrieval now uses evidence occurrences and verbatim formulas only; unverified directional relations remain disabled.
+- Added a canonical textbook chunk model that preserves page index, bounding box, formula text, semantic role, section hierarchy, source Markdown, and neighboring chunk IDs through MinerU import.
+- Added a schema-3 versioned whole-book Chroma collection. Rebuilds create the new aggregate before switching the collection map, while existing per-chapter collections and lexical indexes remain available for degradation fallback.
+- Added opt-in KG enhancement for any imported textbook as a durable background job. The UI estimates the selected excerpt volume and requires explicit confirmation before sending excerpts to the configured external LLM. Extracted names, definitions, aliases, and formulas are checked against source text; no directional relations are generated.
+- Replaced sensor-specific retrieval routing with metadata-driven `standalone`, `core`, and `reference` roles. Core/reference books can share an explicit resource group or, when no group is set, the same subject; priorities are configurable without changing code.
+- Persisted import source paths so downstream exercise extraction and PDF lookup can use metadata for user-imported books before legacy packaged-data fallbacks.
+- Index acceptance remains an internal system check (non-empty/healthy vector and lexical indexes plus rebuild consistency); users are not asked to know or enter chapter or chunk counts.
+
+### Compatibility and migration
+
+- Existing textbook indexes are not deleted or mutated automatically. The schema-3 aggregate is created on the next explicit import/reindex.
+- Existing books default to `standalone`, so retrieval behavior does not broaden until a user assigns `core`/`reference` roles.
+- Existing packaged sensor/error-theory source aliases remain read-only fallbacks for old data; new imports use recorded metadata paths.
+
+### Validation
+
+- Python compile check passed for all changed backend, ingestion, retrieval, KG, utility, and test modules.
+- Frontend TypeScript and Vite production build passed.
+- New textbook-generalization regression suite passed with a clean exit: 5 passed.
+- Full backend suite completed all assertions: 92 passed, 1 dependency warning in 25.75s. The command wrapper timed out during process cleanup after pytest printed its completed report.
+- FastAPI route smoke check confirmed the KG enhancement, estimate, and generic job-status routes are mounted.
+- `git diff --check` passed.
+
 ## 2026-07-12 - Textbook exercise extraction page scoping
 
 - The PDF picker now navigates the embedded preview to the entered page and the selection action sets both range endpoints to that page, preventing a stale end page from expanding a single-page request into a large range.
@@ -542,3 +644,185 @@ The detailed historical notes for this period were damaged by mojibake before th
 - 前端 TypeScript 与 Vite 生产构建通过。
 
 - 桌面 release 数据支持在 sample_data/mineru_output 中携带 OCR 产物；首次启动时会复制到用户 mineru_output 目录，GitHub sample_data 仍可只保留单本演示教材。
+
+## 2026-07-13 - 产品化 P0：1.0.0 发布、数据恢复与访问边界
+
+### 发布治理
+
+- 新增根 `VERSION`，统一前端、Electron、FastAPI 和设置页版本为 `1.0.0`。
+- 新增版本设置/一致性检查脚本；桌面发布 tag 必须与 `VERSION` 一致。
+- 新增 CI，发布前强制执行后端测试、前端测试、lint 和生产构建。
+- Electron 发布工作流接入可选 Windows 代码签名 secrets；证书本身仍需由发布者提供。
+
+### 数据安全
+
+- 设置中心新增“备份恢复”：默认备份教材、章节、图片、错题、习题和学习记录，可选包含 Chroma 与 MinerU 派生数据。
+- SQLite 使用在线 backup API 生成一致性副本；压缩包包含版本化 manifest、SHA-256 和展开安全限制，不包含 `.env` 或 API Key。
+- 恢复前自动创建当前状态安全备份；恢复登记后在下次启动、向量库预热前执行目录替换，失败时自动回滚。
+- Electron 新增安全重启 IPC，使桌面端可以完成“选择备份 → 安全快照 → 重启恢复”闭环。
+
+### 安全边界
+
+- Docker 默认端口映射收紧为 `127.0.0.1:8000`。
+- 非本机 API 访问默认拒绝；配置 `KAOYAN_API_TOKEN` 后使用 `X-Kaoyan-Token` 认证，前端支持通过 URL fragment 一次性写入本地令牌。
+- Electron 启用 renderer sandbox，并拦截窗口内外部导航，HTTP(S) 外链交给系统浏览器。
+
+### Validation
+
+- P0 定向测试：9 passed。
+- 后端完整测试：99 passed，1 条第三方 TestClient 弃用警告。
+- 前端测试：7 passed；ESLint：0 warning / 0 error。
+- 前端 TypeScript 与 Vite 生产构建：通过。
+- `scripts/check_version_consistency.py`：通过，版本与 lockfiles 均为 `1.0.0`；Electron Node 语法检查通过。
+
+
+## 2026-07-14 - 习题导入校对工作台与连续练习会话 P0
+
+### 导入校对与数据安全
+
+- 习题候选新增切题边界、选项完整性、题干长度、知识点缺失和题库重复检测；重复检测一次构建题干指纹映射，避免按候选题重复扫描题库。
+- 习题页保留完整导入原文作为对照，候选题支持异常/重复筛选、题干/答案/解析/题型/难度/标签/来源/章节编辑、选中合并和按空行拆分。
+- 批量导入改为单个 SQLite 事务，记录 `exercise_import_batches` 批次；默认跳过题库已有题和同批重复题，导入完成后可按批次回滚。
+- Word/PDF 文件导入支持可选的独立答案文件；仅按明确题号确定性配对，未匹配候选会标记异常，不使用 LLM 猜测答案。
+- 新表为兼容性增量创建，不改写现有 `exercises`、错题、教材、Chroma 或学习记录。
+
+### 连续练习会话
+
+- 新增持久化 `exercise_practice_sessions`：固定题目队列、筛选条件、随机种子、当前进度、逐题答案、自评结果、错题关联和完成摘要。
+- 习题页支持设置题数、优先复习/随机顺序、自动下一题、暂停、恢复、结束和重启后继续未完成会话。
+- “做错”会在记录本题练习结果的同时转入错题本；暂停状态禁止提交，服务端校验提交题目必须与当前会话进度一致。
+- 随机模式只打乱按“需复习 → 练习中 → 新题 → 已掌握”选出的优先题池，不会把已掌握题随机混入有限题量。
+
+### Validation
+
+- 后端完整测试：105 passed，1 条第三方 TestClient 弃用警告。
+- 前端 Vitest：9 passed。
+- ESLint：通过，0 error。
+- 前端 TypeScript 与 Vite 生产构建：通过。
+- `git diff --check`：通过。
+
+## 2026-07-15 - Electron 学习工作台视觉收敛
+
+### 交互与视觉层级
+
+- 移除全局主按钮胶囊化规则，统一桌面端按钮、导航、输入框和容器圆角，主色只用于当前状态与关键操作。
+- 对话首页改为“优先复习 + 其他入口”的任务列表，去除问候语、装饰性 AI 图标和重复推荐卡；空白对话不再重复显示底部快捷工具栏。
+- 习题页拆分为“练习 / 题库 / 导入”三个工作区，避免练习、检索、文件导入和候选校对同时堆在同一屏；导入空状态补充确定性流程说明。
+- 教材导入页缩短上传区，补充导入目标说明，并将 MinerU 选项改写为面向结果的“扫描件必须完成高质量解析”。
+- 学习情况、错题本补充页面说明；知识增强改为“完善知识关联”；错题空状态增加明确的录入入口，并强调 OCR 后人工校对。
+
+### Validation
+
+- 前端 TypeScript 与 Vite 生产构建：通过。
+- Electron 开发模式实机检查：对话、学习情况、错题本、习题练习、题库、习题导入、教材导入和设置窗口均可打开；分段切换、导航和空状态无明显溢出。
+## 2026-07-15 - 录入流程、教材导入与设置页结构化
+
+### 工作流重构
+
+- 错题录入拆分为“添加题目、校对内容、归因保存”三个阶段；图片 OCR 与看图讲解均先进入可编辑校对步骤，手动录入不再依赖图片或自动讲解。
+- 归档步骤始终允许补充来源、学科、章节、标签、难度与错因；保存成功、识别失败和处理中状态使用统一反馈样式。
+- 教材导入改为“PDF 教材”和“MinerU 输出包”二选一，避免两套参数与操作同时堆叠；PDF 参数顺序与后端请求保持不变。
+- 设置从全局浮层迁移到 `/settings` 独立页面，并加入主导航；服务器健康、版本更新、备份恢复、资料库和模型配置功能保持不变。
+
+### 状态系统
+
+- 新增 `AsyncState` 组件族，统一页面加载骨架、空状态、错误/成功提示和带进度后台任务。
+- 教材导入、学习情况、错题录入和设置页已接入统一状态组件。
+- 系统健康组件由重复卡片改为可扫描列表，并补全“检索记录”“模型连接”等中文标签及运行状态文案。
+
+### Validation
+
+- 前端 Vitest：9 passed。
+- ESLint：通过。
+- TypeScript 与 Vite 生产构建：通过。
+- `git diff --check`：通过。
+- Electron 实机检查：错题添加与手动校对、PDF/MinerU 方式切换、独立设置页及健康状态加载正常。
+
+## 2026-07-15 - 学习情况页去卡片化与页面标题收敛
+
+### 视觉层级
+
+- 学习情况页将四张指标卡合并为单一统计带，只用网格分隔线区分指标，不再为每个数字单独添加圆角容器。
+- 待复习错题、今日概念复习和待复习概念合并为连续折叠分组；概念、错题与空状态改用行级留白和稀疏分隔线，移除卡片套卡片结构。
+- 高频概念、错题薄弱点和最近每日活动合并为同一分析区；活动详情、教材线索和错题预览使用轻背景层级，不再重复叠加边框与圆角。
+- 后台任务状态由双层面板改为单层状态区，保留错误、进度和无障碍语义。
+
+### 页面标题
+
+- 移除学习对话、学习情况、错题本、习题工作区、教材导入和设置标题下方的泛化说明句。
+- 顶部页面标题统一为 19px/600 字重；正文中的操作说明、错误信息和真实来源元数据不受影响。
+
+### Validation
+
+- 前端 TypeScript 与 Vite 生产构建：通过。
+- ESLint：通过，0 error。
+- 前端 Vitest：9 passed。
+- 定向 `git diff --check`：通过；相关页面未新增 em dash 字符。
+- Electron 窗口视觉检查授权超时，未取得实机截图；应用内浏览器访问本地地址被客户端安全策略阻止，未绕过限制。
+
+## 2026-07-16 - 一级页面标题栏位置统一
+
+### 界面一致性
+
+- 新增共享的 app-page-header 与 app-page-title 规则，统一一级页面标题栏为 64px 最小高度、20px 水平内边距、19px/600 标题和垂直居中。
+- 学习对话、学习情况、错题本、习题工作区、教材导入和设置全部迁移到共享规则；移除教材导入与设置标题的居中内容容器。
+- Electron 无边框窗口统一为所有一级标题栏预留右上角窗口控件安全区，并保持标题栏内按钮可交互；紧凑布局继续使用相同的 20px 水平基线。
+
+### Validation
+
+- ESLint：通过。
+- 前端 Vitest：3 files / 9 tests passed。
+- TypeScript 与 Vite 生产构建：通过。
+- 应用内浏览器 1280px 桌面视口实测：六个标题栏均为 64px 高，标题左偏移 20px、顶部偏移 19.6px、文字高度 24px。
+
+
+## 2026-07-18 - 备份恢复安全与练习会话原子性修复
+
+### 备份与恢复
+
+- SQLite 备份仅接受 `sqlite3.backup()` 生成且 `PRAGMA quick_check` 通过的快照；数据库锁定或备份失败时不再退化为缺少 WAL 的主文件拷贝。
+- 恢复前始终创建包含向量库和 MinerU 产物的完整安全备份；目标备份未包含的派生数据在恢复时会被失效，避免旧学习数据与新索引混用。
+- 待恢复压缩包缺失、pending JSON 异常或安装失败时，记录失败与回滚结果并消费 pending 请求，不再阻塞每次后端启动。
+- 恢复后若向量索引已失效，设置页会明确提示重新索引教材。
+
+### 练习会话
+
+- 习题练习记录与会话进度改为同一 SQLite `BEGIN IMMEDIATE` 事务，任一写入失败时整体回滚。
+- 重复提交已作答题目时直接返回持久化结果，不再重复增加练习次数。
+- 练习会话转入错题本使用稳定错题 ID 和幂等写入；跨数据库写入中断后可安全重试，不会生成重复错题。
+
+### Validation
+
+- 后端完整测试：126 passed，1 条第三方 TestClient 弃用警告。
+- 新增回归覆盖 SQLite 备份失败、缺失恢复包、派生索引失效、练习事务回滚和重试幂等。
+- ESLint 通过；TypeScript 与 Vite 生产构建通过。
+
+## 2026-07-18 - Learning-state concurrency, local API boundary, and upload limits
+
+### Learning-state consistency
+
+- Added path-scoped re-entrant locks shared by all ConceptMemory, StudyMemory, and SpacedRepetition instances.
+- Every read/modify/write operation reloads the latest JSON snapshot while holding the shared lock, preventing background feedback and concurrent API requests from overwriting each other.
+- Kept the existing JSON storage format; no user-data migration is required.
+- Added multi-instance concurrency regression tests for concept exposures, chat history, and SM-2 cards.
+
+### Local API boundary
+
+- Electron now creates a random 256-bit API token for each launch, requires it in the backend, and bootstraps it into the renderer through a URL fragment that the frontend immediately removes.
+- Valid tokens are accepted before the loopback development fallback; packaged desktop requests therefore remain authenticated.
+- Development mode rejects unsafe local API requests carrying an untrusted Origin, while trusted Vite origins and non-browser CLI clients remain supported.
+- Upload endpoints reject oversized multipart requests from Content-Length before Starlette parses or spools the body.
+
+### Upload and archive limits
+
+- PDF, DOCX, and external MinerU ZIP uploads now use bounded streaming copies, exclusive destination creation, partial-file cleanup, and a minimum free-disk reserve.
+- ZIP and DOCX inspection now limits file count, per-member size, total expanded bytes, and compression ratio, and rejects encrypted members, symbolic links, and unsafe paths.
+- Failed external-output extraction removes its job-specific partial directory.
+- Default limits are configurable through KAOYAN_MAX_* and KAOYAN_MIN_FREE_DISK_BYTES environment variables.
+
+### Validation
+
+- Backend: 137 passed; one existing Starlette TestClient deprecation warning.
+- Frontend: 3 files / 9 tests passed; ESLint passed; TypeScript and Vite production build passed.
+- Electron main-process syntax and changed Python source syntax passed.
+- git diff --check passed (line-ending warnings only).

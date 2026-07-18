@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Save, Search, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Pause, Pencil, Play, RotateCcw, Save, Scissors, Search, Shuffle, Sparkles, Trash2, Upload, X } from 'lucide-react';
 import { del, get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
 import ScopeSelector from '../components/ScopeSelector';
 import { useChatContext } from '../contexts/ChatContext';
 import { useVisibleList } from '../hooks/useVisibleList';
-import type { BookInfo, ExerciseCandidate, ExerciseRecord, ExerciseStats } from '../types';
+import type { BookInfo, ExerciseCandidate, ExerciseImportBatch, ExercisePracticeSession, ExerciseRecord, ExerciseStats } from '../types';
 
 const statusText: Record<string, string> = {
   new: '新题',
@@ -42,6 +42,7 @@ function candidateToExercise(candidate: ExerciseCandidate) {
 const ExercisesPage: React.FC = () => {
   const { bookName, setBookName, subject, setSubject } = useChatContext();
   const [books, setBooks] = useState<BookInfo[]>([]);
+  const [workspaceMode, setWorkspaceMode] = useState<'practice' | 'bank' | 'import'>('practice');
   const [targetName, setTargetName] = useState(bookName || '');
   const [targetSubject, setTargetSubject] = useState(subject || '\u6570\u5b66');
   const activeName = targetName.trim() || bookName || 'default';
@@ -60,10 +61,15 @@ const ExercisesPage: React.FC = () => {
   const [practiceAnswer, setPracticeAnswer] = useState('');
   const [practiceSolutionOpen, setPracticeSolutionOpen] = useState(false);
   const [practiceMessage, setPracticeMessage] = useState('');
+  const [practiceSession, setPracticeSession] = useState<ExercisePracticeSession | null>(null);
+  const [sessionLimit, setSessionLimit] = useState(20);
+  const [sessionShuffle, setSessionShuffle] = useState(false);
+  const [sessionBusy, setSessionBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [message, setMessage] = useState('');
   const [importFile, setImportFile] = useState<File | null>(null);
+  const [answerFile, setAnswerFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importSource, setImportSource] = useState('');
   const [importChapter, setImportChapter] = useState('');
@@ -78,6 +84,9 @@ const ExercisesPage: React.FC = () => {
   const [extractedPreview, setExtractedPreview] = useState('');
   const [candidates, setCandidates] = useState<ExerciseCandidate[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [candidateFilter, setCandidateFilter] = useState<'all' | 'issues' | 'duplicates'>('all');
+  const [editingCandidateId, setEditingCandidateId] = useState('');
+  const [lastImportBatch, setLastImportBatch] = useState<ExerciseImportBatch | null>(null);
   const [answerDraft, setAnswerDraft] = useState('');
   const [answerBusy, setAnswerBusy] = useState(false);
   const [answerJobId, setAnswerJobId] = useState('');
@@ -90,7 +99,9 @@ const ExercisesPage: React.FC = () => {
   const importSummary = useMemo(() => {
     const needsLlm = candidates.filter((item) => item.needs_llm).length;
     const refined = candidates.filter((item) => item.refined_by_llm).length;
-    return { total: candidates.length, needsLlm, confident: candidates.length - needsLlm, refined };
+    const issues = candidates.filter((item) => (item.validation_issues || []).length > 0).length;
+    const duplicates = candidates.filter((item) => Boolean(item.duplicate_of)).length;
+    return { total: candidates.length, needsLlm, confident: candidates.length - needsLlm, refined, issues, duplicates };
   }, [candidates]);
 
   const practicePool = useMemo(() => {
@@ -98,10 +109,19 @@ const ExercisesPage: React.FC = () => {
     return [...records].sort((a, b) => (rank[a.status] ?? 2) - (rank[b.status] ?? 2) || (a.practice_count || 0) - (b.practice_count || 0));
   }, [records]);
 
+  const filteredCandidates = useMemo(() => candidates.filter((item) => {
+    if (candidateFilter === 'issues') return (item.validation_issues || []).length > 0;
+    if (candidateFilter === 'duplicates') return Boolean(item.duplicate_of);
+    return true;
+  }), [candidateFilter, candidates]);
+
   const currentPractice = useMemo(() => {
+    if (practiceSession && ['active', 'paused', 'completed'].includes(practiceSession.status)) {
+      return practiceSession.current_exercise || null;
+    }
     if (practiceId) return records.find((item) => item.id === practiceId) || null;
     return practicePool.find((item) => item.status !== 'mastered') || practicePool[0] || null;
-  }, [practiceId, practicePool, records]);
+  }, [practiceId, practicePool, practiceSession, records]);
 
   useEffect(() => {
     setAnswerDraft(currentPractice?.answer || '');
@@ -159,7 +179,7 @@ const ExercisesPage: React.FC = () => {
   }, [answerJobId]);
 
   const recordList = useVisibleList(records, 30, `${activeName}|${targetSubject}|${statusFilter}|${searchKw}`);
-  const candidateList = useVisibleList(candidates, 20, `${activeName}|${importFile?.name || ''}|${textbookChapter}|${textbookPageStart}|${textbookPageEnd}|${importSummary.total}`);
+  const candidateList = useVisibleList(filteredCandidates, 20, `${activeName}|${importFile?.name || ''}|${textbookChapter}|${textbookPageStart}|${textbookPageEnd}|${importSummary.total}|${candidateFilter}`);
 
   const loadBooks = useCallback(async () => {
     try {
@@ -200,6 +220,18 @@ const ExercisesPage: React.FC = () => {
   useEffect(() => {
     load();
   }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+    get(`/exercises/practice-sessions/active${bookQuery}`)
+      .then((res) => {
+        if (!cancelled) setPracticeSession(res?.success ? res.data || null : null);
+      })
+      .catch(() => {
+        if (!cancelled) setPracticeSession(null);
+      });
+    return () => { cancelled = true; };
+  }, [bookQuery]);
+
 
   const resetImportPreview = () => {
     setCandidates([]);
@@ -248,6 +280,7 @@ const ExercisesPage: React.FC = () => {
     try {
       const fd = new FormData();
       fd.append('file', importFile);
+      if (answerFile) fd.append('answer_file', answerFile);
       fd.append('source', importSource || importFile.name);
       fd.append('subject', targetSubject || activeName);
       fd.append('chapter', importChapter);
@@ -263,9 +296,10 @@ const ExercisesPage: React.FC = () => {
       const next = data.data || [];
       setCandidates(next);
       setSelectedIds(new Set(next.map((item: ExerciseCandidate) => item.id)));
-      setExtractedPreview(data.extract?.text ? data.extract.text.slice(0, 1200) : '');
+      setExtractedPreview(data.extract?.text || '');
       const warnings = data.extract?.warnings?.length ? `；${data.extract.warnings.join('；')}` : '';
-      setMessage(`${data.message || `已分析 ${next.length} 道候选题`}${warnings}`);
+      const paired = answerFile ? `；答案匹配 ${data.summary?.paired_answers || 0}/${next.length}` : '';
+      setMessage(`${data.message || `已分析 ${next.length} 道候选题`}${paired}${warnings}`);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
@@ -293,14 +327,15 @@ const ExercisesPage: React.FC = () => {
         llm_max_items: 20,
       }, 60000);
       if (!res?.success) {
-        setMessage(res?.message || '教材抽题失败');
-        setExtractedPreview(res?.extract?.text ? res.extract.text.slice(0, 1200) : '');
+        const warnings = res?.extract?.warnings?.length ? `（${res.extract.warnings.join('；')}）` : '';
+        setMessage(`${res?.message || '教材抽题失败'}${warnings}`);
+        setExtractedPreview(res?.extract?.text || '');
         return;
       }
       const next = res.data || [];
       setCandidates(next);
       setSelectedIds(new Set(next.map((item: ExerciseCandidate) => item.id)));
-      setExtractedPreview(res.extract?.text ? res.extract.text.slice(0, 1200) : '');
+      setExtractedPreview(res.extract?.text || '');
       const warnings = res.extract?.warnings?.length ? `（${res.extract.warnings.join('；')}）` : '';
       setMessage(`${res.message || `已从教材抽取 ${next.length} 道候选题`}${warnings}`);
     } catch (e) {
@@ -353,12 +388,18 @@ const ExercisesPage: React.FC = () => {
     }
     setImporting(true);
     try {
-      const res = await post(`/exercises/batch-add${bookQuery}`, { exercises: selected.map(candidateToExercise) });
+      const res = await post(`/exercises/batch-add${bookQuery}`, {
+        exercises: selected.map(candidateToExercise),
+        source_label: importSource || importFile?.name || `${activeName} 教材抽题`,
+        allow_duplicates: false,
+      });
       if (!res?.success) {
         setMessage(res?.message || '批量导入失败');
         return;
       }
       setMessage(res.message || `已导入 ${selected.length} 道候选题`);
+      const batchRes = await get(`/exercises/import-batches${bookQuery ? `${bookQuery}&limit=1` : '?limit=1'}`);
+      if (batchRes?.success) setLastImportBatch(batchRes.data?.[0] || null);
       setCandidates((prev) => prev.filter((item) => !selectedIds.has(item.id)));
       setSelectedIds(new Set());
       await load();
@@ -366,6 +407,110 @@ const ExercisesPage: React.FC = () => {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
       setImporting(false);
+    }
+  };
+
+  const updateCandidate = (id: string, updates: Partial<ExerciseCandidate>) => {
+    setCandidates((items) => items.map((item) => item.id === id ? { ...item, ...updates } : item));
+  };
+
+  const mergeSelectedCandidates = () => {
+    const selected = candidates.filter((item) => selectedIds.has(item.id));
+    if (selected.length < 2) {
+      setMessage('请至少选择两道相邻候选题进行合并');
+      return;
+    }
+    const firstIndex = candidates.findIndex((item) => item.id === selected[0].id);
+    const merged: ExerciseCandidate = {
+      ...selected[0],
+      question_text: selected.map((item) => item.question_text.trim()).filter(Boolean).join('\n\n'),
+      answer: selected.map((item) => item.answer.trim()).filter(Boolean).join('\n\n'),
+      explanation: selected.map((item) => item.explanation.trim()).filter(Boolean).join('\n\n'),
+      tags: Array.from(new Set(selected.flatMap((item) => item.tags))),
+      linked_concepts: selected.flatMap((item) => item.linked_concepts || []),
+      validation_issues: ['已人工合并，请复核题干边界'],
+      duplicate_of: '',
+      needs_review: true,
+    };
+    const remaining = candidates.filter((item) => !selectedIds.has(item.id));
+    remaining.splice(Math.max(0, firstIndex), 0, merged);
+    setCandidates(remaining);
+    setSelectedIds(new Set([merged.id]));
+    setEditingCandidateId(merged.id);
+  };
+
+  const splitCandidate = (candidate: ExerciseCandidate) => {
+    const boundary = candidate.question_text.search(/\n\s*\n/);
+    if (boundary < 0) {
+      setMessage('请先在题干编辑框中用空行标出拆分位置');
+      setEditingCandidateId(candidate.id);
+      return;
+    }
+    const left = candidate.question_text.slice(0, boundary).trim();
+    const right = candidate.question_text.slice(boundary).trim();
+    if (!left || !right) return;
+    const suffix = Date.now().toString(36);
+    const parts = [
+      { ...candidate, id: `${candidate.id}-${suffix}-1`, question_text: left, answer: '', explanation: '', duplicate_of: '', validation_issues: ['拆分后请补充答案并复核'] },
+      { ...candidate, id: `${candidate.id}-${suffix}-2`, question_text: right, duplicate_of: '', validation_issues: ['拆分后请复核题干边界'] },
+    ];
+    const index = candidates.findIndex((item) => item.id === candidate.id);
+    const next = candidates.filter((item) => item.id !== candidate.id);
+    next.splice(Math.max(0, index), 0, ...parts);
+    setCandidates(next);
+    setSelectedIds(new Set(parts.map((item) => item.id)));
+    setEditingCandidateId(parts[0].id);
+  };
+
+  const rollbackLastImport = async () => {
+    if (!lastImportBatch || lastImportBatch.status !== 'active') return;
+    if (!window.confirm(`确定回滚本批次导入的 ${lastImportBatch.exercise_ids.length} 道习题吗？`)) return;
+    const res = await post(`/exercises/import-batches/rollback${bookQuery}`, { batch_id: lastImportBatch.id });
+    if (!res?.success) {
+      setMessage(res?.message || '回滚失败');
+      return;
+    }
+    setLastImportBatch(res.data);
+    setMessage(res.message || '导入批次已回滚');
+    await load();
+  };
+
+  const startPracticeSession = async () => {
+    setSessionBusy(true);
+    setPracticeMessage('');
+    try {
+      const res = await post(`/exercises/practice-sessions${bookQuery}`, {
+        subject: targetSubject,
+        status: statusFilter,
+        limit: sessionLimit,
+        shuffle: sessionShuffle,
+      });
+      if (!res?.success) {
+        setPracticeMessage(res?.message || '无法开始练习会话');
+        return;
+      }
+      setPracticeSession(res.data);
+      setPracticeAnswer('');
+      setPracticeSolutionOpen(false);
+      setPracticeMessage(res.message || '练习会话已开始');
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const changePracticeSessionStatus = async (action: 'pause' | 'resume' | 'abandon') => {
+    if (!practiceSession) return;
+    setSessionBusy(true);
+    try {
+      const res = await post(`/exercises/practice-sessions/${encodeURIComponent(practiceSession.id)}/${action}${bookQuery}`, {});
+      if (!res?.success) {
+        setPracticeMessage(res?.message || '练习会话状态更新失败');
+        return;
+      }
+      setPracticeSession(res.data);
+      setPracticeMessage(action === 'pause' ? '练习已暂停，可稍后继续' : action === 'resume' ? '练习已继续' : '本轮练习已结束');
+    } finally {
+      setSessionBusy(false);
     }
   };
 
@@ -410,8 +555,21 @@ const ExercisesPage: React.FC = () => {
 
   const submitPractice = async (quality: number, addToMistake = false) => {
     if (!currentPractice) return;
+    if (practiceSession && practiceSession.status !== 'active') {
+      setPracticeMessage('请先继续当前练习会话');
+      return;
+    }
     try {
-      const res = await post(`/exercises/practice${bookQuery}`, {
+      const sessionMode = Boolean(practiceSession);
+      const path = sessionMode
+        ? `/exercises/practice-sessions/${encodeURIComponent(practiceSession!.id)}/answer${bookQuery}`
+        : `/exercises/practice${bookQuery}`;
+      const res = await post(path, sessionMode ? {
+        exercise_id: currentPractice.id,
+        user_answer: practiceAnswer,
+        quality,
+        add_to_mistake: addToMistake,
+      } : {
         id: currentPractice.id,
         user_answer: practiceAnswer,
         quality,
@@ -421,8 +579,19 @@ const ExercisesPage: React.FC = () => {
         setPracticeMessage(res?.message || '练习记录失败');
         return;
       }
-      setPracticeMessage(addToMistake && res.mistake_id ? '已记录练习，并转入错题本' : '已记录练习结果');
-      setRecords((prev) => prev.map((item) => (item.id === currentPractice.id ? res.data : item)));
+      const updatedRecord = sessionMode ? res.record : res.data;
+      setRecords((prev) => prev.map((item) => (item.id === currentPractice.id ? updatedRecord : item)));
+      if (sessionMode) {
+        setPracticeSession(res.data);
+        setPracticeAnswer('');
+        setPracticeSolutionOpen(false);
+        const summary = res.data?.summary;
+        setPracticeMessage(res.data?.status === 'completed'
+          ? `本轮完成：${summary?.answered || 0} 题，平均自评 ${summary?.average_quality || 0}`
+          : res.message || '已记录，进入下一题');
+      } else {
+        setPracticeMessage(addToMistake && res.mistake_id ? '已记录练习，并转入错题本' : '已记录练习结果');
+      }
       await load();
     } catch (e) {
       setPracticeMessage(e instanceof Error ? e.message : String(e));
@@ -460,19 +629,23 @@ const ExercisesPage: React.FC = () => {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border bg-bg-primary px-5 py-4">
-        <div>
-          <h2 className="text-sm font-semibold text-text-primary">习题库</h2>
-        </div>
-        <button onClick={load} disabled={loading} className="flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary hover:border-accent disabled:opacity-50">
+      <div className="app-page-header border-b border-border bg-bg-primary">
+        <h2 className="app-page-title">习题工作区</h2>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg border border-border bg-bg-card p-0.5">
+            {([['practice', '练习'], ['bank', '题库'], ['import', '导入']] as const).map(([mode, label]) => (
+              <button key={mode} type="button" onClick={() => setWorkspaceMode(mode)} className={`rounded-md px-3 py-1.5 text-sm ${workspaceMode === mode ? 'bg-[var(--surface-black)] text-white' : 'text-text-secondary hover:text-text-primary'}`}>{label}</button>
+            ))}
+          </div>
+          <button onClick={load} disabled={loading} className="flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary hover:border-accent disabled:opacity-50">
           {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />} 刷新
         </button>
       </div>
-
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[340px_minmax(0,1fr)]">
-        <aside className="overflow-y-auto border-b border-border bg-bg-secondary/95 p-4 lg:border-b-0 lg:border-r">
+      </div>
+      <div className={`grid min-h-0 flex-1 grid-cols-1 overflow-hidden ${workspaceMode === 'import' ? 'lg:grid-cols-[380px_minmax(0,1fr)] 2xl:grid-cols-[400px_minmax(0,1fr)]' : ''}`}>
+        <aside className={`${workspaceMode === 'import' ? 'block' : 'hidden'} overflow-y-auto border-b border-border bg-bg-secondary/95 p-4 lg:border-b-0 lg:border-r`}>
           <div className="space-y-4">
-            <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
+            <section className="space-y-3 rounded-xl border border-border bg-bg-card p-4">
               <div>
                 <div className="text-sm font-medium text-text-primary">选择范围</div>
 
@@ -489,7 +662,7 @@ const ExercisesPage: React.FC = () => {
               />
             </section>
 
-            <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
+            <section className="space-y-3 rounded-xl border border-border bg-bg-card p-4">
               <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><ClipboardList className="h-4 w-4 text-accent" /> 从当前教材抽题</div>
               {sourcePdfUrl && (
                 <button type="button" onClick={() => { setPdfPage(textbookPageStart || '1'); setPdfOpen(true); }} className="flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm hover:border-accent">
@@ -510,7 +683,7 @@ const ExercisesPage: React.FC = () => {
                 {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} 抽取教材候选题
               </button>
             </section>
-            <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
+            <section className="space-y-3 rounded-xl border border-border bg-bg-card p-4">
               <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><Sparkles className="h-4 w-4 text-accent" /> Word/PDF 导入</div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
                 <input placeholder="来源，如 2025 模拟卷" value={importSource} onChange={(e) => setImportSource(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
@@ -520,6 +693,10 @@ const ExercisesPage: React.FC = () => {
                 <Upload className="h-4 w-4" /> {importFile ? importFile.name : '选择 Word/PDF 文件'}
               </button>
               <input ref={fileInputRef} type="file" accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(e) => setImportFile(e.target.files?.[0] || null)} className="hidden" />
+              <label className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-bg-primary px-3 py-3 text-sm text-text-primary hover:border-accent">
+                <Upload className="h-4 w-4" /> {answerFile ? `答案：${answerFile.name}` : '可选：选择独立答案 Word/PDF'}
+                <input type="file" accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(e) => setAnswerFile(e.target.files?.[0] || null)} className="hidden" />
+              </label>
               <label className="flex items-start gap-2 rounded-xl border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary">
                 <input type="checkbox" checked={useLlmRepair} onChange={(e) => setUseLlmRepair(e.target.checked)} className="mt-0.5 h-4 w-4 flex-shrink-0 accent-accent" />
                 <span className="min-w-0 leading-5">
@@ -530,44 +707,88 @@ const ExercisesPage: React.FC = () => {
               <button onClick={analyzeImportFile} disabled={importing || !importFile} className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
                 {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />} 分析文件
               </button>
-              {extractedPreview && <div className="max-h-32 overflow-y-auto rounded border border-border bg-bg-secondary p-3 text-xs leading-5 text-text-secondary">{extractedPreview}</div>}
+              {extractedPreview && <div className="space-y-2">
+                <div className="text-xs font-medium text-text-primary">导入原文对照</div>
+                <pre className="max-h-60 whitespace-pre-wrap overflow-y-auto rounded border border-border bg-bg-secondary p-3 text-xs leading-5 text-text-secondary">{extractedPreview}</pre>
+              </div>}
               {message && <div className="rounded border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary">{message}</div>}
             </section>
 
-            {candidates.length > 0 && (
-              <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
+            {workspaceMode === 'import' && candidates.length > 0 && (
+              <section className="space-y-3 rounded-xl border border-border bg-bg-card p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-sm font-medium text-text-primary">候选题确认</div>
-                    <div className="mt-1 text-xs text-text-secondary">{importSummary.total} 道 · {importSummary.needsLlm} 道建议精标</div>
+                    <div className="mt-1 text-xs text-text-secondary">{importSummary.total} 道 · {importSummary.issues} 道异常 · {importSummary.duplicates} 道重复</div>
                   </div>
                   <button onClick={() => setSelectedIds(new Set(candidates.map((item) => item.id)))} className="rounded border border-border px-2.5 py-1 text-xs hover:border-accent">全选</button>
                 </div>
                 <button onClick={importSelected} disabled={importing || selectedIds.size === 0} className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"><CheckCircle2 className="h-4 w-4" /> 导入选中 {selectedIds.size}</button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={mergeSelectedCandidates} disabled={selectedIds.size < 2} className="rounded-xl border border-border px-3 py-2 text-xs hover:border-accent disabled:opacity-50">合并选中</button>
+                  <button onClick={() => setSelectedIds(new Set())} disabled={selectedIds.size === 0} className="rounded-xl border border-border px-3 py-2 text-xs hover:border-accent disabled:opacity-50">取消选择</button>
+                </div>
               </section>
             )}
+                {lastImportBatch?.status === 'active' && <button onClick={rollbackLastImport} className="flex w-full items-center justify-center gap-2 rounded-xl border border-[#e3c98f] bg-[#fff6df] px-3 py-2 text-xs text-[var(--warning)] hover:border-[var(--warning)]">
+                  <RotateCcw className="h-3.5 w-3.5" /> 回滚最近导入（{lastImportBatch.exercise_ids.length} 题）
+                </button>}
           </div>
         </aside>
 
         <main className="overflow-y-auto p-4 lg:p-6">
           <div className="space-y-5">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {workspaceMode === 'import' && candidates.length === 0 && (
+              <section className="app-panel px-6 py-8">
+                <h3 className="type-section-title text-text-primary">导入流程</h3>
+                <ol className="type-body mt-3 space-y-3 text-text-secondary">
+                  <li><span className="font-medium text-text-primary">1. 选择范围</span>，确定题目归属的科目与教材。</li>
+                  <li><span className="font-medium text-text-primary">2. 选择来源</span>，从教材页抽取，或导入 Word/PDF 题目。</li>
+                  <li><span className="font-medium text-text-primary">3. 校对候选题</span>，确认题干、答案和重复项后再写入题库。</li>
+                </ol>
+                <p className="type-caption mt-5 border-t border-border pt-4 text-text-secondary">候选题会显示在这里，未经确认不会写入正式题库。</p>
+              </section>
+            )}
+            <div className={`${workspaceMode === 'import' ? 'hidden' : 'grid'} grid-cols-1 gap-4 sm:grid-cols-3`}>
               <Metric label="总习题" value={stats?.total || 0} />
               <Metric label="需复习" value={stats?.by_status?.needs_review || 0} />
               <Metric label="已掌握" value={stats?.by_status?.mastered || 0} />
             </div>
 
-            <section className="space-y-5 rounded-[18px] border border-border bg-bg-card p-5">
+            <section className={`${workspaceMode === 'practice' ? 'block' : 'hidden'} space-y-5 rounded-xl border border-border bg-bg-card p-5`}>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-semibold text-text-primary">练习</h3>
 
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={() => selectPractice()} disabled={practicePool.length === 0} className="rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-xs hover:border-accent disabled:opacity-50">换一题</button>
-                  {currentPractice && <button onClick={sendPracticeToMistake} className="rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-xs hover:border-accent">转入错题本</button>}
+                  <button onClick={() => selectPractice()} disabled={practicePool.length === 0 || Boolean(practiceSession && ['active', 'paused'].includes(practiceSession.status))} className="rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-xs hover:border-accent disabled:opacity-50">换一题</button>
+                  {currentPractice && (!practiceSession || !['active', 'paused'].includes(practiceSession.status)) && <button onClick={sendPracticeToMistake} className="rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-xs hover:border-accent">转入错题本</button>}
                 </div>
               </div>
+
+              {practiceSession && ['active', 'paused'].includes(practiceSession.status) ? (
+                <div className="space-y-3 rounded-xl border border-accent/30 bg-accent/5 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-text-primary">连续练习进行中</div>
+                      <div className="mt-1 text-xs text-text-secondary">第 {Math.min(practiceSession.current_index + 1, practiceSession.summary.total)} / {practiceSession.summary.total} 题 · 已完成 {practiceSession.summary.answered} 题</div>
+                    </div>
+                    <div className="flex gap-2">
+                      {practiceSession.status === 'active' ? <button onClick={() => changePracticeSessionStatus('pause')} disabled={sessionBusy} className="flex items-center gap-1 rounded-lg border border-border bg-bg-primary px-3 py-1.5 text-xs"><Pause className="h-3.5 w-3.5" />暂停</button> : <button onClick={() => changePracticeSessionStatus('resume')} disabled={sessionBusy} className="flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs text-white"><Play className="h-3.5 w-3.5" />继续</button>}
+                      <button onClick={() => changePracticeSessionStatus('abandon')} disabled={sessionBusy} className="rounded-lg border border-border bg-bg-primary px-3 py-1.5 text-xs">结束本轮</button>
+                    </div>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-bg-primary"><div className="h-full bg-accent transition-all" style={{ width: `${practiceSession.summary.total ? (practiceSession.summary.answered / practiceSession.summary.total) * 100 : 0}%` }} /></div>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-bg-secondary p-4">
+                  <label className="flex items-center gap-2 text-xs text-text-secondary">题数<input type="number" min="1" max="200" value={sessionLimit} onChange={(e) => setSessionLimit(Math.max(1, Math.min(200, Number(e.target.value) || 1)))} className="w-20 rounded-lg border border-border bg-bg-primary px-2 py-1.5 text-sm" /></label>
+                  <button onClick={() => setSessionShuffle((value) => !value)} className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs ${sessionShuffle ? 'border-accent bg-accent/10 text-accent' : 'border-border bg-bg-primary'}`}><Shuffle className="h-3.5 w-3.5" />{sessionShuffle ? '随机顺序' : '优先复习'}</button>
+                  <button onClick={startPracticeSession} disabled={sessionBusy || practicePool.length === 0} className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-xs text-white disabled:opacity-50">{sessionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}开始连续练习</button>
+                  {practiceSession?.status === 'completed' && <span className="text-xs text-text-secondary">上轮：{practiceSession.summary.answered} 题，平均自评 {practiceSession.summary.average_quality}</span>}
+                </div>
+              )}
 
               {currentPractice ? (
                 <div className="grid gap-4">
@@ -603,9 +824,9 @@ const ExercisesPage: React.FC = () => {
                       </div>
                     )}
                     <div className="grid grid-cols-3 gap-2">
-                      <button onClick={() => submitPractice(1, true)} className="rounded-lg border border-[#e6b2a9] bg-[#fff1ed] px-3 py-2 text-xs text-[var(--danger)] hover:border-[var(--danger)]">做错</button>
-                      <button onClick={() => submitPractice(3)} className="rounded-lg border border-[#e3c98f] bg-[#fff6df] px-3 py-2 text-xs text-[var(--warning)] hover:border-[var(--warning)]">勉强会</button>
-                      <button onClick={() => submitPractice(5)} className="rounded-lg border border-[#c9d8bd] bg-[#eef5e8] px-3 py-2 text-xs text-[var(--success)] hover:border-[var(--success)]">掌握</button>
+                      <button onClick={() => submitPractice(1, true)} disabled={sessionBusy || practiceSession?.status === 'paused'} className="rounded-lg border border-[#e6b2a9] bg-[#fff1ed] px-3 py-2 text-xs text-[var(--danger)] hover:border-[var(--danger)] disabled:opacity-50">做错</button>
+                      <button onClick={() => submitPractice(3)} disabled={sessionBusy || practiceSession?.status === 'paused'} className="rounded-lg border border-[#e3c98f] bg-[#fff6df] px-3 py-2 text-xs text-[var(--warning)] hover:border-[var(--warning)] disabled:opacity-50">勉强会</button>
+                      <button onClick={() => submitPractice(5)} disabled={sessionBusy || practiceSession?.status === 'paused'} className="rounded-lg border border-[#c9d8bd] bg-[#eef5e8] px-3 py-2 text-xs text-[var(--success)] hover:border-[var(--success)] disabled:opacity-50">掌握</button>
                     </div>
                     {practiceMessage && <div className="rounded border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary">{practiceMessage}</div>}
                   </div>
@@ -615,24 +836,48 @@ const ExercisesPage: React.FC = () => {
               )}
             </section>
 
-            {candidates.length > 0 && (
-              <section className="space-y-3 rounded-[18px] border border-border bg-bg-card p-4">
+            {workspaceMode === 'import' && candidates.length > 0 && (
+              <section className="space-y-3 rounded-xl border border-border bg-bg-card p-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-text-primary">待确认候选题</h3>
                   <span className="text-xs text-text-secondary">{selectedIds.size} / {candidates.length} 已选</span>
                 </div>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => setCandidateFilter('all')} className={`rounded-lg border px-3 py-1 text-xs ${candidateFilter === 'all' ? 'border-accent bg-accent/10 text-accent' : 'border-border'}`}>全部 {candidates.length}</button>
+                  <button onClick={() => setCandidateFilter('issues')} className={`rounded-lg border px-3 py-1 text-xs ${candidateFilter === 'issues' ? 'border-accent bg-accent/10 text-accent' : 'border-border'}`}>异常 {importSummary.issues}</button>
+                  <button onClick={() => setCandidateFilter('duplicates')} className={`rounded-lg border px-3 py-1 text-xs ${candidateFilter === 'duplicates' ? 'border-accent bg-accent/10 text-accent' : 'border-border'}`}>重复 {importSummary.duplicates}</button>
+                </div>
                 <div className="space-y-2">
                   {candidateList.visibleItems.map((candidate) => (
-                    <article key={candidate.id} className="rounded-xl border border-border bg-bg-primary p-3">
+                    <article key={candidate.id} className={`rounded-xl border bg-bg-primary p-3 ${(candidate.validation_issues || []).length ? 'border-[#e3c98f]' : 'border-border'}`}>
                       <div className="flex items-start gap-3">
                         <input type="checkbox" checked={selectedIds.has(candidate.id)} onChange={() => toggleCandidate(candidate.id)} className="mt-1 h-4 w-4 accent-accent" />
-                        <div className="min-w-0 flex-1 space-y-2">
+                        <div className="min-w-0 flex-1 space-y-3">
                           <div className="flex flex-wrap items-center gap-2 text-xs">
                             <span className="rounded border border-border px-2 py-0.5 text-text-secondary">{candidate.suggested_type || '未定题型'}</span>
                             <span className="rounded border border-border px-2 py-0.5 text-text-secondary">难度 {candidate.difficulty}</span>
                             <span className={`rounded border px-2 py-0.5 ${candidate.needs_llm ? 'border-[#e3c98f] bg-[#fff6df] text-[var(--warning)]' : 'border-[#c9d8bd] bg-[#eef5e8] text-[var(--success)]'}`}>置信度 {Math.round(candidate.confidence * 100)}%</span>
+                            <button onClick={() => setEditingCandidateId(editingCandidateId === candidate.id ? '' : candidate.id)} className="ml-auto flex items-center gap-1 rounded border border-border px-2 py-0.5 hover:border-accent"><Pencil className="h-3 w-3" />{editingCandidateId === candidate.id ? '收起' : '编辑'}</button>
+                            <button onClick={() => splitCandidate(candidate)} className="flex items-center gap-1 rounded border border-border px-2 py-0.5 hover:border-accent"><Scissors className="h-3 w-3" />拆分</button>
                           </div>
-                          <p className="line-clamp-3 whitespace-pre-wrap text-sm text-text-primary">{candidate.question_text}</p>
+                          {(candidate.validation_issues || []).length > 0 && <div className="flex flex-wrap gap-1.5">{candidate.validation_issues!.map((issue) => <span key={issue} className="flex items-center gap-1 rounded bg-[#fff6df] px-2 py-1 text-xs text-[var(--warning)]"><AlertTriangle className="h-3 w-3" />{issue}</span>)}</div>}
+                          {candidate.duplicate_of && <div className="text-xs text-[var(--warning)]">重复于题库记录 {candidate.duplicate_of}，默认导入时会跳过。</div>}
+                          {editingCandidateId === candidate.id ? (
+                            <div className="space-y-2 rounded-lg border border-border bg-bg-secondary p-3">
+                              <textarea value={candidate.question_text} onChange={(e) => updateCandidate(candidate.id, { question_text: e.target.value, duplicate_of: '' })} className="min-h-32 w-full rounded-lg border border-border bg-bg-primary p-2 text-sm" />
+                              <div className="grid gap-2 sm:grid-cols-3">
+                                <input value={candidate.suggested_type} onChange={(e) => updateCandidate(candidate.id, { suggested_type: e.target.value })} placeholder="题型" className="rounded-lg border border-border bg-bg-primary px-2 py-1.5 text-xs" />
+                                <input type="number" min="1" max="5" value={candidate.difficulty} onChange={(e) => updateCandidate(candidate.id, { difficulty: Math.max(1, Math.min(5, Number(e.target.value) || 3)) })} className="rounded-lg border border-border bg-bg-primary px-2 py-1.5 text-xs" />
+                                <input value={candidate.tags.join(', ')} onChange={(e) => updateCandidate(candidate.id, { tags: e.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} placeholder="知识点标签" className="rounded-lg border border-border bg-bg-primary px-2 py-1.5 text-xs" />
+                              </div>
+                              <textarea value={candidate.answer} onChange={(e) => updateCandidate(candidate.id, { answer: e.target.value })} placeholder="标准答案（可留空）" className="min-h-20 w-full rounded-lg border border-border bg-bg-primary p-2 text-xs" />
+                              <textarea value={candidate.explanation} onChange={(e) => updateCandidate(candidate.id, { explanation: e.target.value })} placeholder="解析（可留空）" className="min-h-20 w-full rounded-lg border border-border bg-bg-primary p-2 text-xs" />
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                <input value={candidate.source} onChange={(e) => updateCandidate(candidate.id, { source: e.target.value })} placeholder="来源" className="rounded-lg border border-border bg-bg-primary px-2 py-1.5 text-xs" />
+                                <input value={candidate.chapter} onChange={(e) => updateCandidate(candidate.id, { chapter: e.target.value })} placeholder="章节" className="rounded-lg border border-border bg-bg-primary px-2 py-1.5 text-xs" />
+                              </div>
+                            </div>
+                          ) : <p className="line-clamp-4 whitespace-pre-wrap text-sm text-text-primary">{candidate.question_text}</p>}
                           <div className="flex flex-wrap gap-2 text-xs text-text-secondary">
                             {(candidate.tags.length ? candidate.tags : ['未识别知识点']).map((tag) => <span key={tag} className="rounded bg-bg-secondary px-2 py-0.5">{tag}</span>)}
                           </div>
@@ -649,7 +894,7 @@ const ExercisesPage: React.FC = () => {
               </section>
             )}
 
-            <section className="rounded-[18px] border border-border bg-bg-card p-4">
+            <section className={`${workspaceMode === 'bank' ? 'block' : 'hidden'} rounded-xl border border-border bg-bg-card p-4`}>
               <div className="mb-4 flex flex-wrap items-center gap-3">
                 <input value={searchKw} onChange={(e) => setSearchKw(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') load(); }} placeholder="搜索题干/答案/解析/标签" className="min-w-[260px] flex-1 rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent">
@@ -744,7 +989,7 @@ const Block = ({ title, children }: { title: string; children: React.ReactNode }
 );
 
 const Metric = ({ label, value }: { label: string; value: number }) => (
-  <div className="rounded-[18px] border border-border bg-bg-card p-4 text-center">
+  <div className="rounded-xl border border-border bg-bg-card p-4 text-center">
     <div className="text-2xl font-semibold text-text-primary">{value}</div>
     <div className="mt-1 text-xs text-text-secondary">{label}</div>
   </div>

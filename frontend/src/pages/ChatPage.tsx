@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { BookMarked, CalendarDays, GraduationCap, ImagePlus, Send, Shuffle, Square } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BookMarked, CalendarDays, ImagePlus, Send, Shuffle, Square } from 'lucide-react';
 import { get, post } from '../api/client';
 
 import HighlightRepositoryDialog from '../components/HighlightRepositoryDialog';
@@ -10,8 +10,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useChatContext, type ChatMessage as ContextChatMessage } from '../contexts/ChatContext';
 import { useChat } from '../hooks/useChat';
 import type { ExerciseRecord } from '../types';
-
-type BookOption = { name: string; subject?: string };
+import { buildTextbookScopeOptions, type TextbookRecord } from '../utils/textbookScopes';
 type ReportMode = 'daily' | 'weekly';
 type ActionMode = ReportMode | 'exercise';
 
@@ -64,7 +63,7 @@ function recordMatchesTerms(record: ExerciseRecord, terms: string[]) {
 
 const ChatPage: React.FC = () => {
   const [input, setInput] = useState('');
-  const [books, setBooks] = useState<BookOption[]>([]);
+  const [books, setBooks] = useState<TextbookRecord[]>([]);
   const [highlightDialogOpen, setHighlightDialogOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState<ActionMode | null>(null);
   const { messages, isLoading, sendMessage, stop } = useChat();
@@ -72,6 +71,7 @@ const ChatPage: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const subjectSuggestions = Array.from(new Set(books.map((book) => book.subject || '').filter(Boolean)));
+  const scopeBooks = useMemo(() => buildTextbookScopeOptions(books), [books]);
 
   useEffect(() => {
     const loadBooks = async () => {
@@ -114,7 +114,7 @@ const ChatPage: React.FC = () => {
     void persistLocalExchange(userContent, assistantContent);
   };
 
-  const switchBook = async (name: string) => {
+  const switchBook = useCallback(async (name: string) => {
     if (!name) {
       setBookName('');
       return;
@@ -128,7 +128,18 @@ const ChatPage: React.FC = () => {
     } catch {
       setBookName(name);
     }
-  };
+  }, [setBookName, setSubject]);
+
+  useEffect(() => {
+    if (bookName || !scopeBooks.length) return;
+    const selectedSubject = subject.trim();
+    const preferred = scopeBooks.find((book) => {
+      const bookSubject = (book.subject || '').trim();
+      return bookSubject === selectedSubject || Boolean(selectedSubject && bookSubject.startsWith(`${selectedSubject}/`));
+    });
+    const target = preferred || scopeBooks[0];
+    void switchBook(target.name);
+  }, [bookName, scopeBooks, subject, switchBook]);
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -304,17 +315,8 @@ const ChatPage: React.FC = () => {
   return (
     <div className="relative flex h-full min-w-0 bg-bg-primary">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="desktop-chat-header hidden border-b border-border bg-bg-secondary/86 px-6 py-3 backdrop-blur sm:block">
-          <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--surface-black)]">
-                <GraduationCap className="h-4.5 w-4.5 text-white" />
-              </div>
-              <div>
-                <h2 className="type-title text-text-primary">学习对话</h2>
-              </div>
-            </div>
-          </div>
+        <div className="app-page-header desktop-chat-header hidden border-b border-border bg-bg-secondary/86 backdrop-blur sm:flex">
+          <h2 className="app-page-title">学习对话</h2>
         </div>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-4 sm:px-5 sm:py-6">
@@ -323,7 +325,7 @@ const ChatPage: React.FC = () => {
               <ChatHomePanel
                 bookName={bookName}
                 subject={subject}
-                books={books}
+                books={scopeBooks}
                 isLoading={isLoading || Boolean(actionLoading)}
                 onReviewMistake={reviewMistakeFromSummary}
                 onReviewConcept={reviewConceptFromSummary}
@@ -351,25 +353,25 @@ const ChatPage: React.FC = () => {
               onKeyDown={handleKeyDown}
               placeholder="输入问题..."
               disabled={isLoading}
-              className="max-h-[108px] min-h-[40px] flex-1 resize-none overflow-y-auto rounded-[22px] border border-border bg-bg-card px-4 py-2 type-body text-text-primary outline-none transition-colors placeholder-text-secondary focus:border-accent sm:max-h-[160px] sm:min-h-[48px] sm:rounded-[24px] sm:px-5 sm:py-3"
+              className="max-h-[108px] min-h-[40px] flex-1 resize-none overflow-y-auto rounded-xl border border-border bg-bg-card px-4 py-2 type-body text-text-primary outline-none transition-colors placeholder-text-secondary focus:border-accent sm:max-h-[160px] sm:min-h-[48px] sm:rounded-xl sm:px-5 sm:py-3"
             />
             {isLoading ? (
-              <button type="button" onClick={stop} className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full border border-red-300 bg-red-50 text-red-700 transition-colors hover:bg-red-100">
+              <button type="button" onClick={stop} className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg border border-red-300 bg-red-50 text-red-700 transition-colors hover:bg-red-100">
                 <Square className="h-4 w-4 fill-current" />
               </button>
             ) : (
-              <button type="submit" disabled={!input.trim()} className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40">
+              <button type="submit" disabled={!input.trim()} className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg bg-accent text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40">
                 <Send className="h-4 w-4" />
               </button>
             )}
           </form>
 
-          <div className="chat-toolbar mx-auto mt-2 max-w-5xl">
+          {messages.length > 0 && <div className="chat-toolbar mx-auto mt-2 max-w-5xl">
             <div className="chat-scope-control mb-1.5 sm:mb-0 sm:inline-flex">
               <ScopeSelector
                 subject={subject}
                 bookName={bookName}
-                books={books}
+                books={scopeBooks}
                 suggestions={subjectSuggestions}
                 onSubjectChange={setSubject}
                 onBookChange={switchBook}
@@ -379,28 +381,28 @@ const ChatPage: React.FC = () => {
               />
             </div>
             <div className="mobile-action-row flex flex-wrap items-center gap-1.5 overflow-visible pb-0 sm:inline-flex sm:gap-2 sm:pl-2">
-              <button type="button" onClick={() => showReport('daily')} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border px-3 type-control transition-colors ${actionLoading === 'daily' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
+              <button type="button" onClick={() => showReport('daily')} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-lg border px-3 type-control transition-colors ${actionLoading === 'daily' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
                 <CalendarDays className="h-3.5 w-3.5" />
                 {actionLoading === 'daily' ? '整理日报' : '学习日报'}
               </button>
-              <button type="button" onClick={() => showReport('weekly')} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border px-3 type-control transition-colors ${actionLoading === 'weekly' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
+              <button type="button" onClick={() => showReport('weekly')} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-lg border px-3 type-control transition-colors ${actionLoading === 'weekly' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
                 <CalendarDays className="h-3.5 w-3.5" />
                 {actionLoading === 'weekly' ? '整理周报' : '学习周报'}
               </button>
-              <button type="button" onClick={pickRandomExercise} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border px-3 type-control transition-colors ${actionLoading === 'exercise' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
+              <button type="button" onClick={pickRandomExercise} disabled={Boolean(actionLoading)} className={`flex h-8 flex-shrink-0 items-center gap-1.5 rounded-lg border px-3 type-control transition-colors ${actionLoading === 'exercise' ? 'border-accent/30 bg-[var(--accent-soft)] text-accent' : 'border-border bg-bg-card text-text-secondary hover:border-accent/40 hover:text-text-primary'} disabled:opacity-60`}>
                 <Shuffle className="h-3.5 w-3.5" />
                 {actionLoading === 'exercise' ? '抽题中' : '随机抽题'}
               </button>
-              <button type="button" onClick={openHighlightDialog} disabled={Boolean(actionLoading)} className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border border-border bg-bg-card px-3 type-control text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary disabled:opacity-60">
+              <button type="button" onClick={openHighlightDialog} disabled={Boolean(actionLoading)} className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-lg border border-border bg-bg-card px-3 type-control text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary disabled:opacity-60">
                 <BookMarked className="h-3.5 w-3.5" />
                 查看/生成重点
               </button>
-              <button type="button" onClick={openMistakeQuickCapture} className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-full border border-border bg-bg-card px-3 type-control text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary">
+              <button type="button" onClick={openMistakeQuickCapture} className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-lg border border-border bg-bg-card px-3 type-control text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary">
                 <ImagePlus className="h-3.5 w-3.5" />
                 错题速录
               </button>
             </div>
-          </div>
+          </div>}
         </div>
       </div>
       <HighlightRepositoryDialog

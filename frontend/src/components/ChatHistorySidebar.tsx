@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BookOpen, History, MessageSquarePlus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { get } from '../api/client';
 import type { ChatMessage } from '../contexts/ChatContext';
-import ScopeSelector, { type ScopeBookOption } from './ScopeSelector';
+import ScopeSelector from './ScopeSelector';
+import { buildTextbookScopeOptions, scopeContainsBook, type TextbookRecord } from '../utils/textbookScopes';
 
 type ConversationSummary = {
   id: string;
@@ -75,7 +76,7 @@ export default function ChatHistorySidebar({
   onLoadConversation: (payload: { id: string; messages: ChatMessage[]; subject: string; bookName: string }) => void;
 }) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [books, setBooks] = useState<ScopeBookOption[]>([]);
+  const [books, setBooks] = useState<TextbookRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const shellClass = embedded
     ? 'flex min-h-0 flex-1 flex-col overflow-hidden bg-bg-secondary/60'
@@ -83,6 +84,8 @@ export default function ChatHistorySidebar({
   const headerClass = embedded ? 'border-b border-border px-3 py-3' : 'border-b border-border p-4';
 
   const subjectSuggestions = useMemo(() => Array.from(new Set(books.map((book) => book.subject || '').filter(Boolean))), [books]);
+  const scopeBooks = useMemo(() => buildTextbookScopeOptions(books), [books]);
+  const selectedScope = useMemo(() => scopeBooks.find((item) => scopeContainsBook(item, bookName)), [bookName, scopeBooks]);
 
   const loadBooks = useCallback(async () => {
     try {
@@ -102,17 +105,24 @@ export default function ChatHistorySidebar({
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ limit: '80' });
-    if (subject.trim()) params.set('subject', subject.trim());
-    if (bookName.trim()) params.set('book_name', bookName.trim());
+    const groupedScope = (selectedScope?.sourceNames?.length || 0) > 1;
+    if (subject.trim() && !groupedScope) params.set('subject', subject.trim());
+    if (bookName.trim() && (selectedScope?.sourceNames?.length || 0) <= 1) params.set('book_name', bookName.trim());
     return params.toString();
-  }, [subject, bookName]);
+  }, [subject, bookName, selectedScope]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     get(`/chat/conversations?${query}`, 20000)
       .then((res) => {
-        if (!cancelled) setConversations(res?.success ? res.data || [] : []);
+        if (cancelled) return;
+        const rows = res?.success ? res.data || [] : [];
+        const groupedNames = selectedScope?.sourceNames || [];
+        setConversations(groupedNames.length > 1
+          ? rows.filter((item: ConversationSummary) => groupedNames.includes(item.book_name))
+          : rows,
+        );
       })
       .catch(() => {
         if (!cancelled) setConversations([]);
@@ -123,7 +133,7 @@ export default function ChatHistorySidebar({
     return () => {
       cancelled = true;
     };
-  }, [query, conversationId, refreshKey]);
+  }, [query, conversationId, refreshKey, selectedScope]);
 
   const loadConversation = async (id: string) => {
     const res = await get(`/chat/conversations/${encodeURIComponent(id)}`, 20000);
@@ -133,13 +143,15 @@ export default function ChatHistorySidebar({
       content: item.content || '',
       stage: item.role === 'assistant' ? 'done' : undefined,
     })) as ChatMessage[];
-    onLoadConversation({ id: res.data.id, messages, subject: res.data.subject || '', bookName: res.data.book_name || '' });
+    const storedBookName = res.data.book_name || '';
+    const logicalScope = scopeBooks.find((item) => scopeContainsBook(item, storedBookName));
+    onLoadConversation({ id: res.data.id, messages, subject: logicalScope?.subject || res.data.subject || '', bookName: storedBookName });
   };
 
   if (!open) {
     if (embedded) return null;
     return (
-      <button type="button" onClick={onToggle} className="absolute left-3 top-4 z-20 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-card text-text-secondary hover:border-accent hover:text-accent" title={labels.expandHistory}>
+      <button type="button" onClick={onToggle} className="absolute left-3 top-4 z-20 flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-bg-card text-text-secondary hover:border-accent hover:text-accent" title={labels.expandHistory}>
         <PanelLeftOpen className="h-4 w-4" />
       </button>
     );
@@ -156,7 +168,7 @@ export default function ChatHistorySidebar({
           <ScopeSelector
             subject={subject}
             bookName={bookName}
-            books={books}
+            books={scopeBooks}
             suggestions={subjectSuggestions}
             onSubjectChange={onSubjectChange}
             onBookChange={onBookChange}
@@ -165,7 +177,7 @@ export default function ChatHistorySidebar({
             width="wide"
             label={labels.scope}
           />
-          <button type="button" onClick={onNewConversation} className="mt-2 flex h-9 w-full items-center justify-center gap-2 rounded-full border border-border bg-bg-card type-control text-text-primary hover:border-accent/50 hover:bg-[var(--accent-softer)]">
+          <button type="button" onClick={onNewConversation} className="mt-2 flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-border bg-bg-card type-control text-text-primary hover:border-accent/50 hover:bg-[var(--accent-softer)]">
             <MessageSquarePlus className="h-4 w-4" />{labels.newConversation}
           </button>
         </div>
@@ -174,7 +186,7 @@ export default function ChatHistorySidebar({
       <div className="flex min-h-0 flex-1 flex-col p-3">
         <div className="mb-2 flex items-center justify-between px-1 type-section-title text-text-primary"><span className="flex items-center gap-2"><History className="h-4 w-4 text-accent" />{labels.history}</span><span className="type-caption font-normal text-text-secondary">{loading ? labels.loading : `${conversations.length}`}</span></div>
         <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
-          {conversations.length === 0 && <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center type-body text-text-secondary">{labels.empty}</div>}
+          {conversations.length === 0 && <div className="rounded-lg border border-border bg-bg-card/55 px-3 py-5 text-center type-body text-text-secondary">{labels.empty}</div>}
           {conversations.map((item) => {
             const color = colorForSubject(item.subject);
             const active = item.id === conversationId;

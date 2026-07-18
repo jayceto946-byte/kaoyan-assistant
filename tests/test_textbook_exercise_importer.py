@@ -113,3 +113,51 @@ def test_page_metadata_supports_zero_based_index_and_source_markdown():
 
     assert _page_from_item({"page_idx": 0}) == 1
     assert _page_from_item({"source_markdown": "CGQ_118.md"}) == 118
+
+
+def test_scanned_pdf_page_falls_back_to_kimi_vision(tmp_path, monkeypatch):
+    books = tmp_path / "books"
+    progress = tmp_path / "progress"
+    books.mkdir()
+    progress.mkdir()
+    (books / "demo.pdf").write_bytes(b"placeholder")
+
+    monkeypatch.setattr("memory.textbook_exercise_importer.BOOKS_PATH", books)
+    monkeypatch.setattr("memory.textbook_exercise_importer.PROGRESS_PATH", progress)
+    monkeypatch.setattr("memory.textbook_exercise_importer._text_from_pdf", lambda *_args: "")
+    monkeypatch.setattr(
+        "memory.textbook_exercise_importer._text_from_kimi_pdf_pages",
+        lambda _book, _chapter, start, end: f"{start}-{end}\n1. 计算传感器灵敏度。",
+    )
+
+    extracted = extract_textbook_exercise_text("demo", page_start=208, page_end=208)
+
+    assert extracted.provider == "kimi-vision-pdf-pages"
+    assert extracted.page_start == 208
+    assert "计算传感器灵敏度" in extracted.text
+    assert any("页码映射" in warning for warning in extracted.warnings)
+
+
+def test_scanned_pdf_ocr_range_is_bounded(tmp_path, monkeypatch):
+    books = tmp_path / "books"
+    progress = tmp_path / "progress"
+    books.mkdir()
+    progress.mkdir()
+    (books / "demo.pdf").write_bytes(b"placeholder")
+    called = False
+
+    def fake_vision(*_args):
+        nonlocal called
+        called = True
+        return "unexpected"
+
+    monkeypatch.setattr("memory.textbook_exercise_importer.BOOKS_PATH", books)
+    monkeypatch.setattr("memory.textbook_exercise_importer.PROGRESS_PATH", progress)
+    monkeypatch.setattr("memory.textbook_exercise_importer._text_from_pdf", lambda *_args: "")
+    monkeypatch.setattr("memory.textbook_exercise_importer._text_from_kimi_pdf_pages", fake_vision)
+
+    extracted = extract_textbook_exercise_text("demo", page_start=1, page_end=20)
+
+    assert extracted.provider == "none"
+    assert called is False
+    assert any("最多支持 8 页" in warning for warning in extracted.warnings)

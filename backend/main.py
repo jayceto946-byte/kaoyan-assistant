@@ -14,7 +14,9 @@ import logging
 import os
 import threading
 
-from backend.api import agent, chat, mistakes, books, kg, exercises, system, reports, assets, highlights, jobs
+from backend.api import agent, chat, mistakes, books, kg, exercises, system, reports, assets, highlights, jobs, backups
+from backend.security import LocalApiBoundaryMiddleware
+from utils.version import APP_VERSION
 
 logger = logging.getLogger(__name__)
 _warmup_state = {"status": "pending", "error": ""}
@@ -23,6 +25,12 @@ _warmup_lock = threading.Lock()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    from backend.data_backup import apply_pending_restore
+    from utils.storage_manifest import ensure_storage_manifest
+
+    apply_pending_restore()
+    ensure_storage_manifest()
+    books.migrate_book_identities()
     _recover_jobs()
     _start_warmup()
     yield
@@ -49,7 +57,7 @@ def _start_warmup() -> None:
 app = FastAPI(
     title="考研智能辅助系统 API",
     description="FastAPI + React 架构后端",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -67,6 +75,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(LocalApiBoundaryMiddleware)
 
 # ── API 路由 ──────────────────────────────────────────────
 app.include_router(chat.router, prefix="/api")
@@ -80,11 +89,12 @@ app.include_router(reports.router, prefix="/api")
 app.include_router(assets.router, prefix="/api/system")
 app.include_router(highlights.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(backups.router, prefix="/api")
 
 # ── 健康检查 ──────────────────────────────────────────────
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "1.0.0", "warmup": dict(_warmup_state)}
+    return {"status": "ok", "version": APP_VERSION, "warmup": dict(_warmup_state)}
 
 # ── 启动预热 ──────────────────────────────────────────────
 def _warmup():

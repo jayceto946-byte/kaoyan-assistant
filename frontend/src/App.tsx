@@ -12,6 +12,7 @@ const BooksPage = lazy(() => import('./pages/BooksPage'));
 const HighlightPage = lazy(() => import('./pages/HighlightPage'));
 const LearningPage = lazy(() => import('./pages/LearningPage'));
 const WeeklyReportPage = lazy(() => import('./pages/WeeklyReportPage'));
+const SettingsPage = lazy(() => import('./components/SystemHealth'));
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
               <Route path="weekly" element={<WeeklyReportPage />} />
               <Route path="books" element={<BooksPage />} />
               <Route path="highlights" element={<HighlightPage />} />
+              <Route path="settings" element={<SettingsPage />} />
             </Route>
           </Routes>
         </Suspense>

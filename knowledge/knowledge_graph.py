@@ -553,8 +553,10 @@ class KnowledgeGraph:
             "definition": definition,
             "definition_chunks": definition_chunks,
             "example_chunks": example_chunks,
-            "prerequisites": self.get_prerequisites(name)[:max_related],
-            "extensions": self.get_extensions(name)[:max_related],
+            # Retain response keys for older clients without exposing
+            # unverified directional relations as product knowledge.
+            "prerequisites": [],
+            "extensions": [],
             "related_formulas": detail.get("related_formulas", [])[:max_formulas],
             "source_chapters": source_chapters[:max_related],
         }

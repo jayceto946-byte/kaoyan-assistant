@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { BookOpen, CheckCircle2, FileText, Loader2, Upload, XCircle } from 'lucide-react';
+import { Archive, FileText, Loader2, Upload } from 'lucide-react';
 import ScopeSelector from '../components/ScopeSelector';
+import { StatusBanner, TaskStatus } from '../components/ui/AsyncState';
 
 type ImportJob = {
   id: string;
@@ -34,6 +35,7 @@ const stageLabels: Record<string, string> = {
 };
 
 const BooksPage: React.FC = () => {
+  const [importMode, setImportMode] = useState<'pdf' | 'bundle'>('pdf');
   const [file, setFile] = useState<File | null>(null);
   const [outputFile, setOutputFile] = useState<File | null>(null);
   const [tocPages, setTocPages] = useState('');
@@ -143,107 +145,74 @@ const BooksPage: React.FC = () => {
   const isFailed = job?.status === 'failed';
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto bg-bg-primary p-6">
-      <div className="mx-auto w-full max-w-6xl">
-        <div className="mb-6 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-bg-card">
-              <BookOpen className="h-5 w-5 text-accent" />
-            </div>
-            <div>
-              <h2 className="text-base font-semibold text-text-primary">教材导入</h2>
-            </div>
+    <div className="flex h-full flex-col overflow-y-auto bg-bg-primary">
+      <header className="app-page-header border-b border-border bg-bg-card">
+        <h2 className="app-page-title">教材导入</h2>
+      </header>
+
+      <div className="mx-auto w-full max-w-6xl space-y-5 p-6">
+        <section className="app-panel overflow-hidden">
+          <div className="border-b border-border px-5 py-4">
+            <h3 className="type-section-title text-text-primary">选择导入方式</h3>
+            <p className="type-caption mt-1 text-text-secondary">普通 PDF 由系统完成解析；已有 MinerU 输出时可直接导入结果包。</p>
           </div>
-        </div>
-
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <div
-            onClick={() => inputRef.current?.click()}
-            className="flex min-h-[360px] cursor-pointer flex-col items-center justify-center rounded-[18px] border-2 border-dashed border-border bg-bg-card p-8 text-center transition-colors hover:border-accent/60 hover:bg-[var(--accent-softer)]"
-          >
-            <Upload className="mb-4 h-10 w-10 text-accent" />
-            <p className="text-base font-semibold text-text-primary">{file ? file.name : '选择 PDF 教材'}</p>
-
-            <input ref={inputRef} type="file" accept=".pdf,application/pdf" onChange={handleFileChange} className="hidden" />
-          </div>
-
-          <div className="space-y-4">
-            <section className="rounded-[18px] border border-border bg-bg-card p-4">
-              <div className="mb-4 text-sm font-semibold text-text-primary">导入参数</div>
-              <label className="block">
-                <span className="mb-1.5 block text-xs text-text-secondary">目录页码范围，可选</span>
-                <input
-                  value={tocPages}
-                  onChange={(e) => setTocPages(e.target.value)}
-                  placeholder="如 1-5，仅本地降级解析会使用"
-                  className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent"
-                />
-              </label>
-              <label className="mt-4 block">
-                <span className="mb-1.5 block text-xs text-text-secondary">{'\u6240\u5c5e\u79d1\u76ee'}</span>
-                <ScopeSelector
-                  subject={subject}
-                  onSubjectChange={setSubject}
-                  bookMode="hidden"
-                  label="所属科目"
-                  fullWidth
-                  width="wide"
-                />
-              </label>
-              <label className="mt-4 flex items-center gap-2 rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary">
-                <input type="checkbox" checked={requireMineru} onChange={(e) => setRequireMineru(e.target.checked)} className="accent-accent" />
-                必须使用 MinerU
-              </label>
-            </section>
-
-            <button
-              onClick={handleUpload}
-              disabled={!file || uploading}
-              className="flex w-full items-center justify-center gap-2 rounded-full bg-accent px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-              {uploading ? '导入中' : '开始导入'}
+          <div className="grid md:grid-cols-2">
+            <button type="button" onClick={() => setImportMode('pdf')} className={`flex items-start gap-3 px-5 py-4 text-left md:border-r ${importMode === 'pdf' ? 'bg-[var(--accent-softer)]' : 'hover:bg-bg-secondary'}`}>
+              <FileText className={`mt-0.5 h-5 w-5 ${importMode === 'pdf' ? 'text-accent' : 'text-text-secondary'}`} />
+              <span><span className="type-control block text-text-primary">导入 PDF 教材</span><span className="type-caption mt-1 block text-text-secondary">适合原始教材 PDF，包括扫描件。</span></span>
             </button>
-
-            <section className="rounded-[18px] border border-border bg-bg-card p-4">
-              <div className="mb-2 text-sm font-semibold text-text-primary">导入 OCR 输出包</div>
-              <p className="mb-3 text-xs leading-5 text-text-secondary">上传外部 MinerU 或租用 GPU 产出的 zip，包含 md、content_list/middle JSON 和图片；本机只负责整理章节并建立索引。</p>
-              <button type="button" onClick={() => outputInputRef.current?.click()} className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-bg-primary px-3 py-3 text-sm text-text-primary hover:border-accent">
-                <Upload className="h-4 w-4" /> {outputFile ? outputFile.name : '选择输出 zip'}
-              </button>
-              <input ref={outputInputRef} type="file" accept=".zip,application/zip" onChange={handleOutputFileChange} className="hidden" />
-              <button onClick={handleOutputUpload} disabled={!outputFile || uploading} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-bg-primary px-4 py-2.5 text-sm font-semibold text-text-primary transition-colors hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50">
-                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-                {uploading ? '导入中' : '导入输出包'}
-              </button>
-            </section>
-
-            {(job || error) && (
-              <section className="rounded-[18px] border border-border bg-bg-card p-4">
-                {error ? (
-                  <div className="flex items-center gap-2 text-sm text-red-700"><XCircle className="h-4 w-4" />{error}</div>
-                ) : job ? (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-text-primary">{job.book_name}</div>
-                        <div className="mt-1 text-xs leading-5 text-text-secondary">{stageLabels[job.stage] || job.stage} · {job.message}</div>
-                      </div>
-                      {isDone ? <CheckCircle2 className="h-5 w-5 text-[var(--success)]" /> : isFailed ? <XCircle className="h-5 w-5 text-[var(--danger)]" /> : <Loader2 className="h-5 w-5 animate-spin text-accent" />}
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-bg-primary">
-                      <div className="h-full bg-accent transition-all" style={{ width: `${progress}%` }} />
-                    </div>
-                    <div className="flex justify-between text-xs text-text-secondary">
-                      <span>{progress}%</span>
-                      {job.result && <span>{job.result.chapter_count} 章 · {job.result.indexed_chunks || 0} 块</span>}
-                    </div>
-                  </div>
-                ) : null}
-              </section>
-            )}
+            <button type="button" onClick={() => setImportMode('bundle')} className={`flex items-start gap-3 border-t border-border px-5 py-4 text-left md:border-t-0 ${importMode === 'bundle' ? 'bg-[var(--accent-softer)]' : 'hover:bg-bg-secondary'}`}>
+              <Archive className={`mt-0.5 h-5 w-5 ${importMode === 'bundle' ? 'text-accent' : 'text-text-secondary'}`} />
+              <span><span className="type-control block text-text-primary">导入 MinerU 输出包</span><span className="type-caption mt-1 block text-text-secondary">适合已经在外部完成 OCR 和版面解析的 zip。</span></span>
+            </button>
           </div>
-        </div>
+        </section>
+
+        {importMode === 'pdf' ? (
+          <section className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
+            <button type="button" onClick={() => inputRef.current?.click()} className="app-panel flex min-h-[280px] w-full flex-col items-center justify-center p-8 text-center hover:border-accent/60 hover:bg-[var(--accent-softer)]">
+              <Upload className="mb-4 h-9 w-9 text-accent" />
+              <span className="type-section-title text-text-primary">{file ? file.name : '选择 PDF 教材'}</span>
+              <span className="type-caption mt-2 text-text-secondary">点击选择本地 PDF 文件</span>
+            </button>
+            <input ref={inputRef} type="file" accept=".pdf,application/pdf" onChange={handleFileChange} className="hidden" />
+
+            <div className="app-panel space-y-4 p-5">
+              <h3 className="type-section-title text-text-primary">解析参数</h3>
+              <label className="block">
+                <span className="mb-1.5 block type-caption text-text-secondary">目录页码范围，可选</span>
+                <input value={tocPages} onChange={(e) => setTocPages(e.target.value)} placeholder="如 1-5" className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm outline-none focus:border-accent" />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block type-caption text-text-secondary">所属科目</span>
+                <ScopeSelector subject={subject} onSubjectChange={setSubject} bookMode="hidden" label="所属科目" fullWidth width="wide" />
+              </label>
+              <label className="flex items-start gap-2 rounded-lg border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary">
+                <input type="checkbox" checked={requireMineru} onChange={(e) => setRequireMineru(e.target.checked)} className="mt-0.5 accent-accent" />
+                <span><span className="block">扫描件必须完成高质量解析</span><span className="type-caption mt-0.5 block text-text-secondary">启用后不接受低质量文本降级结果。</span></span>
+              </label>
+              <button onClick={handleUpload} disabled={!file || uploading} className="app-primary-button w-full disabled:cursor-not-allowed disabled:opacity-50">
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}{uploading ? '正在启动' : '开始导入'}
+              </button>
+            </div>
+          </section>
+        ) : (
+          <section className="app-panel grid gap-5 p-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <div>
+              <h3 className="type-section-title text-text-primary">导入已解析结果</h3>
+              <p className="type-body mt-2 max-w-2xl text-text-secondary">输出包应包含 Markdown、content_list 或 middle JSON，以及引用的图片资源。系统只整理章节并建立本地索引，不会再次执行 OCR。</p>
+              <StatusBanner kind="info" title="适用于外部 MinerU 或 GPU 解析结果" description="请确认 zip 内保留原有目录结构。" />
+            </div>
+            <div className="space-y-3">
+              <button type="button" onClick={() => outputInputRef.current?.click()} className="app-secondary-button min-h-[72px] w-full"><Upload className="h-4 w-4" />{outputFile ? outputFile.name : '选择输出 zip'}</button>
+              <input ref={outputInputRef} type="file" accept=".zip,application/zip" onChange={handleOutputFileChange} className="hidden" />
+              <button onClick={handleOutputUpload} disabled={!outputFile || uploading} className="app-primary-button w-full disabled:cursor-not-allowed disabled:opacity-50">{uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Archive className="h-4 w-4" />}{uploading ? '正在启动' : '导入输出包'}</button>
+            </div>
+          </section>
+        )}
+
+        {error && <StatusBanner kind="error" title="导入失败" description={error} />}
+        {job && <TaskStatus title={job.book_name || '教材导入任务'} detail={`${stageLabels[job.stage] || job.stage} / ${job.message}`} progress={progress} state={isFailed ? 'error' : isDone ? 'success' : 'loading'} />}
       </div>
     </div>
   );

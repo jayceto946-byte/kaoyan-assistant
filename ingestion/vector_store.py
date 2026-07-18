@@ -255,6 +255,9 @@ class ChapterVectorStore:
                     "rag_priority": float(chunk.get("rag_priority", 1.0) or 1.0),
                     "review_status": chunk.get("review_status", ""),
                     "source_markdown": chunk.get("source_markdown", ""),
+                    "bbox": json.dumps(chunk.get("bbox", []), ensure_ascii=False),
+                    "equations": json.dumps(chunk.get("equations", []), ensure_ascii=False),
+                    "block_type": chunk.get("block_type", "text"),
                     "collection_schema": 2,
                 },
             )
@@ -274,6 +277,86 @@ class ChapterVectorStore:
             "schema_version": "2",
         }
         self._save_map()
+        return store
+
+    def build_book_aggregate_store(self, book_name: str, chunks: list[dict]) -> Chroma | None:
+        """Build a versioned whole-book collection and switch the map after success."""
+        normalized_book = safe_book_name(book_name) if book_name else ""
+        if not normalized_book or not chunks:
+            return None
+        fingerprint = hashlib.sha1()
+        fingerprint.update(normalized_book.encode("utf-8"))
+        for chunk in chunks:
+            fingerprint.update(str(chunk.get("chunk_id") or "").encode("utf-8"))
+            fingerprint.update(str(chunk.get("content") or "").encode("utf-8"))
+        book_hash = hashlib.md5(normalized_book.encode("utf-8")).hexdigest()[:12]
+        collection_name = f"book{book_hash}{fingerprint.hexdigest()[:12]}"
+        documents = [
+            Document(
+                page_content=chunk.get("retrieval_text") or chunk.get("content", ""),
+                metadata={
+                    "raw_content": chunk.get("content", ""),
+                    "section_path": json.dumps(chunk.get("section_path", []), ensure_ascii=False),
+                    "parent_id": chunk.get("parent_id", ""),
+                    "prev_chunk_id": chunk.get("prev_chunk_id", ""),
+                    "next_chunk_id": chunk.get("next_chunk_id", ""),
+                    "chapter": chunk.get("chapter", ""),
+                    "book_name": normalized_book,
+                    "chunk_index": chunk.get("chunk_index", 0),
+                    "chunk_id": chunk.get("chunk_id", ""),
+                    "section_title": chunk.get("section_title", chunk.get("chapter", "")),
+                    "page_idx": chunk.get("page_idx", -1),
+                    "role": chunk.get("role", "reference"),
+                    "subject": chunk.get("subject", ""),
+                    "book_role": chunk.get("book_role", ""),
+                    "rag_priority": float(chunk.get("rag_priority", 1.0) or 1.0),
+                    "review_status": chunk.get("review_status", ""),
+                    "source_markdown": chunk.get("source_markdown", ""),
+                    "bbox": json.dumps(chunk.get("bbox", []), ensure_ascii=False),
+                    "equations": json.dumps(chunk.get("equations", []), ensure_ascii=False),
+                    "block_type": chunk.get("block_type", "text"),
+                    "collection_schema": 3,
+                },
+            )
+            for chunk in chunks
+            if str(chunk.get("content") or "").strip()
+        ]
+        if not documents:
+            return None
+        existing = self._map.get(collection_name)
+        if not existing:
+            try:
+                store = Chroma.from_documents(
+                    documents=documents,
+                    embedding=self.embeddings,
+                    collection_name=collection_name,
+                    persist_directory=str(self.db_path),
+                )
+            except Exception:
+                self._delete_collection_if_exists(collection_name)
+                raise
+        else:
+            store = Chroma(
+                collection_name=collection_name,
+                embedding_function=self.embeddings,
+                persist_directory=str(self.db_path),
+            )
+        old_names = [
+            name for name, entry in self._map.items()
+            if entry.get("kind") == "book_aggregate" and entry.get("book_name") == normalized_book and name != collection_name
+        ]
+        for old_name in old_names:
+            self._map.pop(old_name, None)
+        self._map[collection_name] = {
+            "chapter": f"{normalized_book} (aggregate)",
+            "book_name": normalized_book,
+            "schema_version": "3",
+            "kind": "book_aggregate",
+            "chunk_count": len(documents),
+        }
+        self._save_map()
+        for old_name in old_names:
+            self._delete_collection_if_exists(old_name)
         return store
 
     def get_chapter_store(self, chapter_title: str, book_name: str = "") -> Chroma | None:

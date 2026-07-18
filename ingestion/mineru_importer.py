@@ -17,6 +17,7 @@ from typing import Any, Callable
 from config import MINERU_API_URL, MINERU_CLI_COMMAND, MINERU_OUTPUT_PATH, MINERU_TASK_POLL_SECONDS, MINERU_TASK_TIMEOUT_SECONDS
 from ingestion.chapter_splitter import ChapterSplitter
 from ingestion.chunk_roles import assign_chunk_roles, load_kg_chunk_roles, role_distribution
+from ingestion.textbook_chunk import TextbookChunk, link_neighbors
 from ingestion.lexical_index import write_book_index
 from ingestion.mineru_client import MinerUClient
 from ingestion.pdf_parser import PDFParser
@@ -300,6 +301,15 @@ def _chapters_from_content_list(items: list[dict], book_name: str) -> list[dict]
         current["text"] += text + "\n\n"
         current["end_page"] = page
 
+        current["chunks"].append({
+            "text": text,
+            "page_idx": page - 1,
+            "bbox": item.get("bbox") or [],
+            "block_type": item.get("type") or "text",
+            "semantic_role": item.get("semantic_role") or item.get("role") or "reference",
+            "equations": item.get("equations") or ([item.get("latex")] if item.get("latex") else []),
+            "source_markdown": item.get("source_markdown") or "",
+        })
     if current["text"].strip() or not chapters:
         if not saw_heading:
             current["title"] = f"{book_name} (全文)"
@@ -314,12 +324,18 @@ def _chapters_from_middle_json(middle: dict, book_name: str) -> list[dict]:
         for block in page.get("para_blocks", []) or []:
             text = _collect_block_text(block)
             if text:
-                items.append({"type": "text", "text": text, "page_idx": page_idx})
+                items.append({
+                    "type": block.get("type") or "text",
+                    "text": text,
+                    "page_idx": page_idx,
+                    "bbox": block.get("bbox") or [],
+                    "equations": block.get("equations") or [],
+                })
     return _chapters_from_content_list(items, book_name) if items else []
 
 
 def _new_chapter(title: str, page: int) -> dict:
-    return {"title": title.strip(), "page_number": page, "end_page": page, "text": ""}
+    return {"title": title.strip(), "page_number": page, "end_page": page, "text": "", "chunks": []}
 
 
 def _clean_chapters(chapters: list[dict]) -> list[dict]:
@@ -413,15 +429,27 @@ def build_index_from_chapters(book_name: str, chapters: list[dict], output_dir: 
         text = chapter.get("text", "")
         if not text.strip():
             continue
-        try:
-            chunks = splitter.split_chapter(title, text, book_name=book_name)
-        except TypeError:
-            chunks = splitter.split_chapter(title, text)
-        for chunk in chunks:
-            chunk["section_title"] = chunk.get("section_title") or title
-            chunk["page_idx"] = max(int(chapter.get("page_number", 1) or 1) - 1, 0)
+        native_rows = chapter.get("chunks") if isinstance(chapter.get("chunks"), list) else []
+        chunks = []
+        if native_rows:
+            for native_index, source in enumerate(native_rows):
+                model = TextbookChunk.from_source(
+                    source, book_name=book_name, chapter=title, chunk_index=native_index,
+                )
+                if model is not None:
+                    chunks.append(model.to_dict())
+            link_neighbors(chunks)
+        else:
+            try:
+                chunks = splitter.split_chapter(title, text, book_name=book_name)
+            except TypeError:
+                chunks = splitter.split_chapter(title, text)
+            for chunk in chunks:
+                chunk["section_title"] = chunk.get("section_title") or title
+                chunk["page_idx"] = max(int(chapter.get("page_number", 1) or 1) - 1, 0)
 
-        chunk_roles = assign_chunk_roles(chunks, kg_roles)
+        source_roles = {str(chunk.get("chunk_id") or ""): str(chunk.get("role") or "") for chunk in chunks if chunk.get("role") not in {None, "", "reference"}}
+        chunk_roles = assign_chunk_roles(chunks, {**source_roles, **kg_roles})
         for chunk in chunks:
             chunk_id = chunk.get("chunk_id", "")
             chunk["role"] = chunk_roles.get(chunk_id, "reference")
@@ -438,6 +466,8 @@ def build_index_from_chapters(book_name: str, chapters: list[dict], output_dir: 
         )
         if hasattr(vs, "get_book_index_stats"):
             write_book_index(book_name, all_chunks)
+        if hasattr(vs, "build_book_aggregate_store"):
+            vs.build_book_aggregate_store(book_name, all_chunks)
         stats = vs.get_book_index_stats(book_name) if hasattr(vs, "get_book_index_stats") else {}
         if stats and (not stats.get("healthy") or int(stats.get("chunk_count", 0)) < len(all_chunks)):
             raise RuntimeError(

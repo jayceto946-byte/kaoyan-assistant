@@ -7,7 +7,7 @@ export default function DesktopTitleBar() {
 
   return (
     <div className="electron-titlebar" aria-label="桌面窗口控制">
-      <div className="electron-titlebar-drag" aria-hidden="true" />
+      <div className="electron-titlebar-drag" aria-hidden="true" onDoubleClick={() => void desktopApi.toggleMaximize()} />
       <div className="electron-window-controls" aria-label="窗口控制">
         <button type="button" className="electron-control-button" aria-label="最大化或还原" title="最大化或还原" onClick={() => desktopApi.toggleMaximize()}>
           <Maximize2 size={15} strokeWidth={1.9} />

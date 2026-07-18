@@ -98,6 +98,8 @@ export interface WeakPoint {
 
 export interface BookInfo {
   name: string;
+  book_id?: string;
+  displayName?: string;
   subject?: string;
   chapter_count: number;
   chapters?: { title: string; page: number }[];
@@ -159,6 +161,45 @@ export interface ExerciseCandidate {
   refined_by_llm?: boolean;
   split_confidence?: number;
   split_reasons?: string[];
+  validation_issues?: string[];
+  duplicate_of?: string;
+}
+
+export interface ExerciseImportBatch {
+  id: string;
+  source_label: string;
+  exercise_ids: string[];
+  skipped: Array<{ origin_id: string; duplicate_of: string }>;
+  created_at: string;
+  status: 'active' | 'rolled_back';
+  rolled_back_at?: string;
+}
+
+export interface ExercisePracticeSession {
+  id: string;
+  exercise_ids: string[];
+  filters: Record<string, string>;
+  shuffle: boolean;
+  seed: number;
+  current_index: number;
+  status: 'active' | 'paused' | 'completed' | 'abandoned' | 'replaced';
+  results: Record<string, {
+    exercise_id: string;
+    user_answer: string;
+    quality: number;
+    note?: string;
+    mistake_id?: string;
+    answered_at: string;
+  }>;
+  current_exercise?: ExerciseRecord | null;
+  summary: {
+    total: number;
+    answered: number;
+    remaining: number;
+    mastered: number;
+    struggling: number;
+    average_quality: number;
+  };
 }
 
 export type SystemHealthStatus = 'healthy' | 'degraded' | 'error';

@@ -1,5 +1,7 @@
 """学习进度与记忆管理（含间隔重复集成）"""
 import json
+from contextlib import ExitStack
+from functools import wraps
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
@@ -7,6 +9,33 @@ from typing import Optional
 from config import PROGRESS_PATH
 from utils.json_io import atomic_write_json
 from utils.path_safety import safe_book_name, safe_child_path
+from utils.state_locks import get_state_lock
+
+
+_STATE_AREAS = {
+    "quiz": ("_quiz_lock", "quiz_file", "_quiz_history", list),
+    "progress": ("_progress_lock", "progress_file", "_progress", dict),
+    "weakness": ("_weakness_lock", "weakness_file", "_weakness", list),
+    "chat": ("_chat_lock", "chat_file", "_chat_history", list),
+}
+
+
+def _with_fresh_memory(*areas: str):
+    ordered = tuple(sorted(set(areas)))
+
+    def decorate(method):
+        @wraps(method)
+        def wrapped(self, *args, **kwargs):
+            with ExitStack() as stack:
+                for area in ordered:
+                    lock_attr, _, _, _ = _STATE_AREAS[area]
+                    stack.enter_context(getattr(self, lock_attr))
+                for area in ordered:
+                    _, path_attr, data_attr, factory = _STATE_AREAS[area]
+                    setattr(self, data_attr, self._load_json(getattr(self, path_attr), factory()))
+                return method(self, *args, **kwargs)
+        return wrapped
+    return decorate
 from memory.spaced_repetition import SpacedRepetition
 
 
@@ -23,10 +52,14 @@ class StudyMemory:
         self.weakness_file = self.base_path / "weakness.json"
         self.chat_file = self.base_path / "chat_history.json"
 
-        self._quiz_history: list[dict] = self._load_json(self.quiz_file, [])
-        self._progress: dict = self._load_json(self.progress_file, {})
-        self._weakness: list[str] = self._load_json(self.weakness_file, [])
-        self._chat_history: list[dict] = self._load_json(self.chat_file, [])
+        self._quiz_lock = get_state_lock(self.quiz_file)
+        self._progress_lock = get_state_lock(self.progress_file)
+        self._weakness_lock = get_state_lock(self.weakness_file)
+        self._chat_lock = get_state_lock(self.chat_file)
+        self._quiz_history: list[dict] = []
+        self._progress: dict = {}
+        self._weakness: list[str] = []
+        self._chat_history: list[dict] = []
 
         # 间隔重复
         self.sr = SpacedRepetition(book_name)
@@ -38,9 +71,11 @@ class StudyMemory:
         return default
 
     def _save_json(self, path: Path, data):
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # Keep the legacy payload shape for direct readers, but make replacement
+        # crash-safe. Component versions live in data/storage_manifest.json.
+        atomic_write_json(path, data)
 
+    @_with_fresh_memory("progress")
     def mark_chapter_studied(self, chapter: str):
         today = datetime.now().strftime("%Y-%m-%d %H:%M")
         self._progress[chapter] = {
@@ -50,12 +85,15 @@ class StudyMemory:
         }
         self._save_json(self.progress_file, self._progress)
 
+    @_with_fresh_memory("progress")
     def get_chapter_progress(self, chapter: str) -> Optional[dict]:
         return self._progress.get(chapter)
 
+    @_with_fresh_memory("progress")
     def get_all_progress(self) -> dict:
-        return self._progress
+        return dict(self._progress)
 
+    @_with_fresh_memory("quiz", "weakness")
     def add_quiz_record(self, chapter: str, question: str, answer: str,
                         correct: bool, user_answer: str = "",
                         knowledge_point: str = "", score: int = 0):
@@ -82,11 +120,13 @@ class StudyMemory:
         else:
             self.sr.auto_review_from_quiz(chapter, question[:30], score)
 
+    @_with_fresh_memory("weakness")
     def get_weakness(self) -> list[str]:
         from collections import Counter
         weak_counter = Counter(self._weakness)
         return [ch for ch, _ in weak_counter.most_common()]
 
+    @_with_fresh_memory("chat")
     def add_chat(self, role: str, content: str, chapter: str = ""):
         self._chat_history.append({
             "role": role,
@@ -98,6 +138,7 @@ class StudyMemory:
             self._chat_history = self._chat_history[-200:]
         self._save_json(self.chat_file, self._chat_history)
 
+    @_with_fresh_memory("chat")
     def get_chapter_chat(self, chapter: str, limit: int = 20) -> list[dict]:
         chats = [c for c in self._chat_history if c["chapter"] == chapter]
         return chats[-limit:]
@@ -124,6 +165,7 @@ class StudyMemory:
 
     # ===== 统计 =====
 
+    @_with_fresh_memory("progress", "quiz", "weakness")
     def get_stats(self) -> dict:
         total_quiz = len(self._quiz_history)
         correct_count = sum(1 for q in self._quiz_history if q["correct"])

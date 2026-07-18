@@ -8,7 +8,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from utils.path_safety import safe_book_name, safe_child_path
+from utils.book_registry import BookRegistry
 from utils.sqlite_recovery import prepare_sqlite_retry_files
+from utils.sqlite_migrations import apply_sqlite_migrations
 from utils.subject_catalog import subject_matches
 from typing import Any, Callable, Optional
 
@@ -31,6 +33,7 @@ class MistakeRecord:
     """
 
     question_text: str
+    book_id: str = ""
     user_answer: str = ""
     correct_answer: str = ""
     source: str = ""
@@ -118,6 +121,7 @@ class MistakeBookStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_subject ON mistakes(subject)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_next_review ON mistakes(next_review)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chapter ON mistakes(chapter)")
+            apply_sqlite_migrations(conn, component="mistake_book", current_version=1)
             conn.commit()
 
     def _prepare_retry_db_files(self) -> None:
@@ -152,6 +156,37 @@ class MistakeBookStore:
             )
             conn.commit()
         return record.id
+
+    def add_if_absent(self, record: MistakeRecord) -> str:
+        """Insert a deterministic mistake record once and safely replay retries."""
+        if not record.sm2:
+            record.sm2 = {
+                "easiness": 2.5,
+                "interval": 1,
+                "repetitions": 0,
+                "next_review": date.today().isoformat(),
+                "last_review": None,
+            }
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT data FROM mistakes WHERE id = ?", (record.id,)).fetchone()
+            if row:
+                existing = MistakeRecord.from_dict(json.loads(row[0]))
+                if existing.question_text != record.question_text:
+                    raise RuntimeError(f"mistake id collision: {record.id}")
+                return existing.id
+            conn.execute(
+                "INSERT INTO mistakes (id, data, created_at, next_review, subject, chapter) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    json.dumps(record.to_dict(), ensure_ascii=False),
+                    record.created_at,
+                    record.sm2.get("next_review", date.today().isoformat()),
+                    record.subject,
+                    record.chapter,
+                ),
+            )
+            return record.id
 
     def get(self, rid: str) -> Optional[MistakeRecord]:
         with self._connect() as conn:
@@ -298,11 +333,19 @@ ContextProvider = Callable[[MistakeRecord], str]
 
 
 class MistakeBook:
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, book_id: str = ""):
         self.store = MistakeBookStore(db_path)
+        self.book_id = book_id
 
     def add(self, record: MistakeRecord) -> str:
+        if self.book_id and not record.book_id:
+            record.book_id = self.book_id
         return self.store.add(record)
+
+    def add_if_absent(self, record: MistakeRecord) -> str:
+        if self.book_id and not record.book_id:
+            record.book_id = self.book_id
+        return self.store.add_if_absent(record)
 
     def get(self, rid: str) -> Optional[MistakeRecord]:
         return self.store.get(rid)
@@ -400,4 +443,6 @@ def _is_sqlite_storage_error(exc: sqlite3.OperationalError) -> bool:
 
 def get_mistake_book(book_name: str = "default", data_dir: str = "./data/progress") -> MistakeBook:
     path = safe_child_path(data_dir, f"mistake_book_{safe_book_name(book_name)}.db")
-    return MistakeBook(path)
+    identity = BookRegistry(data_dir).resolve(book_name, include_archived=True)
+    book_id = str(identity.get("book_id") or "") if identity else ""
+    return MistakeBook(path, book_id=book_id)

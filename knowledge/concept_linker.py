@@ -186,7 +186,8 @@ class ConceptLinker:
             aliases=concept.get("aliases", []),
             roles=concept.get("roles", []),
             definition=wiki.get("definition", ""),
-            related_concepts=wiki.get("prerequisites", []) + wiki.get("extensions", []),
+            # Exclude unverified directional edges from learning records.
+            related_concepts=[],
             source_chapters=wiki.get("source_chapters", []),
         )
 

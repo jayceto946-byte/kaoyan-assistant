@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from backend.job_manager import JobCancelled, get_job_manager
+from backend.book_lifecycle import BookLifecycleService
 from backend.schemas import PreReadStatusOut
 from config import BOOKS_PATH, DATA_DIR, MINERU_OUTPUT_PATH, PROGRESS_PATH, VECTOR_DB_PATH
 from ingestion.background_reader import BackgroundReader
@@ -23,6 +24,14 @@ from ingestion.mineru_importer import build_index_from_chapters, import_textbook
 from ingestion.pdf_parser import PDFParser
 from utils.json_io import atomic_write_json
 from utils.path_safety import safe_book_name, safe_child_path
+from utils.resource_limits import (
+    MAX_BOOK_PDF_BYTES,
+    MAX_OUTPUT_ZIP_BYTES,
+    copy_stream_limited,
+    ensure_disk_space,
+    inspect_zip_limits,
+    validate_zip_paths,
+)
 from utils.subject_catalog import normalize_subject_value
 
 router = APIRouter(prefix="/books", tags=["books"])
@@ -30,7 +39,11 @@ router = APIRouter(prefix="/books", tags=["books"])
 
 class BookUpdateRequest(BaseModel):
     subject: str | None = None
+    display_name: str | None = None
 
+    book_role: str | None = None
+    rag_priority: float | None = None
+    resource_group: str | None = None
 
 _book_state: dict = {
     "current_book": None,
@@ -42,6 +55,7 @@ _book_state: dict = {
 IMPORT_JOB_TYPE = "textbook_import"
 OUTPUT_UPLOAD_DIR = DATA_DIR / "uploads" / "mineru_outputs"
 _job_manager = get_job_manager()
+_lifecycle = BookLifecycleService(PROGRESS_PATH)
 _job_manager.import_legacy_json_jobs(
     IMPORT_JOB_TYPE,
     Path(PROGRESS_PATH) / "import_jobs",
@@ -245,12 +259,39 @@ def _read_book_meta(name: str) -> dict:
 
 
 def _write_book_meta(name: str, **updates) -> dict:
-    path = _book_meta_path(name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    meta = _read_book_meta(name)
-    meta.update({k: v for k, v in updates.items() if v is not None})
-    atomic_write_json(path, meta)
+    _, meta = _lifecycle.update_metadata(name, **updates)
     return meta
+
+
+def _ensure_book_identity(name: str) -> tuple[dict, dict]:
+    return _lifecycle.ensure_identity(name, _read_book_meta(name))
+
+
+def migrate_book_identities() -> list[dict]:
+    """Assign stable IDs to existing textbooks without moving their assets."""
+    migrated = []
+    for name in _known_book_names(include_archived=True):
+        meta_path = _book_meta_path(name)
+        if meta_path.exists():
+            try:
+                raw = json.loads(meta_path.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raise ValueError("metadata must be an object")
+            except Exception as exc:
+                migrated.append({"storage_name": name, "status": "skipped", "error": str(exc)})
+                continue
+        identity, _ = _ensure_book_identity(name)
+        migrated.append({**identity, "migration_status": "ready"})
+    return migrated
+
+def _resolve_book_reference(reference: str, *, include_archived: bool = False) -> str | None:
+    record = _lifecycle.resolve(reference, include_archived=include_archived)
+    if record:
+        storage_name = str(record.get("storage_name") or "")
+        if storage_name in _known_book_names(include_archived=include_archived):
+            return storage_name
+    candidate = safe_book_name(reference)
+    return candidate if candidate in _known_book_names(include_archived=include_archived) else None
 
 
 def _book_subject(name: str) -> str:
@@ -274,8 +315,7 @@ def _save_upload(file: UploadFile) -> Path:
     while dest.exists():
         dest = Path(f"{base}_{counter}{suffix}")
         counter += 1
-    with open(dest, "wb") as fh:
-        shutil.copyfileobj(file.file, fh)
+    copy_stream_limited(file.file, dest, max_bytes=MAX_BOOK_PDF_BYTES)
     return dest
 
 
@@ -307,7 +347,12 @@ def _run_import_job(job_id: str, pdf_path: Path, toc_pages: str, pre_read: bool,
         progress("started", "\u51c6\u5907\u5bfc\u5165\u6559\u6750", 3)
         result = import_textbook(pdf_path, book_name, toc_pages=toc_pages, require_mineru=require_mineru, on_progress=progress)
         _save_chapters(book_name, result.chapters)
-        _write_book_meta(book_name, subject=normalize_subject_value(subject))
+        _write_book_meta(
+            book_name,
+            subject=normalize_subject_value(subject),
+            import_source="mineru" if result.used_mineru else "local_pdf",
+            mineru_output_dir=result.output_dir,
+        )
         _set_current_book(book_name, result.chapters, pdf_path)
         if pre_read and result.chapters and not result.used_mineru:
             _start_pre_read(book_name, result.chapters, pdf_path)
@@ -335,26 +380,36 @@ def _run_import_job(job_id: str, pdf_path: Path, toc_pages: str, pre_read: bool,
 
 
 @router.get("/list")
-def list_books():
+def list_books(include_archived: bool = False):
     data = []
-    for name in _known_book_names():
+    for name in _known_book_names(include_archived=include_archived):
         pdf_path = _book_pdf_path(name)
         index_status = _fast_book_index_stats(name)
+        identity, meta = _ensure_book_identity(name)
         data.append({
+            "book_id": identity["book_id"],
             "name": name,
+            "storage_name": name,
+            "display_name": identity["display_name"],
+            "displayName": identity["display_name"],
+            "lifecycle_status": identity["status"],
             "path": str(pdf_path) if pdf_path else "",
             "size": pdf_path.stat().st_size if pdf_path else 0,
-            "subject": _book_subject(name),
+            "book_role": str(meta.get("book_role", "standalone")),
+            "rag_priority": float(meta.get("rag_priority", 1.0) or 1.0),
+            "resource_group": str(meta.get("resource_group", "")),
+            "subject": str(meta.get("subject", "")).strip(),
             "has_pdf": bool(pdf_path or _source_pdf_path(name)),
             "chapter_count": len(_load_chapters(name)),
             "index_status": index_status,
         })
     return {"success": True, "data": data}
-
 @router.post("/{book_name}/reindex")
 def reindex_book(book_name: str):
     """Rebuild derived retrieval assets while preserving OCR/source data."""
-    name = safe_book_name(book_name)
+    name = _resolve_book_reference(book_name)
+    if not name:
+        return {"success": False, "message": f"Textbook not found: {book_name}"}
     chapters = _load_raw_chapters(name)
     if not chapters:
         return {"success": False, "message": "No persisted textbook content found"}
@@ -414,7 +469,8 @@ def _source_pdf_path(book_name: str) -> Path | None:
 
 @router.get("/{book_name}/source-pdf")
 def source_pdf(book_name: str):
-    pdf_path = _source_pdf_path(book_name)
+    name = _resolve_book_reference(book_name, include_archived=True)
+    pdf_path = _source_pdf_path(name) if name else None
     if not pdf_path:
         return {"success": False, "message": "未找到该教材对应的 origin.pdf 或源 PDF"}
     return FileResponse(
@@ -426,65 +482,125 @@ def source_pdf(book_name: str):
 
 @router.patch("/{book_name}")
 def update_book(book_name: str, req: BookUpdateRequest):
-    if book_name not in _known_book_names():
+    name = _resolve_book_reference(book_name)
+    if not name:
         return {"success": False, "message": f"Textbook not found: {book_name}"}
+
+    if req.display_name is not None:
+        try:
+            _lifecycle.rename_display(name, req.display_name)
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
 
     updates = {}
     if req.subject is not None:
         updates["subject"] = normalize_subject_value(req.subject)
-
-    meta = _write_book_meta(book_name, **updates) if updates else _read_book_meta(book_name)
-    pdf_path = _book_pdf_path(book_name)
-    chapters = _load_chapters(book_name)
+    if req.book_role is not None:
+        role = req.book_role.strip().lower()
+        if role not in {"standalone", "core", "reference"}:
+            return {"success": False, "message": "book_role must be standalone, core, or reference"}
+        updates["book_role"] = role
+        if req.rag_priority is None:
+            updates["rag_priority"] = 0.55 if role == "reference" else 1.0
+    if req.rag_priority is not None:
+        updates["rag_priority"] = max(0.05, min(2.0, float(req.rag_priority)))
+    if req.resource_group is not None:
+        updates["resource_group"] = req.resource_group.strip()[:100]
+    meta = _write_book_meta(name, **updates) if updates else _read_book_meta(name)
+    identity, meta = _ensure_book_identity(name)
+    pdf_path = _book_pdf_path(name)
+    chapters = _load_chapters(name)
     return {
         "success": True,
-        "message": "\u6559\u6750\u4fe1\u606f\u5df2\u66f4\u65b0",
+        "message": "教材信息已更新",
         "data": {
-            "name": book_name,
+            "book_id": identity["book_id"],
+            "name": name,
+            "storage_name": name,
+            "display_name": identity["display_name"],
+            "displayName": identity["display_name"],
+            "lifecycle_status": identity["status"],
             "path": str(pdf_path) if pdf_path else "",
             "size": pdf_path.stat().st_size if pdf_path else 0,
             "subject": str(meta.get("subject", "")).strip(),
-            "has_pdf": bool(pdf_path or _source_pdf_path(book_name)),
+            "has_pdf": bool(pdf_path or _source_pdf_path(name)),
             "chapter_count": len(chapters),
+            "book_role": str(meta.get("book_role", "standalone")),
+            "rag_priority": float(meta.get("rag_priority", 1.0) or 1.0),
+            "resource_group": str(meta.get("resource_group", "")),
         },
     }
 
 
 @router.delete("/{book_name}")
 def archive_book(book_name: str):
-    if book_name not in _known_book_names(include_archived=True):
+    name = _resolve_book_reference(book_name, include_archived=True)
+    if not name:
         return {"success": False, "message": f"Textbook not found: {book_name}"}
-    meta = _write_book_meta(book_name, archived=True)
-    if _book_state.get("current_book") == book_name:
+    identity, _ = _lifecycle.archive(name)
+    if _book_state.get("current_book") == name:
         _book_state["current_book"] = None
         _book_state["chapters"] = []
         _book_state["book_pdf_path"] = None
     return {
         "success": True,
-        "message": "教材已从列表隐藏，本地文件、章节索引和学习记录未删除。",
-        "data": {"name": book_name, "archived": bool(meta.get("archived"))},
+        "message": "教材已归档；本地文件、索引和学习记录均未删除。",
+        "data": {**identity, "name": name, "archived": True},
     }
 
 
-@router.get("/switch/{book_name}")
-def switch_book(book_name: str):
-    if book_name not in _known_book_names():
+@router.post("/{book_name}/restore")
+def restore_book(book_name: str):
+    name = _resolve_book_reference(book_name, include_archived=True)
+    if not name:
+        return {"success": False, "message": f"Textbook not found: {book_name}"}
+    identity, _ = _lifecycle.restore(name)
+    return {
+        "success": True,
+        "message": "教材已恢复到资料库。",
+        "data": {**identity, "name": name, "archived": False},
+    }
+
+
+@router.get("/{book_name}/lifecycle-preview")
+def lifecycle_preview(book_name: str):
+    try:
+        return {"success": True, "data": _lifecycle.preview_purge(book_name)}
+    except KeyError:
         return {"success": False, "message": f"Textbook not found: {book_name}"}
 
-    pdf_path = _book_pdf_path(book_name)
-    chapters = _load_chapters(book_name)
+
+@router.delete("/{book_name}/purge")
+def purge_book(book_name: str, confirm_book_id: str = ""):
+    try:
+        result = _lifecycle.purge(book_name, confirmation=confirm_book_id)
+    except (KeyError, ValueError, RuntimeError) as exc:
+        return {"success": False, "message": str(exc)}
+    if _book_state.get("current_book") == result.get("storage_name"):
+        _book_state.update(current_book=None, chapters=[], book_pdf_path=None)
+    return {"success": True, "message": "教材及其关联数据已彻底删除。", "data": result}
+
+@router.get("/switch/{book_name}")
+def switch_book(book_name: str):
+    name = _resolve_book_reference(book_name)
+    if not name:
+        return {"success": False, "message": f"Textbook not found: {book_name}"}
+
+    pdf_path = _book_pdf_path(name)
+    chapters = _load_chapters(name)
     if not chapters and pdf_path and pdf_path.exists():
         parser = PDFParser(pdf_path)
         try:
             chapters = parser.extract_chapters()
         finally:
             parser.close()
-        _save_chapters(book_name, chapters)
+        _save_chapters(name, chapters)
     if not chapters:
-        return {"success": False, "message": f"Textbook chapters not found: {book_name}"}
+        return {"success": False, "message": f"Textbook chapters not found: {name}"}
 
-    _set_current_book(book_name, chapters, pdf_path)
-    return {"success": True, "data": {"name": book_name, "subject": _book_subject(book_name), "chapter_count": len(chapters), "chapters": [_format_chapter(c) for c in chapters]}}
+    _set_current_book(name, chapters, pdf_path)
+    identity, _ = _ensure_book_identity(name)
+    return {"success": True, "data": {"book_id": identity["book_id"], "name": name, "display_name": identity["display_name"], "displayName": identity["display_name"], "subject": _book_subject(name), "chapter_count": len(chapters), "chapters": [_format_chapter(c) for c in chapters]}}
 
 
 
@@ -500,8 +616,7 @@ def _save_output_upload(file: UploadFile, book_name: str) -> Path:
     OUTPUT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     safe_book = _safe_output_book_name(book_name or file.filename)
     dest = OUTPUT_UPLOAD_DIR / f"{safe_book}_{int(time.time())}.zip"
-    with open(dest, "wb") as fh:
-        shutil.copyfileobj(file.file, fh)
+    copy_stream_limited(file.file, dest, max_bytes=MAX_OUTPUT_ZIP_BYTES)
     return dest
 
 
@@ -517,17 +632,17 @@ def _unique_output_dir(book_name: str) -> Path:
 
 
 def _extract_zip_safe(zip_path: Path, target_dir: Path) -> Path:
-    root = target_dir.resolve()
-    with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
-            name = info.filename.replace("\\", "/")
-            if not name or name.startswith("/") or ".." in Path(name).parts:
-                raise ValueError(f"Unsafe path in archive: {info.filename}")
-            dest = (target_dir / name).resolve()
-            if root != dest and root not in dest.parents:
-                raise ValueError(f"Archive path escapes target directory: {info.filename}")
-        zf.extractall(target_dir)
-    return _detect_output_root(target_dir)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            infos, expanded = inspect_zip_limits(zf)
+            validate_zip_paths(infos, target_dir)
+            ensure_disk_space(target_dir, expanded)
+            zf.extractall(target_dir)
+        return _detect_output_root(target_dir)
+    except Exception:
+        # target_dir is a freshly-created, job-specific extraction directory.
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise
 
 
 def _detect_output_root(target_dir: Path) -> Path:
@@ -699,7 +814,12 @@ def import_book_local(
         pdf_path = _save_upload(file)
         result = import_textbook_local(pdf_path, pdf_path.stem, toc_pages=toc_pages)
         _save_chapters(pdf_path.stem, result.chapters)
-        _write_book_meta(pdf_path.stem, subject=normalize_subject_value(subject))
+        _write_book_meta(
+            pdf_path.stem,
+            subject=normalize_subject_value(subject),
+            import_source="local_pdf",
+            mineru_output_dir=result.output_dir,
+        )
         _set_current_book(pdf_path.stem, result.chapters, pdf_path)
         return {
             "success": True,

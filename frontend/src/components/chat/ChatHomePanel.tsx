@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BookMarked, BookOpenCheck, BrainCircuit, CalendarDays, ClipboardList, Loader2, Shuffle, Sparkles } from 'lucide-react';
+import { BookMarked, BookOpenCheck, BrainCircuit, CalendarDays, ClipboardList, Loader2, Shuffle } from 'lucide-react';
 import { get } from '../../api/client';
+import { scopeContainsBook, type TextbookScopeOption } from '../../utils/textbookScopes';
 
-export type ChatHomeBookOption = { name: string; subject?: string };
+export type ChatHomeBookOption = TextbookScopeOption;
 
 export type ChatHomeDueMistake = {
   id: string;
@@ -31,7 +32,6 @@ export type ChatHomeLearningSummary = {
   weak_concepts?: Array<{ name: string; reasons?: string[] }>;
 };
 
-// Agentic planning actions are temporarily hidden; deterministic review entry points remain.
 type ChatHomePanelProps = {
   bookName: string;
   subject: string;
@@ -46,48 +46,9 @@ type ChatHomePanelProps = {
   onOpenMistakeQuickCapture: () => void;
 };
 
-const labels = {
-  "morning": "上午好，把复习线索接上",
-  "afternoon": "下午好，把复习线索接上",
-  "evening": "晚上好，把复习线索接上",
-  "noSubject": "未限定学科",
-  "genericQa": "通用 QA",
-  "continueTitle": "今天的继续点",
-  "continueSub": "优先使用当前学科和教材，对话会正常记入历史。",
-  "reviewMistakes": "复习到期错题",
-  "dueMistakeSuffix": "道到期错题",
-  "mistakeFallback": "暂无到期错题，先从薄弱概念开始。",
-  "openMistakeBook": "打开错题本",
-  "reviewConceptFallback": "复习薄弱概念",
-  "conceptFallbackDesc": "根据错题和概念记录自动挑选。",
-  "learning": "学习情况",
-  "randomExercise": "随机抽一道题",
-  "randomExerciseDesc": "从需复习、练习中和新题里优先抽取。",
-  "highlightTitle": "查看或后台生成重点",
-  "highlightDesc": "不用一直等在弹窗里，可以启动后台任务。",
-  "summaryError": "学习摘要暂时不可用，快捷项会退回本地数据。",
-  "directTitle": "基于记录继续",
-  "reviewPlan": "生成今日复习清单",
-  "reviewPlanDesc": "整理到期错题、薄弱概念和可执行顺序。",
-  "practiceMemory": "按薄弱点抽一道题",
-  "practiceMemoryDesc": "先匹配薄弱概念和错题，再从题库抽取。",
-  "mistakeDigest": "总结最近错因",
-  "mistakeDigestDesc": "按错因、标签和概念整理复盘建议。",
-  "daily": "日报",
-  "quickMistake": "错题速录",
-  "reviewConceptPrefix": "复习概念：",
-  "reviewPrefix": "复习"
-} as const;
 function firstLine(value = '') {
   const line = value.replace(/\s+/g, ' ').trim();
-  return line.length > 42 ? `${line.slice(0, 42)}...` : line;
-}
-
-function greeting() {
-  const hour = new Date().getHours();
-  if (hour < 11) return labels.morning;
-  if (hour < 18) return labels.afternoon;
-  return labels.evening;
+  return line.length > 54 ? `${line.slice(0, 54)}...` : line;
 }
 
 export default function ChatHomePanel({
@@ -140,104 +101,84 @@ export default function ChatHomePanel({
   const conceptPlan = summary?.concept_review_plan || [];
   const firstMistake = dueMistakes[0];
   const firstConcept = conceptPlan[0];
-  const scopeLabel = `${subject || labels.noSubject} · ${bookName || labels.genericQa}`;
-  const hasBooks = books.length > 0;
+  const currentScope = books.find((book) => scopeContainsBook(book, bookName));
+  const scopeLabel = `${subject || '未限定学科'} / ${currentScope?.displayName || currentScope?.name || bookName || '通用问答'}`;
 
   return (
     <div className="mx-auto flex min-h-[55vh] w-full max-w-5xl flex-col justify-center py-8">
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--surface-black)]">
-            <Sparkles className="h-5 w-5 text-white" />
-          </div>
-          <div className="type-hero min-w-0 text-text-primary">{greeting()}</div>
+      <header className="mb-5">
+        <div className="flex items-center gap-2">
+          <h2 className="type-hero text-text-primary">下一步学习</h2>
+          {loading && <Loader2 className="h-4 w-4 animate-spin text-accent" />}
         </div>
-        <div className="type-caption max-w-full truncate rounded-full border border-border bg-bg-card px-3 py-1.5 text-text-secondary">{scopeLabel}</div>
-      </div>
+        <p className="type-body mt-1 text-text-secondary">根据复习时间和薄弱记录，先处理最值得回看的内容。</p>
+        <p className="type-caption mt-2 text-text-secondary">当前范围：{scopeLabel}</p>
+      </header>
 
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.75fr)]">
-        <section className="rounded-[18px] border border-border bg-bg-card p-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="type-section-title text-text-primary">{labels.continueTitle}</div>
-
+      <section className="app-panel overflow-hidden">
+        <div className="grid lg:grid-cols-[minmax(0,1.35fr)_minmax(260px,0.65fr)]">
+          <div className="border-b border-border lg:border-b-0 lg:border-r">
+            <div className="border-b border-border px-5 py-3">
+              <h3 className="type-section-title text-text-primary">优先复习</h3>
             </div>
-            {loading && <Loader2 className="h-4 w-4 animate-spin text-accent" />}
-          </div>
-
-          <div className="grid gap-2 md:grid-cols-2">
-            <ActionCard
+            <TaskRow
               icon={<BookOpenCheck className="h-4 w-4" />}
-              title={dueMistakes.length ? `${labels.reviewPrefix} ${dueMistakes.length} ${labels.dueMistakeSuffix}` : labels.reviewMistakes}
-              description={firstMistake ? firstLine(firstMistake.question_text) : labels.mistakeFallback}
-              disabled={!dueMistakes.length || isLoading}
+              title={dueMistakes.length ? `${dueMistakes.length} 道错题已到复习时间` : '今天没有到期错题'}
+              description={firstMistake ? firstLine(firstMistake.question_text) : '可以从薄弱概念或题库练习继续。'}
+              actionLabel="开始复习"
+              disabled={!firstMistake || isLoading}
               onClick={() => firstMistake && onReviewMistake(firstMistake)}
-              secondary={firstMistake ? <Link to={`/mistakes?mistake_id=${encodeURIComponent(firstMistake.id)}`} className="type-caption text-accent hover:underline">{labels.openMistakeBook}</Link> : undefined}
+              secondary={firstMistake ? <Link to={`/mistakes?mistake_id=${encodeURIComponent(firstMistake.id)}`} className="type-caption text-accent hover:underline">查看错题本</Link> : undefined}
             />
-            <ActionCard
+            <TaskRow
               icon={<BrainCircuit className="h-4 w-4" />}
-              title={firstConcept ? `${labels.reviewConceptPrefix}${firstConcept.name}` : labels.reviewConceptFallback}
-              description={firstConcept?.reasons?.[0] || labels.conceptFallbackDesc}
+              title={firstConcept ? `复习概念：${firstConcept.name}` : '暂无待复习概念'}
+              description={firstConcept?.reasons?.[0] || '概念复习计划会根据错题和学习记录更新。'}
+              actionLabel="开始复习"
               disabled={!firstConcept || isLoading}
               onClick={() => firstConcept && onReviewConcept(firstConcept, summary)}
-              secondary={<Link to="/learning" className="type-caption text-accent hover:underline">{labels.learning}</Link>}
-            />
-            <ActionCard
-              icon={<Shuffle className="h-4 w-4" />}
-              title={labels.randomExercise}
-              description={labels.randomExerciseDesc}
-              disabled={isLoading}
-              onClick={onPickRandomExercise}
-            />
-            <ActionCard
-              icon={<BookMarked className="h-4 w-4" />}
-              title={labels.highlightTitle}
-              description={labels.highlightDesc}
-              disabled={!hasBooks || isLoading}
-              onClick={onOpenHighlightDialog}
+              secondary={<Link to="/learning" className="type-caption text-accent hover:underline">查看学习情况</Link>}
             />
           </div>
-          {failed && <div className="mt-3 rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary">{labels.summaryError}</div>}
-        </section>
 
-        <section className="rounded-[18px] border border-border bg-bg-card p-4">
-          <div className="type-section-title text-text-primary">{labels.directTitle}</div>
-          <div className="mt-3 space-y-2">
-            <QuickAction icon={<ClipboardList className="h-3.5 w-3.5" />} title={labels.practiceMemory} description={labels.practiceMemoryDesc} disabled={isLoading} onClick={() => onPracticeFromMemory(summary)} />
+          <div>
+            <div className="border-b border-border px-5 py-3">
+              <h3 className="type-section-title text-text-primary">其他入口</h3>
+            </div>
+            <div className="divide-y divide-border">
+              <ToolButton icon={<ClipboardList className="h-4 w-4" />} label="按薄弱点抽题" onClick={() => onPracticeFromMemory(summary)} disabled={isLoading} />
+              <ToolButton icon={<Shuffle className="h-4 w-4" />} label="随机抽一道题" onClick={onPickRandomExercise} disabled={isLoading} />
+              <ToolButton icon={<BookMarked className="h-4 w-4" />} label="教材重点" onClick={onOpenHighlightDialog} disabled={!books.length || isLoading} />
+              <ToolButton icon={<CalendarDays className="h-4 w-4" />} label="今日学习报告" onClick={() => onShowReport('daily')} disabled={isLoading} />
+              <ToolButton icon={<ClipboardList className="h-4 w-4" />} label="快速录入错题" onClick={onOpenMistakeQuickCapture} disabled={isLoading} />
+            </div>
           </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => onShowReport('daily')} disabled={isLoading} className="type-control inline-flex items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-primary px-3 py-2 text-text-secondary hover:border-accent/45 hover:text-text-primary disabled:opacity-55"><CalendarDays className="h-3.5 w-3.5" />{labels.daily}</button>
-            <button type="button" onClick={onOpenMistakeQuickCapture} disabled={isLoading} className="type-control inline-flex items-center justify-center gap-1.5 rounded-lg border border-border bg-bg-primary px-3 py-2 text-text-secondary hover:border-accent/45 hover:text-text-primary disabled:opacity-55"><ClipboardList className="h-3.5 w-3.5" />{labels.quickMistake}</button>
-          </div>
-        </section>
+        </div>
+      </section>
+      {failed && <p className="type-caption mt-3 text-[var(--warning-text)]">学习摘要暂时不可用，仍可使用右侧入口继续学习。</p>}
+    </div>
+  );
+}
+
+function TaskRow({ icon, title, description, actionLabel, disabled, onClick, secondary }: { icon: React.ReactNode; title: string; description: string; actionLabel: string; disabled?: boolean; onClick: () => void; secondary?: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-3 border-b border-border px-5 py-4 last:border-b-0">
+      <span className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--accent-softer)] text-accent">{icon}</span>
+      <div className="min-w-0 flex-1">
+        <h4 className="type-section-title text-text-primary">{title}</h4>
+        <p className="type-body mt-1 text-text-secondary">{description}</p>
+        {secondary && <div className="mt-1.5">{secondary}</div>}
       </div>
+      <button type="button" onClick={onClick} disabled={disabled} className="app-secondary-button flex-shrink-0 disabled:cursor-not-allowed disabled:opacity-45">{actionLabel}</button>
     </div>
   );
 }
 
-function QuickAction({ icon, title, description, disabled, onClick }: { icon: React.ReactNode; title: string; description: string; disabled?: boolean; onClick: () => void }) {
+function ToolButton({ icon, label, disabled, onClick }: { icon: React.ReactNode; label: string; disabled?: boolean; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} disabled={disabled} className="type-body flex w-full items-start gap-2 rounded-lg border border-border bg-bg-card px-3 py-2 text-left text-text-secondary transition-colors hover:border-accent/45 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-55">
-      <span className="mt-0.5 flex-shrink-0 text-accent">{icon}</span>
-      <span className="min-w-0">
-        <span className="type-control block text-text-primary">{title}</span>
-        <span className="mt-0.5 block">{description}</span>
-      </span>
+    <button type="button" onClick={onClick} disabled={disabled} className="type-control flex w-full items-center gap-3 px-5 py-3 text-left text-text-primary hover:bg-[var(--accent-softer)] disabled:cursor-not-allowed disabled:opacity-45">
+      <span className="text-accent">{icon}</span>
+      <span>{label}</span>
     </button>
-  );
-}
-
-function ActionCard({ icon, title, description, disabled, onClick, secondary }: { icon: React.ReactNode; title: string; description: string; disabled?: boolean; onClick: () => void; secondary?: React.ReactNode }) {
-  return (
-    <div className="rounded-lg border border-border bg-[var(--surface-subtle)] p-3">
-      <button type="button" onClick={onClick} disabled={disabled} className="flex w-full items-start gap-3 text-left disabled:cursor-not-allowed disabled:opacity-45">
-        <span className="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full border border-accent/20 bg-[var(--accent-softer)] text-accent">{icon}</span>
-        <span className="min-w-0 flex-1">
-          <span className="type-section-title block text-text-primary">{title}</span>
-          <span className="type-body mt-1 block text-text-secondary">{description}</span>
-        </span>
-      </button>
-      {secondary && <div className="mt-2 pl-11">{secondary}</div>}
-    </div>
   );
 }

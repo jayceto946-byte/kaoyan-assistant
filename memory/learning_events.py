@@ -17,6 +17,7 @@ from typing import Any, Optional
 from config import PROGRESS_PATH
 from utils.path_safety import safe_book_name, safe_child_path
 from utils.sqlite_recovery import prepare_sqlite_retry_files
+from utils.sqlite_migrations import apply_sqlite_migrations
 from utils.subject_catalog import normalize_subject_value, subject_matches
 
 
@@ -92,6 +93,7 @@ class LearningEventStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_learning_events_book_time ON learning_events(book_name, timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_learning_events_subject_time ON learning_events(subject, timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_learning_events_source ON learning_events(source_type, source_id)")
+            apply_sqlite_migrations(conn, component="learning_events", current_version=1)
             conn.commit()
 
     def _prepare_retry_db_files(self) -> None:

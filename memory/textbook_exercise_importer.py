@@ -36,6 +36,7 @@ class ExtractedTextbookExerciseText:
 
 
 EXERCISE_MARKERS = ("习题", "练习", "复习题", "思考题", "例题", "例 ")
+ON_DEMAND_OCR_MAX_PAGES = 8
 
 
 def extract_textbook_exercise_text(
@@ -127,7 +128,31 @@ def extract_textbook_exercise_text(
             warnings=warnings,
         )
 
-    warnings.append("PDF 文本层为空；如果这是扫描版教材，需要先用 MinerU/OCR 导入教材输出")
+    if resolved_start:
+        page_count = (resolved_end or resolved_start) - resolved_start + 1
+        if page_count <= ON_DEMAND_OCR_MAX_PAGES:
+            try:
+                vision_text = _text_from_kimi_pdf_pages(clean_book, resolved_chapter, resolved_start, resolved_end)
+            except Exception as exc:
+                warnings.append(f"所选扫描页的 Kimi Vision OCR 失败：{str(exc)[:240]}")
+            else:
+                if vision_text.strip():
+                    warnings.append("已有切分缺少可用页码映射，已按所选 PDF 页执行 Kimi Vision OCR")
+                    return ExtractedTextbookExerciseText(
+                        text=_normalize_text(vision_text),
+                        provider="kimi-vision-pdf-pages",
+                        book_name=clean_book,
+                        chapter=resolved_chapter,
+                        page_start=resolved_start,
+                        page_end=resolved_end,
+                        chunk_count=page_count,
+                        warnings=warnings,
+                    )
+                warnings.append("Kimi Vision 未从所选扫描页返回可用文本")
+        else:
+            warnings.append(f"扫描页即时 OCR 每次最多支持 {ON_DEMAND_OCR_MAX_PAGES} 页，请缩小页码范围")
+    else:
+        warnings.append("PDF 文本层为空；请选择具体页码，系统才能对扫描页执行按页 OCR")
     return ExtractedTextbookExerciseText(
         text="",
         provider="none",
@@ -241,6 +266,13 @@ def _candidate_output_dirs(book_name: str) -> list[Path]:
         Path("mineru_output") / book_name,
         Path("mineru_output") / book_name / "hybrid_auto",
     ]
+    metadata = _load_metadata(book_name)
+    configured_output = str(metadata.get("mineru_output_dir") or "").strip()
+    if configured_output:
+        output_path = Path(configured_output)
+        candidates.insert(0, output_path)
+        if output_path.parent != output_path:
+            candidates.insert(1, output_path.parent)
     return [path for path in candidates if path.exists()]
 
 def _text_from_external_ocr_jsonl(book_name: str, chapter: str, page_start: int | None, page_end: int | None, *, source_mode: str) -> tuple[str, int]:
@@ -286,6 +318,19 @@ def _external_ocr_jsonl_paths(book_name: str) -> list[Path]:
     if book_name in book_id_by_name:
         aliases.add(book_id_by_name[book_name])
     paths: list[Path] = []
+    configured = meta.get("source_artifacts") or []
+    if isinstance(configured, str):
+        configured = [configured]
+    for value in configured if isinstance(configured, list) else []:
+        path = Path(str(value))
+        if path.exists() and path.suffix.lower() == ".jsonl":
+            paths.append(path)
+    configured_chunks = str(meta.get("source_chunks_path") or "").strip()
+    if configured_chunks:
+        path = Path(configured_chunks)
+        if path.exists() and path.suffix.lower() == ".jsonl":
+            paths.append(path)
+
     roots = [DATA_DIR / "imports", Path("data") / "imports"]
     for root in roots:
         if not root.exists():
@@ -422,7 +467,7 @@ def _chunks_to_text(chunks: list[dict]) -> str:
 
 
 def _text_from_pdf(book_name: str, page_start: int | None, page_end: int | None) -> str:
-    pdf_path = BOOKS_PATH / f"{book_name}.pdf"
+    pdf_path = _book_pdf_path(book_name)
     if not pdf_path.exists():
         return ""
     import fitz
@@ -436,6 +481,34 @@ def _text_from_pdf(book_name: str, page_start: int | None, page_end: int | None)
             if text:
                 parts.append(f"[Page {page_no}]\n{text}")
     return "\n\n".join(parts)
+
+
+def _text_from_kimi_pdf_pages(
+    book_name: str,
+    chapter: str,
+    page_start: int,
+    page_end: int | None,
+) -> str:
+    pdf_path = _book_pdf_path(book_name)
+    if not pdf_path.exists():
+        return ""
+
+    from ingestion.kimi_reader import KimiReader
+
+    end = page_end or page_start
+    text, _ = KimiReader(book_name).read_pages(
+        pdf_path,
+        page_start - 1,
+        end,
+        chapter=chapter,
+        question="只转写所选页中的题目、条件、选项、公式和图表文字，不要解题",
+        extract_keywords=False,
+    )
+    return text
+
+
+def _book_pdf_path(book_name: str) -> Path:
+    return BOOKS_PATH / f"{book_name}.pdf"
 
 
 def _compact(value: str) -> str:

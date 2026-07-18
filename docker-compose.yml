@@ -22,8 +22,10 @@ services:
       MINERU_TASK_TIMEOUT_SECONDS: ${MINERU_TASK_TIMEOUT_SECONDS:-3600}
       MINERU_TASK_POLL_SECONDS: ${MINERU_TASK_POLL_SECONDS:-2}
       OCR_API_URL: ${OCR_API_URL:-}
+      KAOYAN_API_TOKEN: ${KAOYAN_API_TOKEN:-}
+      KAOYAN_ALLOW_PRIVATE_CLIENTS: "1"
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
       - ./mineru_output:/app/mineru_output

@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { BarChart3, BookOpen, ClipboardList, GraduationCap, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Upload, X } from 'lucide-react';
+import { BarChart3, BookOpen, ClipboardList, GraduationCap, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Settings, Upload, X } from 'lucide-react';
 import { get } from '../api/client';
 import { useChatContext } from '../contexts/ChatContext';
 import type { ChatMessage as ContextChatMessage } from '../contexts/ChatContext';
 import ChatHistorySidebar from '../components/ChatHistorySidebar';
-import SystemHealth from '../components/SystemHealth';
 
 const navItems = [
   { to: '/', icon: MessageSquare, label: '对话' },
@@ -13,6 +12,7 @@ const navItems = [
   { to: '/mistakes', icon: GraduationCap, label: '错题本' },
   { to: '/exercises', icon: ClipboardList, label: '习题库' },
   { to: '/books', icon: Upload, label: '教材导入' },
+  { to: '/settings', icon: Settings, label: '设置' },
 ];
 
 function detectCompactLayout() {
@@ -52,13 +52,13 @@ const MainLayout: React.FC = () => {
 
   const startNewConversation = () => {
     newConversation();
-    setSidebarExpanded(false);
+    if (compactLayout) setSidebarExpanded(false);
     navigate('/');
   };
 
   const loadExistingConversation = ({ id, messages: nextMessages, subject: nextSubject, bookName: nextBookName }: { id: string; messages: ContextChatMessage[]; subject: string; bookName: string }) => {
     loadConversation(id, nextMessages, { subject: nextSubject, bookName: nextBookName });
-    setSidebarExpanded(false);
+    if (compactLayout) setSidebarExpanded(false);
     navigate('/');
   };
 
@@ -98,21 +98,20 @@ const MainLayout: React.FC = () => {
 
   const sidebarContent = (mode: 'desktop' | 'drawer') => (
     <>
-      <div className="flex h-[52px] items-center border-b border-border bg-bg-card/86 px-3 backdrop-blur">
+      <div className="app-brand-header flex h-[52px] items-center border-b border-border bg-bg-card/86 px-3 backdrop-blur">
         <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-[var(--surface-black)]">
           <BookOpen className="h-4.5 w-4.5 text-white" />
         </div>
         <div className="ml-3 flex min-w-0 flex-1 items-center gap-2">
-          <h1 className="type-title truncate text-text-primary">考研助手</h1>
-          <SystemHealth bookName={bookName} />
+          <h1 className="truncate text-[19px] font-semibold leading-6 text-text-primary">考研助手</h1>
         </div>
         <button
           type="button"
           onClick={() => setSidebarExpanded(false)}
-          className="ml-2 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-bg-card text-text-secondary hover:border-accent/50 hover:text-accent"
+          className="ml-2 flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-bg-card text-text-secondary hover:border-accent/50 hover:text-accent"
           aria-label={mode === 'desktop' ? '折叠侧边栏' : '关闭侧边栏'}
         >
-          {mode === 'desktop' ? <PanelLeftClose className="h-4 w-4" /> : <X className="h-4 w-4" />}
+          {mode === 'desktop' ? <PanelLeftClose className="h-[18px] w-[18px]" /> : <X className="h-[18px] w-[18px]" />}
         </button>
       </div>
 
@@ -125,14 +124,14 @@ const MainLayout: React.FC = () => {
             to={item.to}
             onClick={() => mode === 'drawer' && setSidebarExpanded(false)}
             className={({ isActive }) =>
-              `mb-1 flex items-center rounded-full border px-3 py-2.5 type-control transition-colors ${
+              `mb-1 flex items-center rounded-lg border px-3 py-2.5 type-control transition-colors ${
                 isActive
                   ? 'border-accent/30 bg-[var(--accent-soft)] text-accent'
                   : 'border-transparent text-text-secondary hover:border-border hover:bg-bg-card hover:text-text-primary'
               }`
             }
           >
-            <item.icon className="mr-3 h-4 w-4" />
+            <item.icon className="mr-3 h-[18px] w-[18px] flex-shrink-0" />
             {item.label}
           </NavLink>
         ))}
@@ -141,22 +140,22 @@ const MainLayout: React.FC = () => {
   );
 
   const rail = (mode: 'desktop' | 'compact') => (
-    <aside className={`${mode === 'desktop' ? 'w-[68px]' : 'w-[52px]'} relative z-20 flex flex-shrink-0 flex-col items-center border-r border-black bg-[var(--surface-black)] py-2`}>
+    <aside className={`app-sidebar-rail ${mode === 'desktop' ? 'w-[68px]' : 'w-[52px]'} relative z-20 flex flex-shrink-0 flex-col items-center border-r border-black bg-[var(--surface-black)] py-2`}>
       <button
         type="button"
         onClick={() => setSidebarExpanded(true)}
-        className="mb-2 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white hover:bg-white/16"
+        className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg border border-white/15 bg-white/10 text-white hover:bg-white/16"
         aria-label="展开侧边栏"
       >
-        {mode === 'desktop' ? <PanelLeftOpen className="h-4.5 w-4.5" /> : <Menu className="h-4.5 w-4.5" />}
+        {mode === 'desktop' ? <PanelLeftOpen className="h-[18px] w-[18px]" /> : <Menu className="h-[18px] w-[18px]" />}
       </button>
       <button
         type="button"
         onClick={startNewConversation}
-        className="mb-3 flex h-9 w-9 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/72 hover:bg-white/16 hover:text-white"
+        className="mb-3 flex h-9 w-9 items-center justify-center rounded-lg border border-white/15 bg-white/10 text-white/72 hover:bg-white/16 hover:text-white"
         aria-label="新会话"
       >
-        <MessageSquare className="h-4.5 w-4.5" />
+        <MessageSquare className="h-[18px] w-[18px]" />
       </button>
       <nav className="mt-auto flex w-full flex-col items-center gap-1 pb-1">
         {navItems.map((item) => (
@@ -171,7 +170,7 @@ const MainLayout: React.FC = () => {
             aria-label={item.label}
             title={item.label}
           >
-            <item.icon className="h-4.5 w-4.5" />
+            <item.icon className="h-[18px] w-[18px]" />
           </NavLink>
         ))}
       </nav>
@@ -180,11 +179,19 @@ const MainLayout: React.FC = () => {
 
   return (
     <div data-layout={compactLayout ? 'compact' : 'desktop'} data-sidebar={sidebarExpanded ? 'expanded' : 'collapsed'} className="app-shell flex h-[100dvh] w-full overflow-hidden bg-bg-primary text-text-primary">
-      {!compactLayout && (sidebarExpanded ? (
-        <aside className="relative z-20 flex w-[292px] flex-shrink-0 flex-col overflow-hidden border-r border-border bg-bg-secondary/95 backdrop-blur 2xl:w-[320px]">
-          {sidebarContent('desktop')}
-        </aside>
-      ) : rail('desktop'))}
+      {!compactLayout && (
+        <div className={`desktop-sidebar-stage ${sidebarExpanded ? 'is-expanded' : 'is-collapsed'}`}>
+          <aside
+            aria-hidden={!sidebarExpanded}
+            className="desktop-sidebar-panel flex h-full w-full flex-col overflow-hidden border-r border-border bg-bg-secondary/95 backdrop-blur"
+          >
+            {sidebarContent('desktop')}
+          </aside>
+          <div aria-hidden={sidebarExpanded} className="desktop-sidebar-rail-layer">
+            {rail('desktop')}
+          </div>
+        </div>
+      )}
 
       {compactLayout && rail('compact')}
 

@@ -3,10 +3,12 @@ const { autoUpdater } = require('electron-updater');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const BACKEND_PORT = Number(process.env.KAOYAN_BACKEND_PORT || 8000);
 const BACKEND_URL = process.env.KAOYAN_BACKEND_URL || `http://127.0.0.1:${BACKEND_PORT}`;
 const FRONTEND_DEV_URL = process.env.KAOYAN_FRONTEND_DEV_URL || '';
+const API_TOKEN = process.env.KAOYAN_API_TOKEN || crypto.randomBytes(32).toString('hex');
 
 let mainWindow = null;
 let backendProcess = null;
@@ -58,6 +60,8 @@ function backendEnv() {
   return {
     ...process.env,
     KAOYAN_BACKEND_PORT: String(BACKEND_PORT),
+    KAOYAN_API_TOKEN: API_TOKEN,
+    KAOYAN_REQUIRE_API_TOKEN: '1',
     DATA_DIR: paths.dataDir,
     ENV_PATH: paths.envPath,
     MINERU_OUTPUT_PATH: paths.mineruOutputPath,
@@ -311,6 +315,14 @@ async function fetchWithTimeout(url, timeoutMs = 2500) {
 }
 
 async function loadAppUrl(targetUrl) {
+function desktopAppUrl(targetUrl) {
+  const target = new URL(targetUrl);
+  const hash = new URLSearchParams(target.hash.replace(/^#/, ''));
+  hash.set('access_token', API_TOKEN);
+  target.hash = hash.toString();
+  return target.toString();
+}
+
   if (!mainWindow || mainWindow.isDestroyed()) return;
   try {
     await mainWindow.webContents.executeJavaScript("document.body.classList.add('is-leaving')", true);
@@ -335,18 +347,29 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
   mainWindow.loadFile(path.join(__dirname, 'loading.html'));
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const allowedOrigins = [BACKEND_URL, FRONTEND_DEV_URL].filter(Boolean).map((item) => new URL(item).origin);
+    if (!allowedOrigins.includes(new URL(url).origin)) {
+      event.preventDefault();
+      if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    }
+  });
 
   const targetUrl = FRONTEND_DEV_URL || BACKEND_URL;
   waitForBackend().then((ready) => {
     if (shuttingDown || !mainWindow) return;
     if (ready || FRONTEND_DEV_URL) {
-      void loadAppUrl(targetUrl);
+      void loadAppUrl(desktopAppUrl(targetUrl));
       return;
     }
     const message = backendStartError || `后端服务启动超时：${BACKEND_URL}`;
@@ -363,9 +386,17 @@ ipcMain.handle('window:toggle-maximize', () => {
   return mainWindow.isMaximized();
 });
 ipcMain.handle('window:close', () => mainWindow?.close());
+ipcMain.handle('app:restart', async () => {
+  shuttingDown = true;
+  await stopBackend();
+  allowQuit = true;
+  app.relaunch();
+  app.quit();
+  return true;
+});
 
 ipcMain.handle('startup:info', () => startupInfo());
-ipcMain.handle('startup:open-web', async () => shell.openExternal(BACKEND_URL));
+ipcMain.handle('startup:open-web', async () => shell.openExternal(desktopAppUrl(BACKEND_URL)));
 ipcMain.handle('startup:open-log', async () => {
   const logPath = runtimePaths().backendLogPath;
   fs.mkdirSync(path.dirname(logPath), { recursive: true });

@@ -40,6 +40,7 @@ class ChatEvent(BaseModel):
 
 class MistakeRecordOut(BaseModel):
     id: str
+    book_id: str = ""
     question_text: str
     user_answer: str = ""
     correct_answer: str = ""
@@ -145,6 +146,7 @@ class KGRefreshOut(BaseModel):
 
 class ExerciseRecordOut(BaseModel):
     id: str
+    book_id: str = ""
     question_text: str
     answer: str = ""
     explanation: str = ""
@@ -245,6 +247,8 @@ class ExerciseCandidateOut(BaseModel):
     refined_by_llm: bool = False
     split_confidence: float = 0.0
     split_reasons: list[str] = Field(default_factory=list)
+    validation_issues: list[str] = Field(default_factory=list)
+    duplicate_of: str = ""
 
 
 class ExerciseAnalyzeRequest(BaseModel):
@@ -272,3 +276,26 @@ class TextbookExerciseAnalyzeRequest(BaseModel):
 
 class ExerciseBatchAddRequest(BaseModel):
     exercises: list[ExerciseAddRequest] = Field(default_factory=list)
+    source_label: str = ""
+    allow_duplicates: bool = False
+
+
+class ExerciseImportRollbackRequest(BaseModel):
+    batch_id: str
+
+
+class ExercisePracticeSessionCreateRequest(BaseModel):
+    subject: str = ""
+    chapter: str = ""
+    tag: str = ""
+    status: str = ""
+    limit: int = Field(default=20, ge=1, le=200)
+    shuffle: bool = False
+
+
+class ExercisePracticeSessionAnswerRequest(BaseModel):
+    exercise_id: str
+    user_answer: str = ""
+    quality: int = Field(default=0, ge=0, le=5)
+    note: str = ""
+    add_to_mistake: bool = False

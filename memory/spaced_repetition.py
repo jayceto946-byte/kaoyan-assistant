@@ -1,20 +1,35 @@
 """间隔重复模块 - 基于SM-2算法的智能复习调度"""
 import json
+from functools import wraps
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 
 from config import PROGRESS_PATH
+from utils.json_io import atomic_write_json
+from utils.path_safety import safe_book_name, safe_child_path
+from utils.state_locks import get_state_lock
+
+
+def _with_fresh_cards(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._state_lock:
+            self._cards = self._load()
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 class SpacedRepetition:
     """SM-2算法：管理知识点的复习间隔"""
 
     def __init__(self, book_name: str):
-        self.base_path = Path(PROGRESS_PATH) / book_name
+        self.base_path = safe_child_path(PROGRESS_PATH, safe_book_name(book_name))
         self.base_path.mkdir(parents=True, exist_ok=True)
         self.file = self.base_path / "spaced_repetition.json"
-        self._cards: dict[str, dict] = self._load()
+        self._state_lock = get_state_lock(self.file)
+        with self._state_lock:
+            self._cards: dict[str, dict] = self._load()
         # card: {chapter, knowledge_point, easiness, interval, reps, next_review, last_review}
 
     def _load(self) -> dict:
@@ -24,9 +39,9 @@ class SpacedRepetition:
         return {}
 
     def _save(self):
-        with open(self.file, "w", encoding="utf-8") as f:
-            json.dump(self._cards, f, ensure_ascii=False, indent=2)
+        atomic_write_json(self.file, self._cards)
 
+    @_with_fresh_cards
     def add_knowledge_point(self, card_id: str, chapter: str, knowledge_point: str):
         """添加知识点卡片"""
         if card_id not in self._cards:
@@ -41,6 +56,7 @@ class SpacedRepetition:
             }
             self._save()
 
+    @_with_fresh_cards
     def review(self, card_id: str, quality: int):
         """复习知识点并更新间隔
 
@@ -77,6 +93,7 @@ class SpacedRepetition:
 
         self._save()
 
+    @_with_fresh_cards
     def auto_review_from_quiz(self, chapter: str, knowledge_point: str,
                               score: int, out_of: int = 100):
         """从答题结果自动映射到SM-2质量评分"""
@@ -101,6 +118,7 @@ class SpacedRepetition:
             self.add_knowledge_point(card_id, chapter, knowledge_point)
         self.review(card_id, quality)
 
+    @_with_fresh_cards
     def get_due_reviews(self) -> list[dict]:
         """获取今日待复习的知识点"""
         today = date.today().isoformat()
@@ -118,10 +136,12 @@ class SpacedRepetition:
                 })
         return sorted(due, key=lambda c: c["easiness"])
 
+    @_with_fresh_cards
     def get_chapter_due(self, chapter: str) -> list[dict]:
         """获取指定章节待复习的知识点"""
         return [c for c in self.get_due_reviews() if c["chapter"] == chapter]
 
+    @_with_fresh_cards
     def get_stats(self) -> dict:
         """获取间隔重复统计"""
         total = len(self._cards)
@@ -137,6 +157,7 @@ class SpacedRepetition:
             "learning": total - mastered,
         }
 
+    @_with_fresh_cards
     def get_weekly_schedule(self) -> dict[str, int]:
         """获取未来7天每日待复习数量"""
         schedule = {}

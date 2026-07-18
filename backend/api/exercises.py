@@ -1,8 +1,8 @@
 """Exercises API: general question bank CRUD and mistake import."""
 from __future__ import annotations
 
+import hashlib
 import re
-import shutil
 import threading
 from pathlib import Path
 
@@ -17,21 +17,25 @@ from backend.schemas import (
     ExerciseBatchAddRequest,
     ExerciseCandidateOut,
     ExerciseFromMistakeRequest,
+    ExerciseImportRollbackRequest,
     ExerciseListRequest,
     ExercisePracticeRequest,
+    ExercisePracticeSessionAnswerRequest,
+    ExercisePracticeSessionCreateRequest,
     ExerciseToMistakeRequest,
     ExerciseRecordOut,
     ExerciseStatusRequest,
     TextbookExerciseAnalyzeRequest,
 )
 from config import DATA_DIR, PROGRESS_PATH
-from memory.exercise_bank import ExerciseRecord, get_exercise_bank
+from memory.exercise_bank import ExerciseRecord, get_exercise_bank, question_fingerprint
 from memory.exercise_file_importer import extract_exercise_text
-from memory.exercise_importer import analyze_candidates, refine_low_confidence_candidates, split_candidate_blocks
+from memory.exercise_importer import analyze_candidates, attach_answers_by_number, refine_low_confidence_candidates, split_candidate_blocks
 from memory.textbook_exercise_importer import extract_textbook_exercise_text
 from memory.mistake_book import MistakeRecord, get_mistake_book
 from memory.learning_events import LearningEvent, concept_names, get_learning_event_store
 from utils.latex_sanitizer import sanitize_latex
+from utils.resource_limits import MAX_EXERCISE_UPLOAD_BYTES, copy_stream_limited
 from utils.subject_catalog import normalize_subject_value
 from utils.thinking_filter import strip_thinking
 
@@ -77,8 +81,7 @@ def _save_upload(file: UploadFile) -> Path:
     while dest.exists():
         dest = Path(f"{base}_{counter}{suffix}")
         counter += 1
-    with open(dest, "wb") as fh:
-        shutil.copyfileobj(file.file, fh)
+    copy_stream_limited(file.file, dest, max_bytes=MAX_EXERCISE_UPLOAD_BYTES)
     return dest
 
 
@@ -114,8 +117,38 @@ def _candidate_to_add_payload(candidate) -> ExerciseAddRequest:
     )
 
 
-def _mistake_from_exercise(record: ExerciseRecord, user_answer: str = "", mistake_type: list[str] | None = None) -> MistakeRecord:
-    return MistakeRecord(
+def _candidate_outputs(candidates, book_name: str) -> list[ExerciseCandidateOut]:
+    bank = _bank(book_name)
+    existing = {
+        question_fingerprint(record.question_text): record.id
+        for record in bank.list_all(limit=100000)
+        if question_fingerprint(record.question_text)
+    }
+    output: list[ExerciseCandidateOut] = []
+    for candidate in candidates:
+        duplicate_of = existing.get(question_fingerprint(candidate.question_text), "")
+        candidate.duplicate_of = duplicate_of
+        if duplicate_of and "与题库现有题目重复" not in candidate.validation_issues:
+            candidate.validation_issues.append("与题库现有题目重复")
+        output.append(ExerciseCandidateOut(**candidate.to_dict()))
+    return output
+
+
+def _session_data(bank, session) -> dict:
+    data = session.to_dict()
+    current = bank.current_session_record(session)
+    data["current_exercise"] = _record_to_out(current).model_dump() if current else None
+    data["summary"] = session.summary()
+    return data
+
+
+def _mistake_from_exercise(
+    record: ExerciseRecord,
+    user_answer: str = "",
+    mistake_type: list[str] | None = None,
+    mistake_id: str = "",
+) -> MistakeRecord:
+    mistake = MistakeRecord(
         question_text=record.question_text,
         user_answer=user_answer.strip(),
         correct_answer=record.answer,
@@ -123,14 +156,17 @@ def _mistake_from_exercise(record: ExerciseRecord, user_answer: str = "", mistak
         subject=record.subject,
         chapter=record.chapter,
         tags=record.tags,
-        mistake_type=mistake_type or ["思路卡住"],
+        mistake_type=mistake_type or ["\u601d\u8def\u5361\u4f4f"],
         difficulty=record.difficulty,
         image_path=record.image_path,
         ocr_text=record.ocr_text,
         explanation=record.explanation,
         linked_concepts=record.linked_concepts,
-        notes=f"由习题库转入：{record.id}",
+        notes=f"\u7531\u4e60\u9898\u5e93\u8f6c\u5165\uff1a{record.id}",
     )
+    if mistake_id:
+        mistake.id = mistake_id
+    return mistake
 
 
 def _record_from_request(req: ExerciseAddRequest, book_name: str = "default") -> ExerciseRecord:
@@ -192,6 +228,7 @@ def get_exercise_stats(book_name: str = "default", subject: str = ""):
 @router.post("/upload-analyze")
 def upload_and_analyze_exercises(
     file: UploadFile = File(...),
+    answer_file: UploadFile | None = File(None),
     source: str = Form(""),
     subject: str = Form(""),
     chapter: str = Form(""),
@@ -203,6 +240,11 @@ def upload_and_analyze_exercises(
     try:
         saved_path = _save_upload(file)
         extracted = extract_exercise_text(saved_path)
+        answer_path = None
+        answer_extracted = None
+        if answer_file and answer_file.filename:
+            answer_path = _save_upload(answer_file)
+            answer_extracted = extract_exercise_text(answer_path)
         if not extracted.text.strip():
             return {
                 "success": False,
@@ -221,7 +263,8 @@ def upload_and_analyze_exercises(
         )
         if use_llm:
             candidates = refine_low_confidence_candidates(candidates, max_items=llm_max_items)
-        data = [ExerciseCandidateOut(**candidate.to_dict()) for candidate in candidates]
+        paired_answers = attach_answers_by_number(candidates, answer_extracted.text) if answer_extracted and answer_extracted.text.strip() else 0
+        data = _candidate_outputs(candidates, book_name)
         needs_llm_count = sum(1 for candidate in candidates if candidate.needs_llm)
         llm_refined_count = sum(1 for candidate in candidates if candidate.refined_by_llm)
         return {
@@ -233,8 +276,11 @@ def upload_and_analyze_exercises(
                 "needs_llm": needs_llm_count,
                 "auto_confident": len(data) - needs_llm_count,
                 "llm_refined": llm_refined_count,
+                "paired_answers": paired_answers,
             },
             "file": str(saved_path),
+            "answer_file": str(answer_path) if answer_path else "",
+            "answer_extract": answer_extracted.to_dict() if answer_extracted else None,
             "extract": extracted.to_dict(),
         }
     except Exception as exc:
@@ -272,7 +318,7 @@ def analyze_textbook_exercises(req: TextbookExerciseAnalyzeRequest, book_name: s
         )
         if req.use_llm:
             candidates = refine_low_confidence_candidates(candidates, max_items=req.llm_max_items)
-        data = [ExerciseCandidateOut(**candidate.to_dict()) for candidate in candidates]
+        data = _candidate_outputs(candidates, effective_book)
         needs_llm_count = sum(1 for candidate in candidates if candidate.needs_llm)
         llm_refined_count = sum(1 for candidate in candidates if candidate.refined_by_llm)
         warnings = extracted.warnings or []
@@ -311,7 +357,7 @@ def analyze_exercise_candidates(req: ExerciseAnalyzeRequest, book_name: str = "d
             known_concepts=req.known_concepts,
             max_items=req.llm_max_items,
         )
-    data = [ExerciseCandidateOut(**candidate.to_dict()) for candidate in candidates]
+    data = _candidate_outputs(candidates, book_name)
     needs_llm_count = sum(1 for candidate in candidates if candidate.needs_llm)
     llm_refined_count = sum(1 for candidate in candidates if candidate.refined_by_llm)
     return {
@@ -329,15 +375,51 @@ def analyze_exercise_candidates(req: ExerciseAnalyzeRequest, book_name: str = "d
 @router.post("/batch-add")
 def batch_add_exercises(req: ExerciseBatchAddRequest, book_name: str = "default"):
     bank = _bank(book_name)
-    saved = []
-    for item in req.exercises:
-        if not item.question_text.strip():
-            continue
-        record = _record_from_request(item, book_name=book_name)
-        bank.add(record)
-        _log_learning_event("exercise_imported", book_name=book_name, record=record, payload={"origin_type": record.origin_type, "status": record.status})
-        saved.append(_record_to_out(record))
-    return {"success": True, "data": saved, "count": len(saved), "message": f"已导入 {len(saved)} 道候选题"}
+    records = [
+        _record_from_request(item, book_name=book_name)
+        for item in req.exercises
+        if item.question_text.strip()
+    ]
+    batch = bank.add_batch(records, source_label=req.source_label, allow_duplicates=req.allow_duplicates)
+    saved_records = [bank.get(rid) for rid in batch["exercise_ids"]]
+    saved = [_record_to_out(record) for record in saved_records if record]
+    for record in saved_records:
+        if record:
+            _log_learning_event(
+                "exercise_imported",
+                book_name=book_name,
+                record=record,
+                payload={"origin_type": record.origin_type, "status": record.status, "batch_id": batch["id"]},
+            )
+    skipped_count = len(batch.get("skipped", []))
+    message = f"已导入 {len(saved)} 道候选题"
+    if skipped_count:
+        message += f"，跳过 {skipped_count} 道重复题"
+    return {
+        "success": True,
+        "data": saved,
+        "count": len(saved),
+        "skipped": batch.get("skipped", []),
+        "batch_id": batch["id"],
+        "message": message,
+    }
+
+@router.get("/import-batches")
+def list_import_batches(book_name: str = "default", limit: int = 20):
+    return {"success": True, "data": _bank(book_name).list_import_batches(limit=limit)}
+
+
+@router.post("/import-batches/rollback")
+def rollback_import_batch(req: ExerciseImportRollbackRequest, book_name: str = "default"):
+    batch = _bank(book_name).rollback_import_batch(req.batch_id)
+    if not batch:
+        return {"success": False, "message": "未找到该导入批次"}
+    return {
+        "success": True,
+        "data": batch,
+        "message": f"已回滚导入批次，移除 {len(batch.get('exercise_ids', []))} 道习题",
+    }
+
 
 @router.post("/status")
 def update_exercise_status(req: ExerciseStatusRequest, book_name: str = "default"):
@@ -347,6 +429,126 @@ def update_exercise_status(req: ExerciseStatusRequest, book_name: str = "default
     record.status = req.status.strip() or "new"
     _bank(book_name).update(record)
     return {"success": True, "message": "状态已更新", "data": _record_to_out(record)}
+
+
+@router.post("/practice-sessions")
+def create_practice_session(req: ExercisePracticeSessionCreateRequest, book_name: str = "default"):
+    bank = _bank(book_name)
+    try:
+        session = bank.create_practice_session(
+            subject=req.subject,
+            chapter=req.chapter,
+            tag=req.tag,
+            status=req.status,
+            limit=req.limit,
+            shuffle=req.shuffle,
+        )
+        return {"success": True, "data": _session_data(bank, session), "message": "练习会话已开始"}
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
+
+@router.get("/practice-sessions/active")
+def get_active_practice_session(book_name: str = "default"):
+    bank = _bank(book_name)
+    session = bank.get_active_practice_session()
+    return {"success": True, "data": _session_data(bank, session) if session else None}
+
+
+@router.get("/practice-sessions/{session_id}")
+def get_practice_session(session_id: str, book_name: str = "default"):
+    bank = _bank(book_name)
+    session = bank.get_practice_session(session_id)
+    if not session:
+        return {"success": False, "message": "未找到练习会话"}
+    return {"success": True, "data": _session_data(bank, session)}
+
+
+@router.post("/practice-sessions/{session_id}/answer")
+def answer_practice_session(
+    session_id: str,
+    req: ExercisePracticeSessionAnswerRequest,
+    book_name: str = "default",
+):
+    bank = _bank(book_name)
+    try:
+        session, record, answer_created = bank.record_session_answer_with_status(
+            session_id,
+            exercise_id=req.exercise_id,
+            user_answer=req.user_answer,
+            quality=req.quality,
+            note=req.note,
+        )
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
+    mistake_id = str(session.results.get(record.id, {}).get("mistake_id") or "")
+    if req.add_to_mistake and not mistake_id:
+        stable_key = f"{book_name}\0{session_id}\0{record.id}"
+        stable_mistake_id = "ps_" + hashlib.sha256(stable_key.encode("utf-8")).hexdigest()[:16]
+        try:
+            mb = get_mistake_book(book_name, str(PROGRESS_PATH))
+            mistake_id = mb.add_if_absent(
+                _mistake_from_exercise(
+                    record,
+                    user_answer=req.user_answer,
+                    mistake_id=stable_mistake_id,
+                )
+            )
+            session = bank.attach_practice_session_mistake(session_id, record.id, mistake_id)
+        except Exception as exc:
+            return {
+                "success": False,
+                "message": f"\u4f5c\u7b54\u5df2\u8bb0\u5f55\uff0c\u4f46\u5199\u5165\u9519\u9898\u672c\u5931\u8d25\uff0c\u53ef\u91cd\u8bd5\uff1a{exc}",
+                "retryable": True,
+                "data": _session_data(bank, session),
+                "record": _record_to_out(record),
+            }
+        _log_learning_event(
+            "exercise_to_mistake",
+            book_name=book_name,
+            record=record,
+            payload={"mistake_id": mistake_id, "trigger": "practice_session", "session_id": session_id},
+        )
+    if answer_created:
+        _log_learning_event(
+            "exercise_practiced",
+            book_name=book_name,
+            record=record,
+            payload={"quality": req.quality, "status": record.status, "session_id": session_id},
+        )
+    message = "\u672c\u8f6e\u7ec3\u4e60\u5df2\u5b8c\u6210" if session.status == "completed" else "\u5df2\u8bb0\u5f55\uff0c\u8fdb\u5165\u4e0b\u4e00\u9898"
+    return {
+        "success": True,
+        "data": _session_data(bank, session),
+        "record": _record_to_out(record),
+        "mistake_id": mistake_id,
+        "message": message,
+    }
+
+
+def _change_practice_session_status(session_id: str, status: str, book_name: str) -> dict:
+    bank = _bank(book_name)
+    try:
+        session = bank.set_practice_session_status(session_id, status)
+        return {"success": True, "data": _session_data(bank, session)}
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
+
+@router.post("/practice-sessions/{session_id}/pause")
+def pause_practice_session(session_id: str, book_name: str = "default"):
+    return _change_practice_session_status(session_id, "paused", book_name)
+
+
+@router.post("/practice-sessions/{session_id}/resume")
+def resume_practice_session(session_id: str, book_name: str = "default"):
+    return _change_practice_session_status(session_id, "active", book_name)
+
+
+@router.post("/practice-sessions/{session_id}/abandon")
+def abandon_practice_session(session_id: str, book_name: str = "default"):
+    return _change_practice_session_status(session_id, "abandoned", book_name)
 
 
 
@@ -362,8 +564,7 @@ def generate_exercise_answer(req: ExerciseAnswerGenerateRequest, book_name: str 
         from graph.main_graph import build_initial_state
         from graph.retrieval_node import retrieve_node
 
-        sensor_scope = record.subject == "传感器" or record.subject.endswith("/传感器") or book_name in {"传感器", "传感器短书", "传感器长书"}
-        effective_book = "传感器短书" if sensor_scope else book_name
+        effective_book = book_name
         target_chapters = [record.chapter] if record.chapter else []
         prompt_question = (
             "请为下列习题生成可核对的标准答案。先给结论，再给必要步骤、公式条件和易错点；"

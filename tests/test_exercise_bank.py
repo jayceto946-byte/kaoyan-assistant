@@ -1,3 +1,7 @@
+import sqlite3
+
+import pytest
+
 from fastapi.testclient import TestClient
 
 from backend.api import exercises
@@ -150,3 +154,178 @@ def test_exercise_answer_job_runs_after_request_returns(monkeypatch, tmp_path):
     assert job["status"] == "completed"
     assert job["result"]["answer"] == "教材答案"
     assert exercises.latest_exercise_answer_job(exercise_id, "传感器短书")["data"]["id"] == job_id
+
+
+def test_import_batch_skips_duplicates_and_can_rollback(tmp_path):
+    bank = ExerciseBank(tmp_path / "batch_exercises.db")
+    existing = ExerciseRecord(question_text="求函数 x^2 的导数", subject="数学")
+    bank.add(existing)
+
+    duplicate = ExerciseRecord(question_text=" 求函数  x^2 的导数 ", subject="数学", origin_id="c1")
+    fresh = ExerciseRecord(question_text="计算矩阵 A 的行列式", subject="数学", origin_id="c2")
+    batch = bank.add_batch([duplicate, fresh], source_label="测试导入")
+
+    assert batch["exercise_ids"] == [fresh.id]
+    assert batch["skipped"] == [{"origin_id": "c1", "duplicate_of": existing.id}]
+    assert bank.get(fresh.id) is not None
+    assert bank.list_import_batches()[0]["source_label"] == "测试导入"
+
+    rolled_back = bank.rollback_import_batch(batch["id"])
+    assert rolled_back is not None
+    assert rolled_back["status"] == "rolled_back"
+    assert bank.get(fresh.id) is None
+    assert bank.get(existing.id) is not None
+
+
+def test_practice_session_persists_progress_pause_resume_and_summary(tmp_path):
+    db_path = tmp_path / "session_exercises.db"
+    bank = ExerciseBank(db_path)
+    first = ExerciseRecord(question_text="题目一", subject="数学", status="needs_review")
+    second = ExerciseRecord(question_text="题目二", subject="数学", status="new")
+    bank.add(first)
+    bank.add(second)
+
+    session = bank.create_practice_session(subject="数学", limit=2)
+    assert session.exercise_ids == [first.id, second.id]
+    assert bank.current_session_record(session).id == first.id
+
+    paused = bank.set_practice_session_status(session.id, "paused")
+    assert paused.status == "paused"
+    resumed = bank.set_practice_session_status(session.id, "active")
+    assert resumed.status == "active"
+
+    progressed, practiced = bank.record_session_answer(
+        session.id,
+        exercise_id=first.id,
+        user_answer="不会",
+        quality=1,
+    )
+    assert practiced.status == "needs_review"
+    assert progressed.current_index == 1
+    assert bank.current_session_record(progressed).id == second.id
+
+    completed, _ = bank.record_session_answer(
+        session.id,
+        exercise_id=second.id,
+        user_answer="会",
+        quality=5,
+    )
+    assert completed.status == "completed"
+    assert completed.summary()["answered"] == 2
+    assert completed.summary()["struggling"] == 1
+
+    reloaded = ExerciseBank(db_path).get_practice_session(session.id)
+    assert reloaded is not None
+    assert reloaded.status == "completed"
+    assert reloaded.current_index == 2
+
+
+def test_practice_session_api_advances_and_import_batch_api_rolls_back(monkeypatch, tmp_path):
+    bank = ExerciseBank(tmp_path / "session_api.db")
+    mistake_book = MistakeBook(tmp_path / "session_mistakes.db")
+    exercise = ExerciseRecord(question_text="会话题目", subject="数学")
+    bank.add(exercise)
+    monkeypatch.setattr(exercises, "_bank", lambda book_name="default": bank)
+    monkeypatch.setattr(exercises, "get_mistake_book", lambda book_name="default", data_dir="": mistake_book)
+    client = TestClient(app)
+
+    created = client.post(
+        "/api/exercises/practice-sessions",
+        json={"subject": "数学", "limit": 1, "shuffle": False},
+    ).json()
+    assert created["success"] is True
+    session_id = created["data"]["id"]
+    assert created["data"]["current_exercise"]["id"] == exercise.id
+
+    answered = client.post(
+        f"/api/exercises/practice-sessions/{session_id}/answer",
+        json={"exercise_id": exercise.id, "user_answer": "不会", "quality": 1, "add_to_mistake": True},
+    ).json()
+    assert answered["success"] is True
+    assert answered["data"]["status"] == "completed"
+    assert answered["data"]["summary"]["answered"] == 1
+    assert answered["mistake_id"]
+
+    imported = client.post(
+        "/api/exercises/batch-add",
+        json={"source_label": "API 批次", "exercises": [{"question_text": "新导入题"}]},
+    ).json()
+    assert imported["success"] is True
+    assert imported["batch_id"]
+    rolled_back = client.post(
+        "/api/exercises/import-batches/rollback",
+        json={"batch_id": imported["batch_id"]},
+    ).json()
+    assert rolled_back["success"] is True
+    assert rolled_back["data"]["status"] == "rolled_back"
+
+
+def test_practice_session_answer_replay_is_idempotent(tmp_path):
+    bank = ExerciseBank(tmp_path / "idempotent_session.db")
+    exercise = ExerciseRecord(question_text="\u5e42\u51fd\u6570\u6c42\u5bfc", subject="\u6570\u5b66")
+    bank.add(exercise)
+    session = bank.create_practice_session(subject="\u6570\u5b66", limit=1)
+
+    first_session, first_record = bank.record_session_answer(
+        session.id, exercise_id=exercise.id, user_answer="2x", quality=5
+    )
+    replayed_session, replayed_record = bank.record_session_answer(
+        session.id, exercise_id=exercise.id, user_answer="different retry", quality=0
+    )
+
+    assert first_session.status == "completed"
+    assert replayed_session.results == first_session.results
+    assert first_record.practice_count == 1
+    assert replayed_record.practice_count == 1
+    assert bank.get(exercise.id).practice_count == 1
+
+
+def test_practice_session_rolls_back_exercise_when_session_update_fails(tmp_path):
+    bank = ExerciseBank(tmp_path / "atomic_session.db")
+    exercise = ExerciseRecord(question_text="\u539f\u5b50\u6027\u6d4b\u8bd5", subject="\u6570\u5b66")
+    bank.add(exercise)
+    session = bank.create_practice_session(subject="\u6570\u5b66", limit=1)
+    with bank.store._connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER fail_session_progress
+            BEFORE UPDATE ON exercise_practice_sessions
+            BEGIN
+                SELECT RAISE(ABORT, 'session write failed');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="session write failed"):
+        bank.record_session_answer(session.id, exercise_id=exercise.id, quality=5)
+
+    assert bank.get(exercise.id).practice_count == 0
+    persisted = bank.get_practice_session(session.id)
+    assert persisted.current_index == 0
+    assert persisted.results == {}
+
+
+def test_practice_session_api_retry_reuses_same_mistake(monkeypatch, tmp_path):
+    bank = ExerciseBank(tmp_path / "retry_session.db")
+    mistake_book = MistakeBook(tmp_path / "retry_mistakes.db")
+    exercise = ExerciseRecord(question_text="\u91cd\u8bd5\u9898\u76ee", subject="\u6570\u5b66")
+    bank.add(exercise)
+    monkeypatch.setattr(exercises, "_bank", lambda book_name="default": bank)
+    monkeypatch.setattr(exercises, "get_mistake_book", lambda book_name="default", data_dir="": mistake_book)
+    client = TestClient(app)
+    session = bank.create_practice_session(subject="\u6570\u5b66", limit=1)
+    payload = {
+        "exercise_id": exercise.id,
+        "user_answer": "\u4e0d\u4f1a",
+        "quality": 1,
+        "add_to_mistake": True,
+    }
+
+    first = client.post(f"/api/exercises/practice-sessions/{session.id}/answer", json=payload).json()
+    replayed = client.post(f"/api/exercises/practice-sessions/{session.id}/answer", json=payload).json()
+
+    assert first["success"] is True
+    assert replayed["success"] is True
+    assert replayed["mistake_id"] == first["mistake_id"]
+    assert bank.get(exercise.id).practice_count == 1
+    assert len(mistake_book.list_all(limit=10)) == 1

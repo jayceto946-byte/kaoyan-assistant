@@ -9,6 +9,13 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from config import MINERU_API_URL, MINERU_OUTPUT_PATH, MINERU_TASK_POLL_SECONDS, MINERU_TASK_TIMEOUT_SECONDS
+from utils.resource_limits import (
+    MAX_DOCX_EXPANDED_BYTES,
+    MAX_DOCX_FILES,
+    MAX_DOCX_MEMBER_BYTES,
+    inspect_zip_limits,
+)
+
 
 
 @dataclass
@@ -46,7 +53,13 @@ def extract_docx_text(path: Path) -> ExtractedExerciseText:
     warnings: list[str] = []
     try:
         with zipfile.ZipFile(path) as docx:
-            names = [name for name in docx.namelist() if name.startswith("word/") and name.endswith(".xml")]
+            infos, _ = inspect_zip_limits(
+                docx,
+                max_files=MAX_DOCX_FILES,
+                max_expanded_bytes=MAX_DOCX_EXPANDED_BYTES,
+                max_member_bytes=MAX_DOCX_MEMBER_BYTES,
+            )
+            names = [info.filename for info in infos if info.filename.startswith("word/") and info.filename.endswith(".xml")]
             main_names = ["word/document.xml"] + sorted(name for name in names if name.startswith("word/header") or name.startswith("word/footer"))
             for name in main_names:
                 if name not in docx.namelist():

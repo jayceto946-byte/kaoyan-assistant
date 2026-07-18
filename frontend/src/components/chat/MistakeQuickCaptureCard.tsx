@@ -39,7 +39,7 @@ const MistakeQuickCaptureCard: React.FC<{ bookName: string; subject: string }> =
       try {
         const res = await get('/books/list');
         const rows = Array.isArray(res?.data) ? res.data : Array.isArray(res?.books) ? res.books : [];
-        const next = rows.map((book: { name: string; subject?: string }) => ({ name: book.name, subject: book.subject || '' }));
+        const next = rows.map((book: { name: string; subject?: string; displayName?: string; display_name?: string }) => ({ name: book.name, subject: book.subject || '', displayName: book.displayName || book.display_name }));
         if (alive) setAvailableBooks(next);
       } catch {
         if (alive) setAvailableBooks([]);

@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 from config import PROGRESS_PATH
 from utils.sqlite_recovery import prepare_sqlite_retry_files
+from utils.sqlite_migrations import apply_sqlite_migrations
 
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
@@ -259,6 +260,7 @@ class JobManager:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_type_created ON jobs(type, created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
+            apply_sqlite_migrations(conn, component="job_manager", current_version=1)
             conn.commit()
 
     def _prepare_retry_db_files(self) -> None:

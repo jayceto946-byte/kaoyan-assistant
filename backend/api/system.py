@@ -168,6 +168,7 @@ import subprocess
 from datetime import datetime
 
 from config import BASE_DIR
+from utils.version import APP_VERSION
 from utils.subject_catalog import DEFAULT_SUBJECT_TREE, clean_subject_tree, read_subject_tree, write_subject_tree
 
 ENV_PATH = Path(os.getenv("ENV_PATH", str(BASE_DIR / ".env")))
@@ -336,7 +337,7 @@ def version_info():
     return {
         "success": True,
         "data": {
-            "version": "1.0.0",
+            "version": APP_VERSION,
             "branch": branch,
             "commit": commit,
             "checked_at": datetime.now().isoformat(timespec="seconds"),

@@ -36,6 +36,7 @@ jobs:
           python -m venv venv310
           .\venv310\Scripts\python.exe -m pip install --upgrade pip
           .\venv310\Scripts\python.exe -m pip install -r requirements-release.txt
+          .\venv310\Scripts\python.exe -m pip install pytest
 
       - name: Install frontend dependencies
         shell: pwsh
@@ -46,6 +47,24 @@ jobs:
         shell: pwsh
         working-directory: desktop
         run: npm ci
+
+      - name: Check release version
+        shell: pwsh
+        run: |
+          .\venv310\Scripts\python.exe scripts\check_version_consistency.py
+          $version = (Get-Content VERSION -Raw).Trim()
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match VERSION v$version"
+          }
+
+      - name: Run release gates
+        shell: pwsh
+        run: |
+          .\venv310\Scripts\python.exe -m pytest -q
+          Push-Location frontend
+          npm.cmd run test
+          npm.cmd run lint
+          Pop-Location
 
       - name: Configure GitHub update feed
         shell: pwsh
@@ -73,4 +92,6 @@ jobs:
         working-directory: desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
         run: npm run publish

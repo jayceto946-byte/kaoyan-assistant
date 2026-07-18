@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('kaoyanDesktop', {
   minimize: () => ipcRenderer.invoke('window:minimize'),
   toggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
   close: () => ipcRenderer.invoke('window:close'),
+  restart: () => ipcRenderer.invoke('app:restart'),
   getStartupInfo: () => ipcRenderer.invoke('startup:info'),
   openWebFallback: () => ipcRenderer.invoke('startup:open-web'),
   openBackendLog: () => ipcRenderer.invoke('startup:open-log'),

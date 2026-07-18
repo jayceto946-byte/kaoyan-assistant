@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BookMarked, CheckCircle2, Circle, ExternalLink, FolderOpen, Loader2, RefreshCw, Trash2, X } from 'lucide-react';
 import { del, get, post } from '../api/client';
@@ -176,7 +176,7 @@ const HighlightRepositoryDialog: React.FC<HighlightRepositoryDialogProps> = ({ o
   const actionBusy = Boolean(operation);
   const showSelectedProgress = Boolean(progress?.target && sameScope(progress.target, targetBookName, selectedChapterId, selectedSectionId));
 
-  const refreshChapters = async (targetBook = highlightBookName) => {
+  const refreshChapters = useCallback(async (targetBook = highlightBookName) => {
     if (!targetBook) return;
     try {
       const res = await get(`/books/${encodeURIComponent(targetBook)}/chapter-highlights`, 30000);
@@ -184,7 +184,7 @@ const HighlightRepositoryDialog: React.FC<HighlightRepositoryDialogProps> = ({ o
     } catch {
       // The existing local artifact may still be openable; keep the current view.
     }
-  };
+  }, [highlightBookName]);
 
   useEffect(() => {
     if (!activeJobId) return;
@@ -253,7 +253,7 @@ const HighlightRepositoryDialog: React.FC<HighlightRepositoryDialogProps> = ({ o
       alive = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [activeJobId, activeJobTarget, currentBookName, highlightBookName, selectedChapterId, selectedSectionId, selectedScopeTitle]);
+  }, [activeJobId, activeJobTarget, currentBookName, highlightBookName, refreshChapters, selectedChapterId, selectedSectionId, selectedScopeTitle]);
 
   const startHighlightJob = async (chapterId = selectedChapterId, sectionId = selectedSectionId, force = false) => {
     if (actionBusy) return;

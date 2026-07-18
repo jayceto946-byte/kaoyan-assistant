@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { BookOpen, Check, ChevronDown, ChevronRight, GraduationCap } from 'lucide-react';
 import { get } from '../api/client';
+import { scopeContainsBook, type TextbookScopeOption } from '../utils/textbookScopes';
 
-export type ScopeBookOption = {
-  name: string;
-  subject?: string;
-  displayName?: string;
-};
+export type ScopeBookOption = TextbookScopeOption;
 
 type SubjectNode = {
   name: string;
@@ -158,8 +156,9 @@ export default function ScopeSelector({
   className?: string;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [popupAlign, setPopupAlign] = useState<'left' | 'right'>(align);
+  const [popupStyle, setPopupStyle] = useState<CSSProperties | null>(null);
   const [managedSubjects, setManagedSubjects] = useState<SubjectNode[]>([]);
 
   useEffect(() => {
@@ -175,19 +174,49 @@ export default function ScopeSelector({
     };
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
+  const updatePopupPosition = useCallback(() => {
     const rect = rootRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const popupWidth = Math.min(720, window.innerWidth - 32);
-    const wouldOverflowRight = rect.left + popupWidth > window.innerWidth - 16;
-    setPopupAlign(align === 'right' || wouldOverflowRight ? 'right' : 'left');
-  }, [align, open]);
+    const margin = 12;
+    const gap = 8;
+    const popupWidth = fullWidth ? rect.width : Math.min(720, window.innerWidth - margin * 2);
+    const preferredLeft = align === 'right' ? rect.right - popupWidth : rect.left;
+    const left = Math.max(margin, Math.min(preferredLeft, window.innerWidth - popupWidth - margin));
+    const above = Math.max(0, rect.top - margin);
+    const below = Math.max(0, window.innerHeight - rect.bottom - margin);
+    const openAbove = placement === 'top' ? above >= 180 || above >= below : below < 180 && above > below;
+    const availableHeight = Math.max(120, (openAbove ? above : below) - gap);
+    setPopupStyle({
+      position: 'fixed',
+      width: popupWidth,
+      left,
+      maxHeight: Math.min(560, availableHeight),
+      ...(openAbove
+        ? { bottom: window.innerHeight - rect.top + gap, top: 'auto' }
+        : { top: rect.bottom + gap, bottom: 'auto' }),
+    });
+  }, [align, fullWidth, placement]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPopupStyle(null);
+      return;
+    }
+    updatePopupPosition();
+    const reposition = () => updatePopupPosition();
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    return () => {
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+  }, [open, updatePopupPosition]);
 
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!rootRef.current?.contains(target) && !popupRef.current?.contains(target)) setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
@@ -200,15 +229,7 @@ export default function ScopeSelector({
     };
   }, [open]);
 
-  const scopeBooks = useMemo(() => {
-    const hasSensorCore = books.some((book) => book.name === '传感器短书');
-    if (!hasSensorCore) return books;
-    return books
-      .filter((book) => book.name !== '传感器长书')
-      .map((book) => book.name === '传感器短书'
-        ? { ...book, subject: '专业课/传感器', displayName: '传感器（短书重点 + 长书补充）' }
-        : book);
-  }, [books]);
+  const scopeBooks = books;
   const tree = useMemo(() => mergeSubjectTree(managedSubjects, suggestions, scopeBooks), [managedSubjects, suggestions, scopeBooks]);
   const active = useMemo(() => inferSubject(subject, tree), [subject, tree]);
   const activeParent = active.parent || (allowAllSubjects ? '' : tree[0]?.name || '');
@@ -222,9 +243,7 @@ export default function ScopeSelector({
     [scopeBooks, activeSubject, tree]
   );
 
-  const currentBook = scopeBooks.find((book) => book.name === bookName)
-    || (bookName === '传感器长书' ? scopeBooks.find((book) => book.name === '传感器短书') : undefined);
-  const popupWidthClass = fullWidth ? 'w-full min-w-0' : 'w-[min(720px,calc(100vw-32px))]';
+  const currentBook = scopeBooks.find((book) => scopeContainsBook(book, bookName));
   const popupGridClass = fullWidth
     ? 'grid-cols-1 divide-y divide-border'
     : bookMode === 'hidden'
@@ -232,12 +251,12 @@ export default function ScopeSelector({
       : 'grid-cols-1 divide-y divide-border sm:grid-cols-[160px_190px_minmax(0,1fr)] sm:divide-x sm:divide-y-0';
   const valueText = bookMode === 'hidden'
     ? (activeSubject ? subjectLabel(activeSubject) : placeholder)
-    : `${activeSubject ? subjectLabel(activeSubject) : '全部学科'} · ${currentBook?.displayName || currentBook?.name || (bookName || '通用 QA')}`;
+    : `${activeSubject ? subjectLabel(activeSubject) : '全部学科'} · ${currentBook?.displayName || currentBook?.name || (scopeBooks.length ? '选择教材' : '通用 QA')}`;
 
   const selectSubject = (nextSubject: string) => {
     onSubjectChange(nextSubject);
     if (onBookChange && bookName) {
-      const book = scopeBooks.find((item) => item.name === bookName);
+      const book = scopeBooks.find((item) => scopeContainsBook(item, bookName));
       const normalized = inferSubject(book?.subject || '', tree).value || book?.subject || '';
       if (book && !matchesSubject(normalized, nextSubject) && !matchesSubject(book.subject || '', nextSubject)) onBookChange('');
     }
@@ -261,15 +280,15 @@ export default function ScopeSelector({
         className={`flex h-10 ${fullWidth ? 'w-full min-w-0' : widthClass(width)} max-w-full items-center gap-2 rounded-full border border-border bg-bg-card px-3 text-left text-sm text-text-primary transition-colors outline-none hover:border-accent/50 focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-55`}
       >
         <GraduationCap className="h-4 w-4 flex-shrink-0 text-accent" />
-        <span className="min-w-0 flex-1 truncate text-xs font-medium leading-4">{valueText}</span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium leading-5">{valueText}</span>
         <ChevronDown className={`h-4 w-4 flex-shrink-0 text-text-secondary transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
-      {open && (
+      {open && createPortal(
         <div
-          className={`absolute z-40 ${popupWidthClass} max-h-[min(72dvh,560px)] overflow-y-auto rounded-[18px] border border-border bg-bg-card ${
-            placement === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'
-          } ${popupAlign === 'right' ? 'right-0' : 'left-0'}`}
+          ref={popupRef}
+          style={popupStyle || { visibility: 'hidden' }}
+          className="z-[1100] overflow-y-auto rounded-[18px] border border-border bg-bg-card"
         >
           <div className={`grid ${popupGridClass}`}>
             <Column title="一级科目">
@@ -308,26 +327,29 @@ export default function ScopeSelector({
             </Column>
 
             {bookMode !== 'hidden' && (
-              <Column title="教材">
-                <OptionButton active={!bookName} onClick={() => selectBook('')}>
-                  <span className="flex min-w-0 items-center gap-2">
-                    <BookOpen className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
-                    <span className="truncate">通用 QA</span>
-                  </span>
-                </OptionButton>
+              <Column title="教材范围">
+                {!scopeBooks.length && (
+                  <OptionButton active={!bookName} onClick={() => selectBook('')}>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <BookOpen className="h-3.5 w-3.5 flex-shrink-0 text-accent" />
+                      <span className="truncate">通用 QA</span>
+                    </span>
+                  </OptionButton>
+                )}
                 {visibleBooks.map((book) => (
-                  <OptionButton key={book.name} active={book.name === bookName} onClick={() => selectBook(book.name)}>
+                  <OptionButton key={book.name} active={scopeContainsBook(book, bookName)} onClick={() => selectBook(book.name)}>
                     <span className="min-w-0">
                       <span className="block truncate">{book.displayName || book.name}</span>
                       {book.subject && <span className="block truncate text-[11px] font-normal text-text-secondary">{subjectLabel(book.subject)}</span>}
                     </span>
                   </OptionButton>
                 ))}
-                {!visibleBooks.length && <EmptyLine text="该范围暂无教材，会走通用 QA" />}
+                {!visibleBooks.length && scopeBooks.length > 0 && <EmptyLine text="该科目暂无教材，请切换科目" />}
               </Column>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
@@ -347,7 +369,7 @@ function OptionButton({ active, onClick, children }: { active?: boolean; onClick
     <button
       type="button"
       onClick={onClick}
-      className={`flex min-h-9 w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/15 ${
+      className={`flex min-h-9 w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/15 ${
         active ? 'bg-[var(--accent-soft)] font-semibold text-accent-hover' : 'text-text-primary hover:bg-bg-secondary'
       }`}
     >

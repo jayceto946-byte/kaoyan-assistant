@@ -59,6 +59,7 @@ def _mb(book_name: str = "default"):
 def _record_to_out(record: MistakeRecord) -> MistakeRecordOut:
     return MistakeRecordOut(
         id=record.id,
+        book_id=record.book_id,
         question_text=record.question_text,
         user_answer=record.user_answer,
         correct_answer=record.correct_answer,

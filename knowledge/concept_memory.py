@@ -1,4 +1,4 @@
-﻿"""ConceptMemory — 概念记忆系统
+"""ConceptMemory — 概念记忆系统
 
 核心能力：
 1. 概念提取：每次回答后自动提取涉及的关键概念
@@ -34,12 +34,14 @@
 """
 import json
 import re
+from functools import wraps
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from config import get_llm, PROGRESS_PATH
 from utils.json_io import atomic_write_json
 from utils.path_safety import safe_book_name, safe_child_path
+from utils.state_locks import get_state_lock
 from utils.subject_catalog import normalize_subject_value
 
 
@@ -93,6 +95,17 @@ def _is_direct_question_concept(concept: dict, question: str) -> bool:
     return any(term and term.lower() in question_text for term in direct_terms)
 
 
+_EXPLICIT_WEAK_TERMS = {
+    "\u4e0d\u4f1a", "\u4e0d\u61c2", "\u6ca1\u61c2", "\u4e0d\u7406\u89e3", "\u6ca1\u7406\u89e3", "\u4e0d\u660e\u767d", "\u6ca1\u660e\u767d",
+    "\u641e\u4e0d\u61c2", "\u770b\u4e0d\u61c2", "\u4e0d\u719f", "\u4e0d\u592a\u719f", "\u638c\u63e1\u4e0d\u597d", "\u5bb9\u6613\u9519",
+    "\u603b\u662f\u9519", "\u8001\u662f\u9519", "\u8bb0\u4e0d\u4f4f", "\u5fd8\u4e86", "\u8584\u5f31",
+}
+
+def has_explicit_weak_signal(question: str) -> bool:
+    """Return whether the learner explicitly says they are struggling."""
+    text = (question or "").strip().lower()
+    return bool(text) and any(term in text for term in _EXPLICIT_WEAK_TERMS)
+
 def _merge_list(old: list, new: list, limit: int = 20) -> list:
     result = []
     for item in list(old or []) + list(new or []):
@@ -102,6 +115,16 @@ def _merge_list(old: list, new: list, limit: int = 20) -> list:
             break
     return result
 
+def _with_fresh_state(method):
+    """Serialize access and refresh snapshots shared by multiple instances."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._state_lock:
+            self._data = self._load()
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
 class ConceptMemory:
     """概念记忆系统"""
 
@@ -109,7 +132,9 @@ class ConceptMemory:
         self.book_name = book_name
         self._file = safe_child_path(PROGRESS_PATH, safe_book_name(book_name), "concept_memory.json")
         self._file.parent.mkdir(parents=True, exist_ok=True)
-        self._data = self._load()
+        self._state_lock = get_state_lock(self._file)
+        with self._state_lock:
+            self._data = self._load()
 
     # ── 存储 ──────────────────────────────────────────────
 
@@ -186,6 +211,7 @@ class ConceptMemory:
 
     # ── 接触记录 ──────────────────────────────────────────
 
+    @_with_fresh_state
     def log_exposure(
         self,
         concepts: list[dict],
@@ -196,6 +222,7 @@ class ConceptMemory:
         weak: bool = False,
         subject: str = "",
         conversation_id: str = "",
+        weak_reason: str = "",
     ):
         """记录一次概念接触。"""
         subject = normalize_subject_value(subject)
@@ -245,7 +272,7 @@ class ConceptMemory:
                 concept["last_subject"] = subject
             if weak:
                 concept["weak_flag"] = True
-                concept["weak_reason"] = source
+                concept["weak_reason"] = weak_reason or source
                 concept["last_weak_at"] = now
             concept["exposure_count"] += 1
             concept["last_exposed_at"] = now
@@ -273,6 +300,7 @@ class ConceptMemory:
 
         self._save()
 
+    @_with_fresh_state
     def log_candidates(
         self,
         concepts: list[dict],
@@ -347,6 +375,7 @@ class ConceptMemory:
 
     # ── 遗忘检测 ──────────────────────────────────────────
 
+    @_with_fresh_state
     def get_forgotten(self, days_threshold: int = 7, min_exposures: int = 2, limit: int = 3) -> list[dict]:
         """获取高频但久未接触的概念（疑似遗忘点）。
 
@@ -382,6 +411,7 @@ class ConceptMemory:
 
     # ── 高频概念 ──────────────────────────────────────────
 
+    @_with_fresh_state
     def get_frequent(self, limit: int = 5) -> list[dict]:
         """获取接触频率最高的概念。"""
         items = [
@@ -393,6 +423,7 @@ class ConceptMemory:
 
     # ── 学习提醒 ──────────────────────────────────────────
 
+    @_with_fresh_state
     def enrich_answer(self, answer: str, current_concepts: list[str]) -> str:
         """在回答末尾附加学习提醒。
 
@@ -425,20 +456,44 @@ class ConceptMemory:
 
     # ── 可扩展接口（预留）────────────────────────────────
 
+    @_with_fresh_state
     def mark_weak(self, concept_name: str, reason: str = ""):
         """标记概念为弱项（供错题本调用）。"""
         if concept_name in self._data["concepts"]:
             self._data["concepts"][concept_name]["weak_flag"] = True
+            self._data["concepts"][concept_name]["weak_reason"] = reason or "manual"
+            self._data["concepts"][concept_name]["last_weak_at"] = datetime.now().isoformat()
             self._save()
 
+    def _is_effective_weak(self, concept_name: str, info: dict) -> bool:
+        """Ignore legacy QA weak flags created solely from broad intent types."""
+        if not info.get("weak_flag"):
+            return False
+        reason = str(info.get("weak_reason", ""))
+        if reason != "qa":
+            return True
+        return any(
+            exposure.get("concept") == concept_name
+            and exposure.get("weak")
+            and has_explicit_weak_signal(str(exposure.get("question", "")))
+            for exposure in self._data.get("exposures", [])
+        )
+
+    @staticmethod
+    def _reviewed_today(info: dict) -> bool:
+        value = str(info.get("last_reviewed_at", ""))
+        return bool(value) and value[:10] == datetime.now().date().isoformat()
+
+    @_with_fresh_state
     def get_weak_points(self) -> list[dict]:
         """获取所有标记为弱项的概念（供周期性复习调用）。"""
         return [
             {"name": name, **info}
             for name, info in self._data["concepts"].items()
-            if info.get("weak_flag")
+            if self._is_effective_weak(name, info)
         ]
 
+    @_with_fresh_state
     def mark_reviewed(self, concept_name: str, quality: int = 4, note: str = "") -> dict:
         """记录一次概念复习，供学习页的复习动作调用。"""
         name = concept_name.strip()
@@ -478,6 +533,7 @@ class ConceptMemory:
             self._data["review_events"] = self._data["review_events"][-200:]
         self._save()
         return {"name": name, **concept}
+    @_with_fresh_state
     def get_review_queue(self, limit: int = 5) -> list[dict]:
         """获取复习队列：弱项 + 遗忘点（供周期性回顾调用）。"""
         weak = self.get_weak_points()
@@ -488,18 +544,22 @@ class ConceptMemory:
         queue = []
         for item in weak + forgotten:
             name = item["name"] if isinstance(item, dict) else item
+            info = self._data["concepts"].get(name, {})
+            if self._reviewed_today(info):
+                continue
             if name not in seen:
                 seen.add(name)
                 queue.append({"name": name, "reason": "weak" if item in weak else "forgotten"})
         return queue[:limit]
 
+    @_with_fresh_state
     def get_stats(self) -> dict:
         """获取概念记忆统计（供 UI 展示）。"""
         concepts = self._data["concepts"]
         return {
             "total_concepts": len(concepts),
             "total_exposures": len(self._data["exposures"]),
-            "weak_count": sum(1 for c in concepts.values() if c.get("weak_flag")),
+            "weak_count": sum(1 for name, c in concepts.items() if self._is_effective_weak(name, c)),
             "forgotten_count": len(self.get_forgotten(days_threshold=7)),
             "frequent_top3": self.get_frequent(3),
         }

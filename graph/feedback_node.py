@@ -1,4 +1,4 @@
-﻿"""反馈节点 — 更新记忆 + 掌握度 + 优化策略"""
+"""反馈节点 — 更新记忆 + 掌握度 + 优化策略"""
 from memory.study_memory import StudyMemory
 from memory.spaced_repetition import SpacedRepetition
 
@@ -96,8 +96,7 @@ def _strict_concepts(concepts: list[dict], question: str = "") -> list[dict]:
 def _record_concept_memory(state: dict) -> list[dict]:
     """Link final QA output to KG concepts and persist shared concept memory."""
     try:
-        from knowledge.concept_linker import is_unclear_intent
-        from knowledge.concept_memory import ConceptMemory
+        from knowledge.concept_memory import ConceptMemory, has_explicit_weak_signal
         from memory.learning_events import LearningEvent, concept_names, get_learning_event_store
 
         book_name = state.get("book_name", "default")
@@ -107,6 +106,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
         question = state.get("user_input", "")
         answer = state.get("final_output", "")
         raw_concepts = _link_concepts_locally(state)
+        explicit_weak = has_explicit_weak_signal(question)
 
         memory = ConceptMemory(book_name)
         concepts = _strict_concepts(raw_concepts, question)
@@ -116,9 +116,10 @@ def _record_concept_memory(state: dict) -> list[dict]:
                 question,
                 intent,
                 source="qa",
-                weak=is_unclear_intent(intent),
+                weak=explicit_weak,
                 subject=subject,
                 conversation_id=conversation_id,
+                weak_reason="explicit_confusion" if explicit_weak else "",
             )
 
         candidates = [item for item in raw_concepts if item not in concepts]
@@ -165,7 +166,7 @@ def _record_concept_memory(state: dict) -> list[dict]:
                     "question": question[:300],
                     "confidence": item.get("confidence", 0),
                     "link_source": item.get("source", ""),
-                    "weak": is_unclear_intent(intent),
+                    "weak": explicit_weak,
                 },
             ))
         if candidates:

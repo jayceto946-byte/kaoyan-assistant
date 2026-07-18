@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from config import PROGRESS_PATH
+from utils.sqlite_migrations import apply_sqlite_migrations
 
 TRACE_DB_PATH = Path(PROGRESS_PATH) / "rag_traces.db"
 MAX_TRACE_ROWS = 500
@@ -18,6 +19,7 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(TRACE_DB_PATH), timeout=10)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("CREATE TABLE IF NOT EXISTS rag_traces (request_id TEXT PRIMARY KEY, created_at REAL NOT NULL, conversation_id TEXT, book_name TEXT, question TEXT, intent TEXT, fast_path INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, ttft_ms REAL, total_ms REAL, timings_json TEXT NOT NULL, evidence_json TEXT NOT NULL, error TEXT)")
+    apply_sqlite_migrations(conn, component="rag_trace", current_version=1)
     return conn
 
 

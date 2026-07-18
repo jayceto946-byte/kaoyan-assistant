@@ -10,6 +10,7 @@ from config import PROGRESS_PATH
 from ingestion.lexical_index import expand_neighbors, search_book, tokenize
 from ingestion.reranker import cross_encoder_scores, reranker_status
 from graph.safe_retrieval import get_safe_kg, get_safe_vector_store
+from utils.resource_groups import resolve_retrieval_resources
 
 INTENT_ROLE_PRIORITY: dict[str, list[str]] = {
     "factual_recall": ["property", "definition", "reference", "theorem", "formula"],
@@ -60,8 +61,9 @@ def retrieve_node(state: dict) -> dict:
     user_input = state.get("user_input", "")
     book_name = state.get("book_name", "default")
     subject = str(state.get("subject") or "").strip()
-    sensor_scope = subject == "传感器" or subject.endswith("/传感器") or book_name in {"传感器", "传感器短书", "传感器长书"}
-    primary_book = "传感器短书" if sensor_scope else book_name
+    retrieval_resources = resolve_retrieval_resources(book_name, subject)
+    primary_resource = next((item for item in retrieval_resources if item.get("is_primary")), retrieval_resources[0])
+    primary_book = str(primary_resource.get("book_name") or book_name)
     intent = state.get("intent", "qa")
 
     if not state.get("use_textbook_context", True):
@@ -105,14 +107,12 @@ def retrieve_node(state: dict) -> dict:
             }
 
     precise_results, matched_concepts = _kg_precise_retrieval(kg, user_input, intent=intent)
-    retrieval_books = [primary_book]
-    if sensor_scope:
-        retrieval_books = ["传感器短书", "传感器长书"]
     vector_results: list[dict] = []
     lexical_results: list[dict] = []
     neighbor_results: list[dict] = []
-    for candidate_book in retrieval_books:
-        is_primary = candidate_book == primary_book
+    for resource in retrieval_resources:
+        candidate_book = str(resource.get("book_name") or "")
+        is_primary = bool(resource.get("is_primary"))
         candidate_vectors = _vector_retrieval(
             vs, user_input, intent=intent, book_name=candidate_book,
             target_chapters=target_chapters if is_primary else [],
@@ -123,8 +123,8 @@ def retrieve_node(state: dict) -> dict:
         candidate_lexical = search_book(candidate_book, user_input, k=20 if is_primary else 12, chapters=(target_chapters or None) if is_primary else None)
         lexical_results.extend(candidate_lexical)
         candidate_neighbors = expand_neighbors(candidate_book, [item.get("chunk_id", "") for item in candidate_lexical[:3]], window=1)
-        default_role = "core" if candidate_book == "传感器短书" else ("reference" if candidate_book == "传感器长书" else "")
-        default_priority = 1.0 if default_role != "reference" else 0.55
+        default_role = str(resource.get("role") or "")
+        default_priority = float(resource.get("priority") or 1.0)
         for item in candidate_vectors + candidate_lexical + candidate_neighbors:
             if default_role and not item.get("book_role"):
                 item["book_role"] = default_role
@@ -143,16 +143,16 @@ def retrieve_node(state: dict) -> dict:
     )
 
     kg_path: list[str] = []
+    # Directional KG relations are not reliable enough to influence answers.
+    # Keep the state field for backward compatibility, but never populate it
+    # from inferred prerequisite/extension edges.
     kg_formulas: list[dict] = []
     try:
         if matched_concepts:
             concept_name = matched_concepts[0]
-            kg_path = kg.find_path(concept_name)
             detail = kg.get_concept_detail(concept_name)
             if detail:
                 kg_formulas = detail.get("related_formulas", [])[:3]
-        elif target_chapters:
-            kg_path = kg.find_path(target_chapters[0])
     except Exception as exc:
         retrieval_errors.append(f"knowledge_graph_query: {exc}")
 

@@ -13,12 +13,12 @@ import {
   ExternalLink,
 
   HelpCircle,
-  Loader2,
   RefreshCw,
 } from 'lucide-react';
 import { get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
 import ScopeSelector, { type ScopeBookOption } from '../components/ScopeSelector';
+import { PageState, StatusBanner, TaskStatus } from '../components/ui/AsyncState';
 import { useChatContext } from '../contexts/ChatContext';
 import type { ConceptCandidate, ReviewHistoryItem } from '../types';
 
@@ -85,6 +85,9 @@ interface LearningSummary {
   subjects?: string[];
   selected_subject?: string;
   review_rules?: {
+    strict_concepts?: string;
+    high_confidence_exposures?: string;
+    weak_concepts?: string;
     mistake_due?: string;
     concept_due?: string;
     concept_reviewed?: string;
@@ -103,8 +106,28 @@ const LearningPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [reviewMessage, setReviewMessage] = useState('');
+  const [reviewingConcept, setReviewingConcept] = useState('');
   const [expandedDueId, setExpandedDueId] = useState('');
   const [selectedActivityDate, setSelectedActivityDate] = useState('');
+
+  const [kgJob, setKgJob] = useState<{ id: string; status: string; progress?: number; message?: string } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!bookName) {
+      setKgJob(null);
+      return () => { cancelled = true; };
+    }
+    get('/jobs?type=textbook_kg_enhancement&limit=20')
+      .then((res) => {
+        if (cancelled || !res?.success) return;
+        const active = (res.data || []).find((job: { book_name?: string; status?: string }) =>
+          job.book_name === bookName && ['queued', 'running', 'cancelling'].includes(job.status || '')
+        );
+        setKgJob(active || null);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [bookName]);
 
   useEffect(() => {
     let cancelled = false;
@@ -175,19 +198,65 @@ const LearningPage: React.FC = () => {
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (!kgJob?.id || !['queued', 'running', 'cancelling'].includes(kgJob.status)) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const res = await get(`/jobs/${encodeURIComponent(kgJob.id)}`);
+        if (res?.success) {
+          setKgJob(res.data);
+          if (res.data.status === 'completed') await load();
+        }
+      } catch {
+        // Keep the last durable job state; the generic jobs endpoint can resume polling.
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [kgJob?.id, kgJob?.status, load]);
+
+  const startKGEnhancement = async () => {
+    if (!bookName || kgJob?.status === 'running' || kgJob?.status === 'queued') return;
+    setError('');
+    try {
+      const estimateRes = await get(`/kg/enhance/estimate?book_name=${encodeURIComponent(bookName)}`);
+      if (!estimateRes?.success) {
+        setError(estimateRes?.message || '\u65e0\u6cd5\u4f30\u7b97\u77e5\u8bc6\u589e\u5f3a\u4efb\u52a1');
+        return;
+      }
+      const estimate = estimateRes.data || {};
+      const confirmed = window.confirm(
+        `\u77e5\u8bc6\u589e\u5f3a\u5c06\u5411\u5df2\u914d\u7f6e\u7684\u5916\u90e8 LLM \u53d1\u9001\u7b5b\u9009\u540e\u7684\u6559\u6750\u7247\u6bb5\u3002\n` +
+        `\u9884\u8ba1\u53d1\u9001\u7ea6 ${estimate.selected_characters || 0} \u4e2a\u5b57\u7b26\u3002\n\n` +
+        `\u662f\u5426\u7ee7\u7eed\uff1f`
+      );
+      if (!confirmed) return;
+      const res = await post('/kg/enhance', { book_name: bookName, allow_external_llm: true });
+      if (!res?.success) {
+        setError(res?.message || '\u77e5\u8bc6\u589e\u5f3a\u542f\u52a8\u5931\u8d25');
+        return;
+      }
+      setKgJob({ ...(res.data || {}), id: res.job_id || res.data?.id, status: res.data?.status || 'queued' });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const handleConceptReview = async (name: string, quality = 4) => {
     if (!bookName) return;
     setReviewMessage('');
+    setReviewingConcept(name);
     try {
       const res = await post(`/kg/concept-review?book_name=${encodeURIComponent(bookName)}`, { name, quality });
       if (!res?.success) {
         setReviewMessage(res?.message || '概念复习记录失败');
         return;
       }
-      setReviewMessage(`已记录「${name}」的概念复习`);
       await load();
+      setReviewMessage(`已记录「${name}」的概念复习，今天不再提醒`);
     } catch (e) {
       setReviewMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReviewingConcept('');
     }
   };
 
@@ -196,10 +265,8 @@ const LearningPage: React.FC = () => {
 
   return (
     <div className="learning-page flex h-full min-w-0 flex-col">
-      <div className="learning-page-header flex flex-wrap items-center justify-between gap-3 border-b border-border bg-bg-primary px-5 py-4">
-        <div>
-          <h2 className="text-sm font-semibold text-text-primary">学习情况</h2>
-        </div>
+      <div className="app-page-header learning-page-header border-b border-border bg-bg-primary">
+        <h2 className="app-page-title">学习情况</h2>
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
           <ScopeSelector
             subject={subjectFilter}
@@ -216,88 +283,89 @@ const LearningPage: React.FC = () => {
           <button
             onClick={load}
             disabled={loading || !bookName}
-            className="flex items-center gap-1.5 rounded-xl border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary transition-colors hover:border-accent disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary transition-colors hover:border-accent disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             刷新
           </button>
+          <button
+            onClick={startKGEnhancement}
+            disabled={!bookName || kgJob?.status === 'queued' || kgJob?.status === 'running'}
+            className="flex items-center gap-1.5 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary transition-colors hover:border-accent disabled:opacity-50"
+          >
+            <BrainCircuit className={`h-4 w-4 ${kgJob?.status === 'running' ? 'animate-pulse' : ''}`} />
+            {kgJob?.status === 'running' || kgJob?.status === 'queued' ? '正在完善知识关联' : '完善知识关联'}
+          </button>
         </div>
       </div>
 
-      <div className="learning-page-content flex-1 overflow-y-auto p-6">
-        {loading && (
-          <div className="flex items-center justify-center gap-2 py-12 text-text-secondary">
-            <Loader2 className="h-5 w-5 animate-spin" />
-            正在整理学习情况，数据较多时可能需要十几秒
-          </div>
-        )}
+      <div className="learning-page-content flex-1 space-y-5 overflow-y-auto p-6">
+        {loading && <PageState kind="loading" title="正在整理学习情况" description="数据较多时可能需要十几秒。" />}
 
-        {error && !loading && (
-          <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-[#9f3f2e]">{error}</div>
-        )}
+        {kgJob && <TaskStatus title="完善知识关联" detail={kgJob.message || kgJob.status} progress={kgJob.progress} state={kgJob.status === 'failed' ? 'error' : kgJob.status === 'completed' ? 'success' : 'loading'} />}
 
-        {!bookName && !loading && !error && (
-          <div className="rounded-xl border border-dashed border-border bg-bg-card px-4 py-10 text-center text-sm text-text-secondary">
-            学习情况依赖教材知识图谱。请选择一个教材后查看概念、错题和复习队列。
-          </div>
-        )}
+        {error && !loading && <StatusBanner kind="error" title="学习情况加载失败" description={error} action={<button onClick={load} className="app-secondary-button">重试</button>} />}
+
+        {!bookName && !loading && !error && <PageState kind="empty" title="请选择教材" description="选择教材后可查看概念、错题和复习队列。" />}
 
         {bookName && !loading && !error && summary && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <Metric icon={BrainCircuit} label="严格概念" value={summary.stats.total_concepts} />
-              <Metric icon={Activity} label="高置信接触" value={summary.stats.total_exposures} />
-              <Metric icon={AlertTriangle} label="薄弱概念" value={summary.stats.weak_count} tone="warn" />
-              <Metric icon={CalendarDays} label="今日待复习错题" value={summary.mistake_stats.due_today} tone="accent" rules={summary.review_rules} />
+            <section className="learning-metrics grid grid-cols-2 border-y border-border bg-bg-card xl:grid-cols-4">
+              <Metric icon={BrainCircuit} label="严格概念" value={summary.stats.total_concepts} help={summary.review_rules?.strict_concepts} />
+              <Metric icon={Activity} label="高置信接触" value={summary.stats.total_exposures} help={summary.review_rules?.high_confidence_exposures} />
+              <Metric icon={AlertTriangle} label="薄弱概念" value={summary.stats.weak_count} tone="warn" help={summary.review_rules?.weak_concepts} />
+              <Metric icon={CalendarDays} label="今日待复习错题" value={summary.mistake_stats.due_today} tone="accent" help={summary.review_rules?.mistake_due} />
+            </section>
+
+            {reviewMessage && <div className="border-l-2 border-[var(--success)] bg-[#eef5e8] px-3 py-2 text-sm text-[#557a46]">{reviewMessage}</div>}
+
+            <div className="learning-review-sections divide-y divide-border border-y border-border bg-bg-card">
+              <ExpandableSection title="待复习错题" count={summary.due_mistakes?.length || 0} defaultOpen={Boolean(summary.due_mistakes?.length)}>
+                <div className="divide-y divide-border px-4">
+                  {summary.due_mistakes?.length ? (
+                    summary.due_mistakes.map((mistake) => (
+                      <MistakePreview
+                        key={mistake.id}
+                        mistake={mistake}
+                        expanded={expandedDueId === mistake.id}
+                        onToggle={() => setExpandedDueId(expandedDueId === mistake.id ? '' : mistake.id)}
+                      />
+                    ))
+                  ) : (
+                    <Empty text="当前没有到期错题" compact />
+                  )}
+                </div>
+              </ExpandableSection>
+
+              <ExpandableSection title="今日概念复习" count={summary.concept_review_plan?.length || 0} defaultOpen>
+                <div className="learning-concept-grid grid grid-cols-1 gap-x-6 px-4 xl:grid-cols-2">
+                  {summary.concept_review_plan?.length ? (
+                    summary.concept_review_plan.map((item) => (
+                      <ConceptReviewCard key={item.name} item={item} onReview={handleConceptReview} reviewing={reviewingConcept === item.name} />
+                    ))
+                  ) : (
+                    <div className="xl:col-span-2"><Empty text="暂无需要优先复习的概念" compact /></div>
+                  )}
+                </div>
+              </ExpandableSection>
+
+              <ExpandableSection title="待复习概念" count={summary.review_queue.length} defaultOpen>
+                <div className="divide-y divide-border px-4">
+                  {summary.review_queue.length ? (
+                    summary.review_queue.map((item) => (
+                      <div key={item.name} className="flex items-center justify-between px-1 py-3 text-sm">
+                        <span className="truncate text-text-primary">{item.name}</span>
+                        <span className="ml-3 text-xs text-text-secondary">{item.reason === 'weak' ? '薄弱' : '遗忘'}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <Empty text="暂无待复习概念" compact />
+                  )}
+                </div>
+              </ExpandableSection>
             </div>
 
-            {reviewMessage && <div className="rounded-lg border border-[#c9d8bd] bg-[#eef5e8] px-3 py-2 text-sm text-[#557a46]">{reviewMessage}</div>}
-
-            <ExpandableSection title="待复习错题" count={summary.due_mistakes?.length || 0} defaultOpen={Boolean(summary.due_mistakes?.length)}>
-              <div className="space-y-3 p-4">
-                {summary.due_mistakes?.length ? (
-                  summary.due_mistakes.map((mistake) => (
-                    <MistakePreview
-                      key={mistake.id}
-                      mistake={mistake}
-                      expanded={expandedDueId === mistake.id}
-                      onToggle={() => setExpandedDueId(expandedDueId === mistake.id ? '' : mistake.id)}
-                    />
-                  ))
-                ) : (
-                  <Empty text="当前没有到期错题" compact />
-                )}
-              </div>
-            </ExpandableSection>
-
-            <ExpandableSection title="今日概念复习" count={summary.concept_review_plan?.length || 0} defaultOpen>
-              <div className="learning-concept-grid grid grid-cols-1 gap-3 p-4 xl:grid-cols-2">
-                {summary.concept_review_plan?.length ? (
-                  summary.concept_review_plan.map((item) => (
-                    <ConceptReviewCard key={item.name} item={item} onReview={handleConceptReview} />
-                  ))
-                ) : (
-                  <div className="xl:col-span-2"><Empty text="暂无需要优先复习的概念" compact /></div>
-                )}
-              </div>
-            </ExpandableSection>
-
-            <ExpandableSection title="待复习概念" count={summary.review_queue.length} defaultOpen>
-              <div className="space-y-2 p-4">
-                {summary.review_queue.length ? (
-                  summary.review_queue.map((item) => (
-                    <div key={item.name} className="flex items-center justify-between rounded border border-border bg-bg-primary px-3 py-2 text-sm">
-                      <span className="truncate text-text-primary">{item.name}</span>
-                      <span className="ml-3 text-xs text-text-secondary">{item.reason === 'weak' ? '薄弱' : '遗忘'}</span>
-                    </div>
-                  ))
-                ) : (
-                  <Empty text="暂无待复习概念" compact />
-                )}
-              </div>
-            </ExpandableSection>
-
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+            <div className="learning-insights grid grid-cols-1 divide-y divide-border border-y border-border bg-bg-card xl:grid-cols-3 xl:divide-x xl:divide-y-0">
               <Panel title="高频概念">
                 {summary.top_concepts.length ? (
                   summary.top_concepts.map((item) => (
@@ -363,8 +431,8 @@ const ActivityHeatmap = ({ daily, selectedDate, onSelectDate }: { daily: DailyDe
   const current = detailByDate.get(currentDate);
 
   return (
-    <section className="rounded-[18px] border border-border bg-bg-card">
-      <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+    <section>
+      <div className="flex items-center justify-between gap-3 px-4 pb-2 pt-4">
         <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
           <CalendarDays className="h-4 w-4 text-accent" /> 最近每日活动
         </div>
@@ -374,7 +442,7 @@ const ActivityHeatmap = ({ daily, selectedDate, onSelectDate }: { daily: DailyDe
           <span>多</span>
         </div>
       </div>
-      <div className="space-y-4 p-4">
+      <div className="space-y-4 px-4 pb-4">
         <div className="overflow-x-auto pb-1">
           <div className="grid w-max grid-flow-col grid-rows-7 gap-1">
             {weeks.flatMap((week) => week.map(({ key, detail }) => (
@@ -389,7 +457,7 @@ const ActivityHeatmap = ({ daily, selectedDate, onSelectDate }: { daily: DailyDe
             )))}
           </div>
         </div>
-        <div className="rounded border border-border bg-bg-primary p-3">
+        <div className="bg-bg-secondary p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="text-sm font-semibold text-text-primary">{currentDate}</div>
             <div className="text-xs text-text-secondary">{current?.total || 0} 次</div>
@@ -424,12 +492,12 @@ const ActivityHeatmap = ({ daily, selectedDate, onSelectDate }: { daily: DailyDe
     </section>
   );
 };
-const ConceptReviewCard = ({ item, onReview }: { item: ConceptReviewCardData; onReview: (name: string, quality?: number) => void }) => {
+const ConceptReviewCard = ({ item, onReview, reviewing }: { item: ConceptReviewCardData; onReview: (name: string, quality?: number) => void; reviewing?: boolean }) => {
   const [open, setOpen] = useState(false);
   const linkedMistakes = item.related_mistakes.slice(0, 4);
 
   return (
-    <article className="concept-review-card rounded-xl border border-border bg-bg-primary p-3 sm:p-4">
+    <article className="concept-review-card border-b border-border py-3 last:border-b-0 sm:py-4">
       <div className="flex items-start justify-between gap-2 sm:gap-3">
         <button type="button" onClick={() => setOpen(!open)} className="min-w-0 flex-1 text-left">
           <div className="flex min-w-0 items-center justify-start gap-2">
@@ -443,8 +511,8 @@ const ConceptReviewCard = ({ item, onReview }: { item: ConceptReviewCardData; on
             ))}
           </div>
         </button>
-        <button onClick={() => onReview(item.name, 4)} className="flex h-8 flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-border px-2.5 py-1 text-xs text-text-primary hover:border-accent hover:text-accent">
-          <CheckCircle2 className="h-3.5 w-3.5" /> 已复习
+        <button disabled={reviewing} onClick={() => onReview(item.name, 4)} className="flex h-8 flex-shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-border px-2.5 py-1 text-xs text-text-primary hover:border-accent hover:text-accent disabled:cursor-wait disabled:opacity-60">
+          <CheckCircle2 className="h-3.5 w-3.5" /> {reviewing ? '记录中…' : '已复习'}
         </button>
       </div>
 
@@ -479,14 +547,14 @@ const ConceptReviewCard = ({ item, onReview }: { item: ConceptReviewCardData; on
 };
 
 const MiniBlock = ({ icon: Icon, title, children }: { icon: React.ElementType; title: string; children: React.ReactNode }) => (
-  <div className="rounded border border-border bg-bg-card p-3">
+  <div className="bg-bg-secondary p-3">
     <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-text-primary"><Icon className="h-3.5 w-3.5 text-accent" />{title}</div>
     <div className="space-y-2">{children}</div>
   </div>
 );
 
 const MistakePreview = ({ mistake, expanded, onToggle }: { mistake: LearningMistakeSummary; expanded: boolean; onToggle: () => void }) => (
-  <div className="rounded-xl border border-border bg-bg-primary p-3">
+  <div className="py-3">
     <button type="button" onClick={onToggle} className="flex w-full items-start justify-between gap-3 text-left">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
@@ -504,34 +572,32 @@ const MistakePreview = ({ mistake, expanded, onToggle }: { mistake: LearningMist
       </Link>
     </button>
     {expanded && (
-      <div className="mt-3 rounded border border-border bg-bg-card p-3">
+      <div className="mt-3 bg-bg-secondary p-3">
         <ChatMessage role="assistant" content={mistake.question_text || mistake.id} linkedConcepts={mistake.linked_concepts || []} />
       </div>
     )}
   </div>
 );
 
-const Metric = ({ icon: Icon, label, value, tone = 'normal', rules }: { icon: React.ElementType; label: string; value: number; tone?: 'normal' | 'warn' | 'accent'; rules?: LearningSummary['review_rules'] }) => {
+const Metric = ({ icon: Icon, label, value, tone = 'normal', help }: { icon: React.ElementType; label: string; value: number; tone?: 'normal' | 'warn' | 'accent'; help?: string }) => {
   const [open, setOpen] = useState(false);
   return (
-    <div className="relative rounded-[18px] border border-border bg-bg-card p-4">
+    <div className="learning-metric relative px-4 py-4">
       <div className="flex items-start justify-between gap-2 sm:gap-3">
         <div className="flex items-center gap-2 text-xs text-text-secondary">
           <Icon className={tone === 'warn' ? 'h-4 w-4 text-[#9f3f2e]' : tone === 'accent' ? 'h-4 w-4 text-accent' : 'h-4 w-4'} />
           {label}
         </div>
-        {rules && (
+        {help && (
           <button onClick={() => setOpen(!open)} className="rounded p-0.5 text-text-secondary hover:text-accent" title="复习标准">
             <HelpCircle className="h-4 w-4" />
           </button>
         )}
       </div>
       <div className="mt-2 text-2xl font-semibold text-text-primary">{value ?? 0}</div>
-      {rules && open && (
+      {help && open && (
         <div className="absolute right-3 top-9 z-20 w-[min(340px,calc(100vw-88px))] rounded-xl border border-border bg-bg-primary p-3 text-xs">
-          <RuleItem title="待复习错题" text={rules.mistake_due || '错题按 SM-2 的 next_review 判断，到期即进入待复习。'} />
-          <RuleItem title="今日概念复习" text={rules.concept_due || '概念按薄弱、错题关联、未接触天数和未复习天数综合排序。'} />
-          <RuleItem title="已复习判定" text={rules.concept_reviewed || '点击已复习后写入复习时间和质量评分，并更新掌握度。'} />
+          <RuleItem title={`${label}的判定`} text={help} />
         </div>
       )}
     </div>
@@ -546,7 +612,7 @@ const RuleItem = ({ title, text }: { title: string; text: string }) => (
 );
 
 const Header = ({ title, count, open, onToggle }: { title: string; count?: number; open?: boolean; onToggle?: () => void }) => (
-  <button type="button" onClick={onToggle} className="flex w-full items-center justify-between border-b border-border px-4 py-3 text-left text-sm font-medium text-text-primary">
+  <button type="button" onClick={onToggle} className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium text-text-primary hover:bg-bg-secondary">
     <span className="flex items-center gap-2">
       {open ? <ChevronDown className="h-4 w-4 text-accent" /> : <ChevronRight className="h-4 w-4 text-text-secondary" />}
       {title}
@@ -558,17 +624,17 @@ const Header = ({ title, count, open, onToggle }: { title: string; count?: numbe
 const ExpandableSection = ({ title, count, defaultOpen = false, children }: { title: string; count?: number; defaultOpen?: boolean; children: React.ReactNode }) => {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="rounded-[18px] border border-border bg-bg-card">
+    <section>
       <Header title={title} count={count} open={open} onToggle={() => setOpen(!open)} />
-      {open && children}
+      {open && <div className="border-t border-border">{children}</div>}
     </section>
   );
 };
 
 const Panel = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <section className="rounded-[18px] border border-border bg-bg-card">
-    <div className="border-b border-border px-4 py-3 text-sm font-medium text-text-primary">{title}</div>
-    <div className="space-y-2 p-4">{children}</div>
+  <section>
+    <div className="px-4 pb-2 pt-4 text-sm font-medium text-text-primary">{title}</div>
+    <div className="space-y-2 px-4 pb-4">{children}</div>
   </section>
 );
 
