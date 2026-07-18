@@ -2,6 +2,8 @@
 
 这是考研智能辅助系统的独立宣传页面，不依赖 Node.js、打包器或外部 CDN。
 
+在线演示：<https://jayceto946-byte.github.io/kaoyan-assistant/>
+
 ## 直接打开
 
 双击 index.html 即可。页面中的 CSS、JavaScript 和六张真实项目截图均使用相对路径。截图在独立资源区显示为固定比例缩略图，点击后通过原生 dialog 展开。
@@ -34,4 +36,4 @@
 
 ## 发布
 
-该目录可直接上传到 GitHub Pages、任意静态文件服务器或对象存储。发布前仍应确认内置截图和样例教材相关内容的公开分发授权。
+该目录通过 <code>.github/workflows/pages.yml</code> 自动部署到 GitHub Pages，也可以上传到任意静态文件服务器或对象存储。发布前仍应确认内置截图和样例教材相关内容的公开分发授权。

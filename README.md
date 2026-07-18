@@ -333,6 +333,8 @@ seed 脚本具有稳定 ID，可重复运行，并会拒绝写入仓库正式 <c
 
 <code>site/</code> 是不依赖构建工具的项目介绍页。直接打开 <code>site/index.html</code>，或在仓库根目录运行：
 
+在线演示：<https://jayceto946-byte.github.io/kaoyan-assistant/>
+
     .\venv310\Scripts\python.exe -m http.server 4173 --directory site
 
 ## 开源协议

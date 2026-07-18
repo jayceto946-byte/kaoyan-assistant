@@ -865,3 +865,17 @@ The detailed historical notes for this period were damaged by mojibake before th
 - 所有截图容器比例均为 1.6，灯箱图片成功加载为 1440 × 900。
 - 移动导航、灯箱打开/关闭、焦点恢复和控制台检查通过。
 - site 本地资源无缺失，JavaScript 语法通过，页面可见文案不含 em dash。
+## 2026-07-18 - GitHub Pages 发布
+
+### Deployment
+
+- 新增 `.github/workflows/pages.yml`，从 `site/` 打包并部署静态项目页。
+- 仓库 Pages 发布源已切换为 GitHub Actions，并启用默认域名 HTTPS。
+- Pages 工作流使用 `actions/checkout@v6`、`actions/configure-pages@v6`、`actions/upload-pages-artifact@v4` 与 `actions/deploy-pages@v4`。
+- 公开地址为 `https://jayceto946-byte.github.io/kaoyan-assistant/`。
+
+### Validation
+
+- GitHub Actions `Deploy Project Site` 第二次运行成功，耗时 17 秒。
+- 公开页面标题、样式表、6 张截图与 9 个预览入口加载正常。
+- 1440 × 900 截图灯箱在公开站点实测可打开，浏览器控制台无错误。
