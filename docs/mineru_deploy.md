@@ -1,91 +1,247 @@
-# MinerU deployment
+# MinerU 教材解析：AutoDL 租卡全流程
 
-MinerU is treated as an external parsing service. The main `kaoyan-assistant` image does not install MinerU, Paddle, CUDA, PyTorch, or vLLM dependencies.
+> 面向本地运行本项目、在 AutoDL 租用 NVIDIA GPU 的用户。本文按 MinerU 3.x 编写；正式跑整本书前必须先做 5 页试跑。
 
-## Why separate it
+## 1. GPU Host 是什么
 
-- The main app must run on weak local machines and CPU-only Docker hosts.
-- MinerU 3.x has heavier OCR/VLM/GPU dependencies and should be isolated.
-- Rented GPU machines can run MinerU remotely while the local app only uploads PDFs and polls jobs.
+`GPU Host` 只是“运行 MinerU 的远端 GPU 计算机”，在这里就是租到的 AutoDL 容器实例，不是另一个产品。
 
-## Main app settings
+有两条路线：
 
-Configure these in `.env`:
+1. **输出包路线（推荐）**：本地 PDF → 上传 AutoDL → MinerU 识别 → 输出目录压成 zip → 下载 → 本软件“教材导入 / 导入 MinerU 输出包”。不需要配置 `MINERU_API_URL`。
+2. **SSH 隧道直连（高级）**：AutoDL 运行 `mineru-api`，本地软件经 SSH 隧道直接上传、轮询和下载。
 
-```env
-MINERU_API_URL=http://host.docker.internal:9001
-MINERU_OUTPUT_PATH=./mineru_output
-MINERU_TASK_TIMEOUT_SECONDS=3600
-MINERU_TASK_POLL_SECONDS=2
-# Optional CLI fallback when no API service is available.
-# MINERU_CLI_COMMAND=mineru -p "{input}" -o "{output}" -m auto
+所以可以“直接连租的卡”，但连接的是租用实例中的 MinerU API。第一次建议走输出包路线，最容易排错，也不要求 SSH 始终在线。
+
+## 2. 租卡和镜像
+
+推荐：
+
+- 按量计费；AutoDL 是实例开机即计费，下载完成后要关机。
+- 1 张 RTX 3090 24GB、RTX 4090 24GB 或同级 GPU。
+- 内存至少 16GB，建议 32GB。
+- 数据盘至少留 30GB。MinerU 官方最低磁盘要求约 20GB。
+- Ubuntu + PyTorch 镜像。优先选仍可用的较新组合，如 `PyTorch 2.5.1 / Python 3.12 / CUDA 12.4`；否则选 Python 3.10–3.12、CUDA 11.8 或更新版本。
+
+8GB 只是默认混合后端的最低显存，不建议第一次用它跑长篇数学教材。
+
+在 AutoDL“控制台 → 容器实例 → 租用新实例”选择地区、1 卡、镜像并创建。开机后记下 JupyterLab 入口及 SSH 命令，例如：
+
+```text
+ssh -p 10309 root@connect.nmb1.seetacloud.com
 ```
 
-Inside Docker Compose, `MINERU_OUTPUT_PATH` is mounted as `/app/mineru_output` and persisted on the host at `./mineru_output`.
+端口和主机名必须替换为实例详情页显示的实际值。
 
-## Local MinerU service
+## 3. 检查实例
 
-Use the official MinerU 3.x Docker/API deployment. The service must expose the async task API used by the app:
+进入 JupyterLab，打开 Terminal：
 
-- `POST /tasks`
-- `GET /tasks/{task_id}`
-- `GET /tasks/{task_id}/result`
-
-Then set:
-
-```env
-MINERU_API_URL=http://host.docker.internal:9001
+```bash
+nvidia-smi
+python --version
+df -h /root/autodl-tmp
 ```
 
-If the main app runs outside Docker, use:
+应看到具体 GPU、Python 3.10–3.12 和足够的数据盘空间。看不到 GPU 时先确认实例以正常 GPU 模式开机。
 
-```env
-MINERU_API_URL=http://127.0.0.1:9001
+## 4. 安装 MinerU
+
+把虚拟环境、模型缓存、PDF 和产物都放到数据盘，避免挤满系统盘：
+
+```bash
+mkdir -p /root/autodl-tmp/mineru-work/{input,output}
+mkdir -p /root/autodl-tmp/mineru-work/cache/{uv,huggingface,modelscope}
+
+python -m venv /root/autodl-tmp/mineru-venv
+source /root/autodl-tmp/mineru-venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install uv
+
+export UV_CACHE_DIR=/root/autodl-tmp/mineru-work/cache/uv
+export HF_HOME=/root/autodl-tmp/mineru-work/cache/huggingface
+export MODELSCOPE_CACHE=/root/autodl-tmp/mineru-work/cache/modelscope
+export MINERU_MODEL_SOURCE=modelscope
+
+uv pip install -U "mineru[all]"
 ```
 
-## Rented GPU service
+`mineru[all]` 是官方当前推荐的完整安装方式。大陆网络建议 ModelScope。第一次运行还会下载模型，耗时和占用增加是正常的。
 
-Run MinerU on the rented GPU host and bind it to localhost on that host, for example `127.0.0.1:8000`. Then create an SSH tunnel from the local machine:
+验证安装和 CUDA：
+
+```bash
+mineru --version
+mineru --help
+python -c "import torch; print('torch=', torch.__version__); print('cuda=', torch.cuda.is_available()); print('gpu=', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE')"
+```
+
+必须看到 `cuda=True` 和 GPU 名称。每次打开新 Terminal，都要重新执行 `source /root/autodl-tmp/mineru-venv/bin/activate` 及上面的四条 `export`；环境和模型本身不会消失。
+
+## 5. 上传教材
+
+新手可在 JupyterLab 左侧进入 `autodl-tmp/mineru-work/input`，点上传按钮。建议把 PDF 改成短英文名，如 `advanced_math_1.pdf`。完成后检查：
+
+```bash
+ls -lh /root/autodl-tmp/mineru-work/input
+```
+
+也可在本地 Windows PowerShell 执行 SCP：
 
 ```powershell
-ssh -L 9001:127.0.0.1:8000 user@gpu-server
+scp -P 10309 "D:\Books\advanced_math_1.pdf" root@connect.nmb1.seetacloud.com:/root/autodl-tmp/mineru-work/input/
 ```
 
-Local `.env`:
+SCP 的端口参数是大写 `-P`。
 
-```env
-MINERU_API_URL=http://127.0.0.1:9001
+## 6. 先做 5 页试跑
+
+```bash
+source /root/autodl-tmp/mineru-venv/bin/activate
+export UV_CACHE_DIR=/root/autodl-tmp/mineru-work/cache/uv
+export HF_HOME=/root/autodl-tmp/mineru-work/cache/huggingface
+export MODELSCOPE_CACHE=/root/autodl-tmp/mineru-work/cache/modelscope
+export MINERU_MODEL_SOURCE=modelscope
+
+mineru \
+  -p /root/autodl-tmp/mineru-work/input/advanced_math_1.pdf \
+  -o /root/autodl-tmp/mineru-work/output/advanced_math_1-test \
+  -m auto \
+  -s 0 \
+  -e 4
 ```
 
-This keeps the MinerU port private and avoids exposing the parsing service directly to the internet.
+`-s 0 -e 4` 是第 1–5 个 PDF 页面（从 0 计数）。检查核心产物：
 
-## CLI fallback
-
-If a MinerU API service is unavailable but MinerU is installed on the same machine, set `MINERU_CLI_COMMAND` as a command template. The app replaces `{input}`, `{output}`, and `{book}` before execution. The command must write MinerU JSON/Markdown outputs under `{output}`.
-
-Example:
-
-```env
-MINERU_CLI_COMMAND=mineru -p "{input}" -o "{output}" -m auto
+```bash
+find /root/autodl-tmp/mineru-work/output/advanced_math_1-test -type f \
+  \( -name "*.md" -o -name "*content_list*.json" -o -name "*middle*.json" \) \
+  -print
 ```
 
-Keep this unset when using the remote API service.
+至少应找到 Markdown、content_list JSON 或 middle JSON。用 JupyterLab 打开 Markdown，抽查中文、LaTeX 公式、双栏顺序和扫描页正文。合格后才跑整本。
 
-## App behavior
+## 7. 解析整本书
 
-Textbook import now uses an async job:
+```bash
+mineru \
+  -p /root/autodl-tmp/mineru-work/input/advanced_math_1.pdf \
+  -o /root/autodl-tmp/mineru-work/output/advanced_math_1 \
+  -m auto
+```
 
-1. Frontend uploads PDF to `/api/books/import-job`.
-2. Backend saves the PDF under `data/books`.
-3. Backend submits it to MinerU using `MINERU_API_URL`, or runs `MINERU_CLI_COMMAND` when configured.
-4. Frontend polls `/api/books/import-jobs/{job_id}`.
-5. Backend downloads or reads MinerU output into `mineru_output/<book>/hybrid_auto`.
-6. Backend extracts chapters/text chunks and rebuilds vector indexes.
+数学教材保留默认公式和表格识别。若确认是纯扫描件且 `auto` 没有触发 OCR，用新目录重跑：
 
-Exercise PDF import also prefers MinerU when `MINERU_API_URL` is configured. DOCX import still uses direct Word XML extraction.
+```bash
+mineru \
+  -p /root/autodl-tmp/mineru-work/input/advanced_math_1.pdf \
+  -o /root/autodl-tmp/mineru-work/output/advanced_math_1-ocr \
+  -m ocr
+```
 
-## Fallbacks
+长任务优先在 JupyterLab Terminal 运行；使用 SSH 时先进入 `screen` 或 `tmux`，避免断线终止。
 
-- If neither `MINERU_API_URL` nor `MINERU_CLI_COMMAND` is configured and textbook import requires MinerU, the job fails clearly.
-- `/api/books/import-local` remains available for local TOC-only parsing.
-- If exercise PDF MinerU parsing fails, the importer falls back to the PDF text layer and returns warnings.
+## 8. 检查、打包、下载
+
+```bash
+find /root/autodl-tmp/mineru-work/output/advanced_math_1 -type f \
+  \( -name "*.md" -o -name "*content_list*.json" -o -name "*middle*.json" \) \
+  -print
+du -sh /root/autodl-tmp/mineru-work/output/advanced_math_1
+```
+
+本软件可识别 `*content_list*.json`、`*middle*.json` 或 Markdown。要打包整个输出目录和图片资源，不能只下载 Markdown：
+
+```bash
+apt-get update
+apt-get install -y zip
+cd /root/autodl-tmp/mineru-work/output/advanced_math_1
+zip -r /root/autodl-tmp/mineru-work/advanced_math_1-mineru.zip .
+ls -lh /root/autodl-tmp/mineru-work/advanced_math_1-mineru.zip
+```
+
+本软件会用 zip 文件名作为默认教材名，请命名清楚且避免和已有教材重名。
+
+下载方式：
+
+- JupyterLab 找到 `autodl-tmp/mineru-work/advanced_math_1-mineru.zip`，右键 Download。
+- 或本地 PowerShell：
+
+```powershell
+scp -P 10309 root@connect.nmb1.seetacloud.com:/root/autodl-tmp/mineru-work/advanced_math_1-mineru.zip "$env:USERPROFILE\Downloads\"
+```
+
+确认本地 zip 能打开后再关闭实例。
+
+## 9. 导入本软件
+
+1. 启动 Electron 桌面端，进入“教材导入”。
+2. 选择“导入 MinerU 输出包”，不要选“导入 PDF 教材”。
+3. 选择 zip，点击“导入输出包”。
+4. 等待“解压结果包 → 整理结构 → 建立索引 → 完成”。上传后还要在本机建立 Chroma 索引，不能立即退出。
+5. 在教材库确认教材和章节，并在对话中选择该教材做检索验证。
+
+成功标准不是“zip 上传完成”，而是任务最终完成且索引到文本块。只有一个“全文”章节不一定失败，通常只是标题层级没有可靠识别。
+
+## 10. 关机和保留
+
+按量实例开机即计费。确认 zip 已下载且可打开后，回 AutoDL 控制台关机。AutoDL 当前会保留关机实例数据，但达到连续关机释放周期后可能清除；PDF 和 zip 必须另存本地。
+
+保存镜像可复用系统盘环境，但 `/root/autodl-tmp` 是数据盘，不会随镜像保存。
+
+## 11. 可选：通过 SSH 隧道直连
+
+先验证输出包流程。AutoDL Terminal 启动 API：
+
+```bash
+source /root/autodl-tmp/mineru-venv/bin/activate
+export UV_CACHE_DIR=/root/autodl-tmp/mineru-work/cache/uv
+export HF_HOME=/root/autodl-tmp/mineru-work/cache/huggingface
+export MODELSCOPE_CACHE=/root/autodl-tmp/mineru-work/cache/modelscope
+export MINERU_MODEL_SOURCE=modelscope
+export MINERU_API_OUTPUT_ROOT=/root/autodl-tmp/mineru-api-output
+
+mineru-api --host 127.0.0.1 --port 8000 --enable-vlm-preload true
+```
+
+只绑定远端 `127.0.0.1`，不要把无认证 API 暴露到公网。
+
+本地 PowerShell 保持运行：
+
+```powershell
+ssh -N -L 9001:127.0.0.1:8000 -p 10309 root@connect.nmb1.seetacloud.com
+```
+
+另开 PowerShell 验证：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:9001/health
+```
+
+软件中的 MinerU API URL 填：
+
+```text
+http://127.0.0.1:9001
+```
+
+然后选择“导入 PDF 教材”。直连期间 AutoDL 必须开机、`mineru-api` 必须运行、SSH 隧道不能关闭。AutoDL 的 SSH 主机名不是 `MINERU_API_URL`。
+
+## 12. 常见问题
+
+- `torch.cuda.is_available()` 为 `False`：先检查 GPU 模式和 `nvidia-smi`。若后者正常，多为镜像、PyTorch wheel 与驱动不匹配；优先更换较新的 PyTorch + CUDA 镜像。
+- 下载慢：确认 `MINERU_MODEL_SOURCE=modelscope`，不要删除缓存，否则会重复下载。
+- `No space left on device`：运行 `df -h` 和 `du -sh /root/autodl-tmp/mineru-work/*`，确认环境、缓存和输出都在数据盘。
+- CUDA OOM：检查 `nvidia-smi`，换大显存实例；最后才降级为 `mineru -p 输入.pdf -o 输出目录 -b pipeline -m ocr -l ch`，并重新抽查公式和版面。
+- 软件找不到 content_list、middle JSON 或 Markdown：通常是压错目录、任务未完成或 zip 损坏；重新执行第 8 节的 `find`，再打包整个正式输出目录。
+
+## 官方参考
+
+- [MinerU 安装与硬件要求](https://github.com/opendatalab/MinerU)
+- [MinerU 快速使用](https://opendatalab.github.io/MinerU/usage/quick_usage/)
+- [MinerU CLI 参数](https://opendatalab.github.io/MinerU/usage/cli_tools/)
+- [MinerU 输出格式](https://opendatalab.github.io/MinerU/reference/output_files/)
+- [AutoDL 快速开始](https://www.autodl.com/docs/quick_start/)
+- [AutoDL JupyterLab](https://www.autodl.com/docs/jupyterlab/)
+- [AutoDL SCP](https://www.autodl.com/docs/scp/)
+- [AutoDL 实例目录](https://www.autodl.com/docs/env/)
+- [AutoDL 计费](https://www.autodl.com/docs/price/)

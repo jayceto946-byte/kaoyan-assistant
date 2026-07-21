@@ -69,6 +69,10 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   }
 }
 
+export async function apiFetch(path: string, init: RequestInit = {}, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Response> {
+  return fetchWithTimeout(apiUrl(path), init, timeoutMs);
+}
+
 export async function get(path: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<any> {
   const res = await fetchWithTimeout(apiUrl(path), {}, timeoutMs);
   if (!res.ok) throw await responseError(res, `GET ${path} failed`);

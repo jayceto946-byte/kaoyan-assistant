@@ -3,7 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from backend.main import app
-from memory.textbook_exercise_importer import extract_textbook_exercise_text
+from memory.textbook_exercise_importer import ExtractedTextbookExerciseText, extract_textbook_exercise_text
 
 
 def test_extract_textbook_exercises_from_source_package(tmp_path, monkeypatch):
@@ -70,12 +70,30 @@ def test_textbook_analyze_api(monkeypatch, tmp_path):
     monkeypatch.setattr("memory.textbook_exercise_importer.PROGRESS_PATH", progress)
 
     client = TestClient(app)
-    res = client.post("/api/exercises/textbook-analyze", json={"book_name": "demo", "subject": "专业课"}).json()
+    res = client.post("/api/exercises/textbook-analyze", json={"book_name": "demo", "subject": "专业课", "chapter": "第一章"}).json()
 
     assert res["success"] is True
     assert res["summary"]["total"] == 2
     assert res["extract"]["provider"] == "chapter-highlight-source-package"
+    assert res["data"][0]["chapter"] == "第一章"
 
+
+def test_textbook_analyze_rejects_candidates_without_chapter(monkeypatch):
+    monkeypatch.setattr(
+        "backend.api.exercises.extract_textbook_exercise_text",
+        lambda *_args, **_kwargs: ExtractedTextbookExerciseText(
+            text="1. 计算函数导数。",
+            provider="external-ocr-jsonl",
+            book_name="demo",
+            warnings=["所选页码范围无法唯一对应一个章节"],
+        ),
+    )
+
+    client = TestClient(app)
+    res = client.post("/api/exercises/textbook-analyze", json={"book_name": "demo"}).json()
+
+    assert res["success"] is False
+    assert "无法确定候选题所属章节" in res["message"]
 
 def test_explicit_page_range_excludes_chunks_without_page_metadata(tmp_path, monkeypatch):
     progress = tmp_path / "progress"
@@ -107,6 +125,112 @@ def test_explicit_page_range_excludes_chunks_without_page_metadata(tmp_path, mon
     assert "Unknown page question" not in extracted.text
     assert extracted.chunk_count == 1
 
+
+def test_pdf_physical_page_maps_to_printed_chunk_page(tmp_path, monkeypatch):
+    import fitz
+
+    books = tmp_path / "books"
+    progress = tmp_path / "progress"
+    source_dir = progress / "demo" / "chapter_highlights" / "chapter_001"
+    books.mkdir()
+    source_dir.mkdir(parents=True)
+    (source_dir.parents[1] / "_chapters.json").write_text(
+        json.dumps(
+            [
+                {"title": "第二章", "page_number": 21, "end_page": 42},
+                {"title": "第三章", "page_number": 43, "end_page": 63},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    pdf_path = books / "demo.pdf"
+    doc = fitz.open()
+    for _ in range(60):
+        doc.new_page()
+    doc.set_page_labels([
+        {"startpage": 0, "prefix": "", "firstpagenum": 1, "style": "A"},
+        {"startpage": 10, "prefix": "", "firstpagenum": 1, "style": "D"},
+    ])
+    doc.save(pdf_path)
+    doc.close()
+
+    (source_dir / "source_package.json").write_text(
+        json.dumps(
+            {
+                "book_name": "demo",
+                "chapter": {"title": "第二章"},
+                "practice_sections": [
+                    {
+                        "title": "思考题与习题",
+                        "chunks": [
+                            {"text": "1. 计算应变片灵敏度。", "page": 42, "role": "reference"}
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("memory.textbook_exercise_importer.BOOKS_PATH", books)
+    monkeypatch.setattr("memory.textbook_exercise_importer.PROGRESS_PATH", progress)
+    monkeypatch.setattr(
+        "memory.textbook_exercise_importer._text_from_kimi_pdf_pages",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("不应调用 OCR")),
+    )
+
+    extracted = extract_textbook_exercise_text("demo", page_start=52, page_end=52)
+
+    assert extracted.provider == "chapter-highlight-source-package"
+    assert extracted.chapter == "第二章"
+    assert "计算应变片灵敏度" in extracted.text
+    assert any("教材印刷页 42" in warning for warning in extracted.warnings)
+    assert any("自动归入章节：第二章" in warning for warning in extracted.warnings)
+
+    cross_chapter = extract_textbook_exercise_text("demo", page_start=52, page_end=53)
+
+    assert cross_chapter.chapter == ""
+    assert any("无法唯一对应一个章节" in warning for warning in cross_chapter.warnings)
+
+
+def test_chapter_printed_page_maps_to_physical_pdf_page_for_ocr(tmp_path, monkeypatch):
+    import fitz
+
+    books = tmp_path / "books"
+    progress = tmp_path / "progress"
+    book_dir = progress / "demo"
+    books.mkdir()
+    book_dir.mkdir(parents=True)
+    (book_dir / "_chapters.json").write_text(
+        json.dumps([{"title": "第二章", "page_number": 42, "end_page": 42}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    pdf_path = books / "demo.pdf"
+    doc = fitz.open()
+    for _ in range(60):
+        doc.new_page()
+    doc.set_page_labels([
+        {"startpage": 0, "prefix": "", "firstpagenum": 1, "style": "A"},
+        {"startpage": 10, "prefix": "", "firstpagenum": 1, "style": "D"},
+    ])
+    doc.save(pdf_path)
+    doc.close()
+
+    monkeypatch.setattr("memory.textbook_exercise_importer.BOOKS_PATH", books)
+    monkeypatch.setattr("memory.textbook_exercise_importer.PROGRESS_PATH", progress)
+    monkeypatch.setattr("memory.textbook_exercise_importer._text_from_pdf", lambda *_args: "")
+    monkeypatch.setattr(
+        "memory.textbook_exercise_importer._text_from_kimi_pdf_pages",
+        lambda _book, _chapter, start, end: f"PDF {start}-{end}\n1. 计算灵敏度。",
+    )
+
+    extracted = extract_textbook_exercise_text("demo", chapter="第二章")
+
+    assert extracted.provider == "kimi-vision-pdf-pages"
+    assert "PDF 52-52" in extracted.text
 
 def test_page_metadata_supports_zero_based_index_and_source_markdown():
     from memory.textbook_exercise_importer import _page_from_item

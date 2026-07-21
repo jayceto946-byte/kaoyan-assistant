@@ -56,13 +56,40 @@ def extract_textbook_exercise_text(
     chapter_record = _find_chapter(chapters, chapter)
     resolved_chapter = str(chapter_record.get("title") or chapter or "").strip() if chapter_record else chapter.strip()
     resolved_start, resolved_end = _resolve_page_range(chapter_record, page_start, page_end)
+    explicit_page_range = _positive_int(page_start) is not None
+    if explicit_page_range:
+        chunk_start, chunk_end = _pdf_range_to_printed_pages(clean_book, resolved_start, resolved_end)
+        pdf_start, pdf_end = resolved_start, resolved_end
+    else:
+        chunk_start, chunk_end = resolved_start, resolved_end
+        pdf_start, pdf_end = _printed_range_to_pdf_pages(clean_book, resolved_start, resolved_end)
+
+    chapter_inferred = False
+    chapter_range_ambiguous = False
+    if not resolved_chapter and chunk_start:
+        inferred_chapter = _find_chapter_by_page_range(chapters, chunk_start, chunk_end)
+        if inferred_chapter:
+            chapter_record = inferred_chapter
+            resolved_chapter = str(inferred_chapter.get("title") or "").strip()
+            chapter_inferred = bool(resolved_chapter)
+        else:
+            chapter_range_ambiguous = True
 
     warnings: list[str] = []
+    if chapter_inferred:
+        warnings.append(f"已根据所选页码自动归入章节：{resolved_chapter}")
+    elif chapter_range_ambiguous:
+        warnings.append("所选页码范围无法唯一对应一个章节，请缩小范围或手动填写章节")
+    if explicit_page_range and chunk_start and chunk_start != resolved_start:
+        mapped_range = f"教材印刷页 {chunk_start}"
+        if chunk_end and chunk_end != chunk_start:
+            mapped_range += f"-{chunk_end}"
+        warnings.append(f"所选 PDF 页已映射为{mapped_range}，优先读取已有教材 chunk")
     source_text, chunk_count = _text_from_source_packages(
         clean_book,
         resolved_chapter,
-        resolved_start,
-        resolved_end,
+        chunk_start,
+        chunk_end,
         source_mode=source_mode,
     )
     if source_text.strip():
@@ -87,7 +114,7 @@ def extract_textbook_exercise_text(
     else:
         warnings.append("\u672a\u627e\u5230\u5df2\u751f\u6210\u91cd\u70b9\u9875\u7684 source_package\uff0c\u5df2\u5c1d\u8bd5\u8bfb\u53d6\u6559\u6750\u5bfc\u5165\u4ea7\u7269")
 
-    chunk_text, chunk_count = _text_from_middle_chunks(clean_book, resolved_chapter, resolved_start, resolved_end, source_mode=source_mode)
+    chunk_text, chunk_count = _text_from_middle_chunks(clean_book, resolved_chapter, chunk_start, chunk_end, source_mode=source_mode)
     if chunk_text.strip():
         return ExtractedTextbookExerciseText(
             text=_normalize_text(chunk_text),
@@ -101,7 +128,7 @@ def extract_textbook_exercise_text(
         )
     warnings.append("未找到 MinerU middle_chunks，已尝试读取外部 OCR JSONL 产物")
 
-    ocr_text, chunk_count = _text_from_external_ocr_jsonl(clean_book, resolved_chapter, resolved_start, resolved_end, source_mode=source_mode)
+    ocr_text, chunk_count = _text_from_external_ocr_jsonl(clean_book, resolved_chapter, chunk_start, chunk_end, source_mode=source_mode)
     if ocr_text.strip():
         return ExtractedTextbookExerciseText(
             text=_normalize_text(ocr_text),
@@ -115,7 +142,7 @@ def extract_textbook_exercise_text(
         )
     warnings.append("未找到可用的外部 OCR JSONL chunk，已降级为 PDF 文本层抽取")
 
-    pdf_text = _text_from_pdf(clean_book, resolved_start, resolved_end)
+    pdf_text = _text_from_pdf(clean_book, pdf_start, pdf_end)
     if pdf_text.strip():
         return ExtractedTextbookExerciseText(
             text=_normalize_text(pdf_text),
@@ -128,11 +155,11 @@ def extract_textbook_exercise_text(
             warnings=warnings,
         )
 
-    if resolved_start:
-        page_count = (resolved_end or resolved_start) - resolved_start + 1
+    if pdf_start:
+        page_count = (pdf_end or pdf_start) - pdf_start + 1
         if page_count <= ON_DEMAND_OCR_MAX_PAGES:
             try:
-                vision_text = _text_from_kimi_pdf_pages(clean_book, resolved_chapter, resolved_start, resolved_end)
+                vision_text = _text_from_kimi_pdf_pages(clean_book, resolved_chapter, pdf_start, pdf_end)
             except Exception as exc:
                 warnings.append(f"所选扫描页的 Kimi Vision OCR 失败：{str(exc)[:240]}")
             else:
@@ -187,6 +214,32 @@ def _find_chapter(chapters: list[dict], key: str) -> dict | None:
     return None
 
 
+def _find_chapter_by_page_range(
+    chapters: list[dict],
+    page_start: int,
+    page_end: int | None,
+) -> dict | None:
+    start_record = _find_chapter_by_page(chapters, page_start)
+    end_record = _find_chapter_by_page(chapters, page_end or page_start)
+    if start_record is None or end_record is None or start_record is not end_record:
+        return None
+    return start_record
+
+
+def _find_chapter_by_page(chapters: list[dict], page: int) -> dict | None:
+    for index, chapter in enumerate(chapters):
+        start = _positive_int(chapter.get("page_number") or chapter.get("page"))
+        if start is None:
+            continue
+        end = _positive_int(chapter.get("end_page"))
+        if end is None and index + 1 < len(chapters):
+            next_start = _positive_int(chapters[index + 1].get("page_number") or chapters[index + 1].get("page"))
+            if next_start and next_start > start:
+                end = next_start - 1
+        if start <= page <= (end or start):
+            return chapter
+    return None
+
 def _resolve_page_range(chapter: dict | None, page_start: int | None, page_end: int | None) -> tuple[int | None, int | None]:
     start = _positive_int(page_start)
     end = _positive_int(page_end)
@@ -205,6 +258,62 @@ def _positive_int(value: Any) -> int | None:
     except Exception:
         return None
     return parsed if parsed > 0 else None
+
+
+def _pdf_range_to_printed_pages(
+    book_name: str,
+    page_start: int | None,
+    page_end: int | None,
+) -> tuple[int | None, int | None]:
+    if not page_start:
+        return page_start, page_end
+    pdf_path = _book_pdf_path(book_name)
+    if not pdf_path.exists():
+        return page_start, page_end
+    try:
+        import fitz
+
+        with fitz.open(pdf_path) as doc:
+            start = _printed_number_from_pdf_page(doc, page_start) or page_start
+            end_page = page_end or page_start
+            end = _printed_number_from_pdf_page(doc, end_page) or end_page
+    except Exception:
+        return page_start, page_end
+    return start, end
+
+
+def _printed_range_to_pdf_pages(
+    book_name: str,
+    page_start: int | None,
+    page_end: int | None,
+) -> tuple[int | None, int | None]:
+    if not page_start:
+        return page_start, page_end
+    pdf_path = _book_pdf_path(book_name)
+    if not pdf_path.exists():
+        return page_start, page_end
+    try:
+        import fitz
+
+        with fitz.open(pdf_path) as doc:
+            start = _pdf_page_from_printed_number(doc, page_start) or page_start
+            end_page = page_end or page_start
+            end = _pdf_page_from_printed_number(doc, end_page) or end_page
+    except Exception:
+        return page_start, page_end
+    return start, end
+
+
+def _printed_number_from_pdf_page(doc: Any, pdf_page: int) -> int | None:
+    if pdf_page < 1 or pdf_page > doc.page_count:
+        return None
+    label = str(doc[pdf_page - 1].get_label() or "").strip()
+    return _positive_int(label) if label.isdigit() else None
+
+
+def _pdf_page_from_printed_number(doc: Any, printed_page: int) -> int | None:
+    matches = doc.get_page_numbers(str(printed_page), only_one=True)
+    return matches[0] + 1 if matches else None
 
 
 def _text_from_source_packages(book_name: str, chapter: str, page_start: int | None, page_end: int | None, *, source_mode: str) -> tuple[str, int]:

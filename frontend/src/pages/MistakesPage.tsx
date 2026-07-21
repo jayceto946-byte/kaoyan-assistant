@@ -18,7 +18,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { del, get, post } from '../api/client';
+import { apiFetch, del, get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
 import ScopeSelector, { type ScopeBookOption } from '../components/ScopeSelector';
 import { StatusBanner } from '../components/ui/AsyncState';
@@ -408,7 +408,7 @@ const MistakesPage: React.FC = () => {
     }
 
     try {
-      const res = await fetch(`/api/mistakes/${solve ? 'solve-image' : 'recognize-image'}`, { method: 'POST', body: fd });
+      const res = await apiFetch(`/mistakes/${solve ? 'solve-image' : 'recognize-image'}`, { method: 'POST', body: fd });
       const data = await res.json();
       setUploadMessage(data.message || (data.success ? '处理完成' : '处理失败'));
       if (data.image_path) setField('image_path', data.image_path);

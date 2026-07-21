@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Pause, Pencil, Play, RotateCcw, Save, Scissors, Search, Shuffle, Sparkles, Trash2, Upload, X } from 'lucide-react';
-import { del, get, post } from '../api/client';
+import { apiFetch, del, get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
 import ScopeSelector from '../components/ScopeSelector';
 import { useChatContext } from '../contexts/ChatContext';
@@ -287,7 +287,7 @@ const ExercisesPage: React.FC = () => {
       fd.append('limit', '200');
       fd.append('use_llm', useLlmRepair ? 'true' : 'false');
       fd.append('llm_max_items', '20');
-      const res = await fetch(`/api/exercises/upload-analyze${bookQuery}`, { method: 'POST', body: fd });
+      const res = await apiFetch(`/exercises/upload-analyze${bookQuery}`, { method: 'POST', body: fd });
       const data = await res.json();
       if (!res.ok || !data?.success) {
         setMessage(data?.message || `文件导入失败：${res.status}`);

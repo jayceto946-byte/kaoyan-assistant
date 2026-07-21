@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Archive, FileText, Loader2, Upload } from 'lucide-react';
+import { apiFetch } from '../api/client';
 import ScopeSelector from '../components/ScopeSelector';
 import { StatusBanner, TaskStatus } from '../components/ui/AsyncState';
 
@@ -61,7 +62,7 @@ const BooksPage: React.FC = () => {
     stopPolling();
     pollRef.current = window.setInterval(async () => {
       try {
-        const res = await fetch(`/api/books/import-jobs/${jobId}`);
+        const res = await apiFetch(`/books/import-jobs/${jobId}`);
         const data = await res.json();
         if (!data.success) throw new Error(data.message || '获取导入进度失败');
         setJob(data.data);
@@ -106,7 +107,7 @@ const BooksPage: React.FC = () => {
     formData.append('subject', subject);
 
     try {
-      const res = await fetch('/api/books/import-job', { method: 'POST', body: formData });
+      const res = await apiFetch('/books/import-job', { method: 'POST', body: formData });
       const data = await res.json();
       if (!data.success) throw new Error(data.message || '启动导入失败');
       setJob(data.data);
@@ -129,7 +130,7 @@ const BooksPage: React.FC = () => {
     formData.append('subject', subject);
 
     try {
-      const res = await fetch('/api/books/import-mineru-output', { method: 'POST', body: formData });
+      const res = await apiFetch('/books/import-mineru-output', { method: 'POST', body: formData });
       const data = await res.json();
       if (!data.success) throw new Error(data.message || '启动输出包导入失败');
       setJob(data.data);

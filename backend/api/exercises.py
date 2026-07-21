@@ -303,6 +303,13 @@ def analyze_textbook_exercises(req: TextbookExerciseAnalyzeRequest, book_name: s
                 "message": "未从教材中提取到可切分文本。请确认章节/页码范围，或先用 MinerU/OCR 导入扫描版教材。",
                 "extract": extracted.to_dict(),
             }
+        if not extracted.chapter.strip():
+            return {
+                "success": False,
+                "message": "无法确定候选题所属章节。请缩小到单个章节的页码范围，或手动填写章节后重试。",
+                "extract": extracted.to_dict(),
+                "warnings": extracted.warnings or [],
+            }
         effective_subject = normalize_subject_value(req.subject, fallback=effective_book)
         chapter = extracted.chapter or req.chapter.strip()
         page_label = ""

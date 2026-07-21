@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, ExternalLink, ImagePlus, Loader2, Save, Upload } from 'lucide-react';
-import { get, post } from '../../api/client';
+import { apiFetch, get, post } from '../../api/client';
 import ScopeSelector, { type ScopeBookOption } from '../ScopeSelector';
 import { SimpleMarkdown } from './MarkdownMessage';
 
@@ -84,7 +84,7 @@ const MistakeQuickCaptureCard: React.FC<{ bookName: string; subject: string }> =
       fd.append('tags', tags);
     }
     try {
-      const res = await fetch(`/api/mistakes/${solve ? 'solve-image' : 'recognize-image'}`, { method: 'POST', body: fd });
+      const res = await apiFetch(`/mistakes/${solve ? 'solve-image' : 'recognize-image'}`, { method: 'POST', body: fd });
       const data = await res.json();
       if (!data.success) {
         setMessage(data.message || '图片处理失败');
