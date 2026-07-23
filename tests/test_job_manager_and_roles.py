@@ -176,3 +176,17 @@ def test_highlight_source_uses_external_chunks_without_page_numbers(tmp_path):
     assert service._find_mineru_output_dir("sensor") == external
     assert sum(len(item["chunks"]) for item in chapter["sections"]) == 4
     assert [item["text"] for item in section["sections"][0]["chunks"]] == ["第一章正文", "静态特性定义", "静态特性公式"]
+
+
+def test_job_completion_and_cancellation_are_atomic(tmp_path):
+    manager = JobManager(tmp_path / "jobs.sqlite3")
+
+    cancelling = manager.create_job("textbook_import", {}, status="running")
+    manager.request_cancel(cancelling["id"])
+    with pytest.raises(JobCancelled):
+        manager.complete_job(cancelling["id"], result={"ok": True})
+    assert manager.get_job(cancelling["id"])["status"] == "cancelling"
+
+    completed = manager.create_job("textbook_import", {}, status="running")
+    manager.complete_job(completed["id"], result={"ok": True})
+    assert manager.request_cancel(completed["id"])["status"] == "completed"

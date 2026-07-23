@@ -4,11 +4,13 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
 
 const BACKEND_PORT = Number(process.env.KAOYAN_BACKEND_PORT || 8000);
 const BACKEND_URL = process.env.KAOYAN_BACKEND_URL || `http://127.0.0.1:${BACKEND_PORT}`;
 const FRONTEND_DEV_URL = process.env.KAOYAN_FRONTEND_DEV_URL || '';
 const API_TOKEN = process.env.KAOYAN_API_TOKEN || crypto.randomBytes(32).toString('hex');
+const CAPTURE_TOKEN = process.env.KAOYAN_CAPTURE_TOKEN || crypto.randomBytes(24).toString('hex');
 
 let mainWindow = null;
 let backendProcess = null;
@@ -16,6 +18,7 @@ let backendStartError = null;
 let shuttingDown = false;
 let allowQuit = false;
 let backendShutdownPromise = null;
+let restartingBackend = false;
 let updaterConfigured = false;
 let updateState = {
   status: 'idle',
@@ -46,6 +49,53 @@ function runtimePaths() {
   };
 }
 
+function remoteCaptureSettingsPath() {
+  return path.join(runtimePaths().userData, 'remote-capture.json');
+}
+
+function readRemoteCaptureSettings() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(remoteCaptureSettingsPath(), 'utf8'));
+    return { enabled: parsed?.enabled === true };
+  } catch {
+    return { enabled: false };
+  }
+}
+
+function writeRemoteCaptureSettings(enabled) {
+  const settingsPath = remoteCaptureSettingsPath();
+  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+  fs.writeFileSync(settingsPath, JSON.stringify({ enabled: Boolean(enabled) }, null, 2), 'utf8');
+}
+
+function lanAddresses() {
+  const addresses = [];
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family !== 'IPv4' || entry.internal) continue;
+      if (!addresses.includes(entry.address)) addresses.push(entry.address);
+    }
+  }
+  return addresses;
+}
+
+function remoteCaptureStatus(extra = {}) {
+  const enabled = readRemoteCaptureSettings().enabled;
+  const urls = enabled
+    ? lanAddresses().map((address) => `http://${address}:${BACKEND_PORT}/capture#capture_token=${encodeURIComponent(CAPTURE_TOKEN)}`)
+    : [];
+  return {
+    enabled,
+    urls,
+    port: BACKEND_PORT,
+    ready: Boolean(backendProcess && backendProcess.exitCode === null),
+    message: enabled
+      ? (urls.length ? '\u624b\u673a\u91c7\u96c6\u5165\u53e3\u5df2\u5728\u5f53\u524d\u5c40\u57df\u7f51\u5f00\u653e\u3002' : '\u5df2\u5f00\u653e\uff0c\u4f46\u6ca1\u6709\u627e\u5230\u53ef\u7528\u7684\u5c40\u57df\u7f51 IPv4 \u5730\u5740\u3002')
+      : '\u624b\u673a\u91c7\u96c6\u5165\u53e3\u5f53\u524d\u5173\u95ed\u3002',
+    ...extra,
+  };
+}
+
 function appendBackendLog(message) {
   const paths = runtimePaths();
   fs.mkdirSync(paths.logDir, { recursive: true });
@@ -62,6 +112,8 @@ function backendEnv() {
     KAOYAN_BACKEND_PORT: String(BACKEND_PORT),
     KAOYAN_API_TOKEN: API_TOKEN,
     KAOYAN_REQUIRE_API_TOKEN: '1',
+    KAOYAN_CAPTURE_TOKEN: CAPTURE_TOKEN,
+    KAOYAN_BACKEND_HOST: readRemoteCaptureSettings().enabled ? '0.0.0.0' : '127.0.0.1',
     DATA_DIR: paths.dataDir,
     ENV_PATH: paths.envPath,
     MINERU_OUTPUT_PATH: paths.mineruOutputPath,
@@ -162,7 +214,7 @@ function attachBackendLogging() {
   backendProcess.on('exit', (code, signal) => {
     const message = `后端进程退出：code=${code ?? 'null'}, signal=${signal ?? 'null'}`;
     appendBackendLog(`[exit] ${message}`);
-    if (!shuttingDown) sendStartupError(message);
+    if (!shuttingDown && !restartingBackend) sendStartupError(message);
   });
 }
 
@@ -244,6 +296,7 @@ function startBackend() {
 
   try {
     const env = backendEnv();
+    const backendHost = env.KAOYAN_BACKEND_HOST;
     if (app.isPackaged) {
       const executable = packagedBackendPath();
       appendBackendLog(`[main] starting packaged backend: ${executable}`);
@@ -265,7 +318,7 @@ function startBackend() {
     appendBackendLog(`[main] starting dev backend: ${python}`);
     backendProcess = spawn(
       python,
-      ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)],
+      ['-m', 'uvicorn', 'backend.main:app', '--host', backendHost, '--port', String(BACKEND_PORT)],
       {
         cwd: projectRoot(),
         windowsHide: true,
@@ -412,6 +465,27 @@ ipcMain.handle('startup:open-log', async () => {
 });
 
 ipcMain.handle('updates:status', () => updateState);
+ipcMain.handle('remote-capture:status', () => remoteCaptureStatus());
+ipcMain.handle('remote-capture:set-enabled', async (_event, enabled) => {
+  writeRemoteCaptureSettings(enabled);
+  restartingBackend = true;
+  try {
+    await stopBackend();
+    backendStartError = null;
+    startBackend();
+    const ready = await waitForBackend(30000);
+    return remoteCaptureStatus({
+      ready,
+      message: ready
+        ? (enabled ? '\u624b\u673a\u91c7\u96c6\u5165\u53e3\u5df2\u5f00\u542f\u3002' : '\u624b\u673a\u91c7\u96c6\u5165\u53e3\u5df2\u5173\u95ed\u3002')
+        : '\u540e\u7aef\u91cd\u542f\u5931\u8d25\uff0c\u8bf7\u67e5\u770b\u540e\u7aef\u65e5\u5fd7\u3002',
+    });
+  } finally {
+    restartingBackend = false;
+  }
+});
+
+
 ipcMain.handle('updates:check', async () => {
   if (!configureUpdater()) return updateState;
   await autoUpdater.checkForUpdates();

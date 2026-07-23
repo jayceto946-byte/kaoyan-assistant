@@ -61,19 +61,18 @@ The update script backs up `./data` into `./backups`, then builds/pulls the imag
 .\scripts\backup-docker-data.ps1
 ```
 
-## MinerU / OCR
+## MinerU
 
-MinerU and OCR are optional external HTTP services. They are not bundled into the main image. MinerU deployment details are in `docs/mineru_deploy.md`.
+MinerU is an optional external HTTP service and is not bundled into the main image. Deployment details are in `docs/mineru_deploy.md`. Mistake-image OCR uses Kimi Vision and is configured with `MOONSHOT_API_KEY`, not a separate OCR service URL.
 
 ```env
 MINERU_API_URL=http://host.docker.internal:9001
 MINERU_OUTPUT_PATH=./mineru_output
 MINERU_TASK_TIMEOUT_SECONDS=3600
 MINERU_TASK_POLL_SECONDS=2
-OCR_API_URL=http://host.docker.internal:9002
 ```
 
-If these variables are not configured, the main app can still start. Only scanned document parsing or image OCR features are affected.
+If these MinerU variables are not configured, the main app can still start. Only MinerU-based scanned-document parsing is affected.
 
 ## Rollback
 

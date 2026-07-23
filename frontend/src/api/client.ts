@@ -8,7 +8,7 @@ function bootstrapApiToken() {
   if (typeof window === 'undefined') return;
   const hash = window.location.hash.replace(/^#/, '');
   const params = new URLSearchParams(hash);
-  const token = params.get('access_token')?.trim();
+  const token = (params.get('access_token') || params.get('capture_token'))?.trim();
   if (!token) return;
   window.localStorage.setItem(API_TOKEN_KEY, token);
   window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);

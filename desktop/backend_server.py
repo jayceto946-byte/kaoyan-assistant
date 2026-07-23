@@ -121,7 +121,7 @@ def main() -> None:
     port = int(os.getenv("KAOYAN_BACKEND_PORT", "8000"))
     uvicorn.run(
         "backend.main:app",
-        host="127.0.0.1",
+        host=os.getenv("KAOYAN_BACKEND_HOST", "127.0.0.1"),
         port=port,
         reload=False,
         access_log=False,

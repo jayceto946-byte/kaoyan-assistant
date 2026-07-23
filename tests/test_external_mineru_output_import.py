@@ -47,3 +47,34 @@ def test_external_output_zip_rejects_path_traversal(tmp_path):
 
     with pytest.raises(ValueError):
         books._extract_zip_safe(archive, tmp_path / "target")
+
+
+def test_import_textbook_routes_to_runtime_api_config(monkeypatch, tmp_path):
+    from ingestion import mineru_importer
+
+    monkeypatch.setattr(mineru_importer.config, "MINERU_API_URL", "http://mineru.test")
+    monkeypatch.setattr(mineru_importer.config, "MINERU_CLI_COMMAND", "mineru {input}")
+    monkeypatch.setattr(mineru_importer, "_import_with_mineru", lambda *args: "api")
+    monkeypatch.setattr(mineru_importer, "_import_with_mineru_cli", lambda *args: "cli")
+
+    assert mineru_importer.import_textbook(tmp_path / "book.pdf", "book") == "api"
+
+
+def test_import_textbook_routes_to_runtime_cli_config(monkeypatch, tmp_path):
+    from ingestion import mineru_importer
+
+    monkeypatch.setattr(mineru_importer.config, "MINERU_API_URL", "")
+    monkeypatch.setattr(mineru_importer.config, "MINERU_CLI_COMMAND", "mineru -p {input} -o {output}")
+    monkeypatch.setattr(mineru_importer, "_import_with_mineru_cli", lambda *args: "cli")
+
+    assert mineru_importer.import_textbook(tmp_path / "book.pdf", "book") == "cli"
+
+
+def test_import_textbook_requires_configured_mineru_backend(monkeypatch, tmp_path):
+    from ingestion import mineru_importer
+
+    monkeypatch.setattr(mineru_importer.config, "MINERU_API_URL", "")
+    monkeypatch.setattr(mineru_importer.config, "MINERU_CLI_COMMAND", "")
+
+    with pytest.raises(RuntimeError, match="MINERU_API_URL.*MINERU_CLI_COMMAND"):
+        mineru_importer.import_textbook(tmp_path / "book.pdf", "book", require_mineru=True)

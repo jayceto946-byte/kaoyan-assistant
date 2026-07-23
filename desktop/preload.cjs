@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('kaoyanDesktop', {
   getStartupInfo: () => ipcRenderer.invoke('startup:info'),
   openWebFallback: () => ipcRenderer.invoke('startup:open-web'),
   openBackendLog: () => ipcRenderer.invoke('startup:open-log'),
+  getRemoteCaptureStatus: () => ipcRenderer.invoke('remote-capture:status'),
+  setRemoteCaptureEnabled: (enabled) => ipcRenderer.invoke('remote-capture:set-enabled', Boolean(enabled)),
   getUpdateStatus: () => ipcRenderer.invoke('updates:status'),
   checkForUpdates: () => ipcRenderer.invoke('updates:check'),
   downloadUpdate: () => ipcRenderer.invoke('updates:download'),

@@ -8,6 +8,14 @@ type DesktopUpdateStatus = {
   progress?: { percent?: number; transferred?: number; total?: number } | null;
 };
 
+type RemoteCaptureStatus = {
+  enabled: boolean;
+  urls: string[];
+  port: number;
+  ready: boolean;
+  message: string;
+};
+
 declare global {
   interface Window {
     kaoyanDesktop?: {
@@ -16,6 +24,8 @@ declare global {
       toggleMaximize: () => Promise<boolean>;
       close: () => Promise<void>;
       restart?: () => Promise<boolean>;
+      getRemoteCaptureStatus?: () => Promise<RemoteCaptureStatus>;
+      setRemoteCaptureEnabled?: (enabled: boolean) => Promise<RemoteCaptureStatus>;
       getUpdateStatus?: () => Promise<DesktopUpdateStatus>;
       checkForUpdates?: () => Promise<DesktopUpdateStatus>;
       downloadUpdate?: () => Promise<DesktopUpdateStatus>;

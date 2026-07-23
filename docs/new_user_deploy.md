@@ -63,19 +63,18 @@ The host `./data` directory contains user-owned local data:
 
 Updating or deleting the container must not delete `./data`.
 
-## MinerU / OCR
+## MinerU
 
-MinerU and OCR are optional external HTTP services, not part of the main image. See `docs/mineru_deploy.md` for local GPU and rented-GPU setup.
+MinerU is an optional external HTTP service and is not part of the main image. See `docs/mineru_deploy.md` for local GPU and rented-GPU setup. Mistake-image OCR uses Kimi Vision and is configured with `MOONSHOT_API_KEY`, not a separate OCR service URL.
 
 ```env
 MINERU_API_URL=http://host.docker.internal:9001
 MINERU_OUTPUT_PATH=./mineru_output
 MINERU_TASK_TIMEOUT_SECONDS=3600
 MINERU_TASK_POLL_SECONDS=2
-OCR_API_URL=http://host.docker.internal:9002
 ```
 
-If these are not configured, the app can still start. Only scanned PDF/OCR flows are affected.
+If these MinerU variables are not configured, the app can still start. Only MinerU-based scanned-PDF parsing is affected.
 
 ## Export a clean source package
 

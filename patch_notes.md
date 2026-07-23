@@ -1,3 +1,18 @@
+# 2026-07-23 - P0/P1 稳定性与安全修复
+
+- 修复流式 `<think>` / `</think>` 标签跨 chunk 时推理内容泄漏；未闭合推理块与不完整标签片段会安全丢弃。
+- 收紧本地 API Origin 校验，不再信任请求可控的 `Host`；错题图片识别/解答补充 24 MiB 请求上限，移动采集令牌也不能绕过上传限制。
+- MinerU 配置改为调用时读取，API、CLI 与显式本地降级路由均可达；移除从未被代码支持的 `OCR_API_URL` 部署项并纠正文档。
+- 教材 PDF 先写入暂存区，解析成功后才进入资料库；导入失败或取消时清理新建 PDF、章节、MinerU、词法与向量产物，同名教材使用唯一存储名。
+- 后台任务完成与取消改为 SQLite 条件更新，消除“取消请求覆盖已完成任务”及“取消后仍提交完成”的竞态。
+- 错题 OCR 图片先进入待提交区，保存错题后才转为永久文件；识别、解答、数据库保存失败及删除错题时清理对应图片，过期待提交文件自动回收。
+
+### Validation
+
+- P0/P1 定向回归：45 passed。
+- 后端全量回归：171 passed。
+- 前端 ESLint、Vitest 11 项、TypeScript 与 Vite 生产构建通过。
+- Electron 主进程/预加载脚本语法检查、Python AST 检查、Docker Compose YAML 解析和 `git diff --check` 通过。
 # 2026-07-21 - 教材抽题页码映射修复
 
 - 修复习题工作区使用 PDF 物理页码，而现有 MinerU/OCR/source package chunk 使用教材印刷页码时，已有 chunk 被误判为空并触发 Kimi Vision OCR 的问题。

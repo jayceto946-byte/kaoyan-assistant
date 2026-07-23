@@ -54,6 +54,7 @@ _book_state: dict = {
 
 IMPORT_JOB_TYPE = "textbook_import"
 OUTPUT_UPLOAD_DIR = DATA_DIR / "uploads" / "mineru_outputs"
+BOOK_UPLOAD_DIR = DATA_DIR / "uploads" / "book_imports"
 _job_manager = get_job_manager()
 _lifecycle = BookLifecycleService(PROGRESS_PATH)
 _job_manager.import_legacy_json_jobs(
@@ -305,18 +306,54 @@ def _safe_pdf_name(filename: str) -> str:
 
 
 def _save_upload(file: UploadFile) -> Path:
+    """Save a new PDF in staging; it becomes a library book only after import."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise ValueError("\u8bf7\u4e0a\u4f20 PDF \u6559\u6750")
     BOOKS_PATH.mkdir(parents=True, exist_ok=True)
-    dest = BOOKS_PATH / _safe_pdf_name(file.filename)
+    BOOK_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    dest = BOOK_UPLOAD_DIR / _safe_pdf_name(file.filename)
     base = dest.with_suffix("")
     suffix = dest.suffix
     counter = 1
-    while dest.exists():
+    reserved = set(_known_book_names(include_archived=True))
+    while dest.exists() or (BOOKS_PATH / dest.name).exists() or dest.stem in reserved:
         dest = Path(f"{base}_{counter}{suffix}")
         counter += 1
     copy_stream_limited(file.file, dest, max_bytes=MAX_BOOK_PDF_BYTES)
     return dest
+
+
+def _promote_uploaded_pdf(staged_path: Path) -> Path:
+    BOOKS_PATH.mkdir(parents=True, exist_ok=True)
+    final_path = BOOKS_PATH / staged_path.name
+    if final_path.exists():
+        raise RuntimeError(f"教材文件已存在：{final_path.name}")
+    shutil.move(str(staged_path), str(final_path))
+    return final_path
+
+
+def _cleanup_new_book_import(book_name: str, *uploaded_paths: Path | None) -> None:
+    """Remove only artifacts belonging to a not-yet-committed, uniquely named import."""
+    safe = safe_book_name(book_name)
+    for path in uploaded_paths:
+        if path and path.exists():
+            try:
+                path.unlink() if path.is_file() else shutil.rmtree(path)
+            except OSError:
+                pass
+    for path in (
+        safe_child_path(PROGRESS_PATH, safe),
+        safe_child_path(MINERU_OUTPUT_PATH, safe),
+    ):
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+    safe_child_path(VECTOR_DB_PATH, "_lexical", f"{safe}.json").unlink(missing_ok=True)
+    try:
+        _lifecycle._delete_vector_assets(safe)
+    except Exception:
+        pass
+    if _book_state.get("current_book") == safe:
+        _book_state.update(current_book=None, chapters=[], book_pdf_path=None)
 
 
 def _read_job(job_id: str) -> dict | None:
@@ -335,6 +372,7 @@ def _set_current_book(book_name: str, chapters: list[dict], pdf_path: Path | Non
 
 def _run_import_job(job_id: str, pdf_path: Path, toc_pages: str, pre_read: bool, require_mineru: bool, subject: str = "") -> None:
     book_name = pdf_path.stem
+    final_pdf: Path | None = None
 
     def progress(stage: str, message: str, percent: int | None = None) -> None:
         _job_manager.raise_if_cancelled(job_id)
@@ -346,6 +384,8 @@ def _run_import_job(job_id: str, pdf_path: Path, toc_pages: str, pre_read: bool,
     try:
         progress("started", "\u51c6\u5907\u5bfc\u5165\u6559\u6750", 3)
         result = import_textbook(pdf_path, book_name, toc_pages=toc_pages, require_mineru=require_mineru, on_progress=progress)
+        _job_manager.raise_if_cancelled(job_id)
+        final_pdf = _promote_uploaded_pdf(pdf_path)
         _save_chapters(book_name, result.chapters)
         _write_book_meta(
             book_name,
@@ -353,16 +393,15 @@ def _run_import_job(job_id: str, pdf_path: Path, toc_pages: str, pre_read: bool,
             import_source="mineru" if result.used_mineru else "local_pdf",
             mineru_output_dir=result.output_dir,
         )
-        _set_current_book(book_name, result.chapters, pdf_path)
+        _set_current_book(book_name, result.chapters, final_pdf)
         if pre_read and result.chapters and not result.used_mineru:
-            _start_pre_read(book_name, result.chapters, pdf_path)
+            _start_pre_read(book_name, result.chapters, final_pdf)
         index_status = get_vector_store().get_book_index_stats(book_name)
-        _update_job(
+        _job_manager.complete_job(
             job_id,
-            status="completed",
             stage="completed",
             progress=100,
-            message=result.message or "\u6559\u6750\u5bfc\u5165\u5b8c\u6210",
+            message=result.message or "教材导入完成",
             result={
                 "name": book_name,
                 "chapter_count": len(result.chapters),
@@ -374,8 +413,10 @@ def _run_import_job(job_id: str, pdf_path: Path, toc_pages: str, pre_read: bool,
             },
         )
     except JobCancelled as exc:
+        _cleanup_new_book_import(book_name, pdf_path, final_pdf)
         _update_job(job_id, status="cancelled", stage="cancelled", progress=100, message=str(exc) or "\u6559\u6750\u5bfc\u5165\u5df2\u53d6\u6d88", error=str(exc))
     except Exception as exc:
+        _cleanup_new_book_import(book_name, pdf_path, final_pdf)
         _update_job(job_id, status="failed", stage="failed", progress=100, message=f"\u6559\u6750\u5bfc\u5165\u5931\u8d25\uff1a{exc}", error=str(exc))
 
 
@@ -610,6 +651,19 @@ def _safe_output_book_name(value: str) -> str:
     return stem[:90]
 
 
+def _unique_new_book_name(value: str) -> str:
+    base = _safe_output_book_name(value)
+    reserved = set(_known_book_names(include_archived=True))
+    if BOOK_UPLOAD_DIR.exists():
+        reserved.update(path.stem for path in BOOK_UPLOAD_DIR.glob("*.pdf"))
+    candidate = base
+    counter = 1
+    while candidate in reserved:
+        candidate = f"{base[:84]}_{counter}"
+        counter += 1
+    return candidate
+
+
 def _save_output_upload(file: UploadFile, book_name: str) -> Path:
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise ValueError("Please upload a .zip file containing MinerU or Markdown output")
@@ -678,6 +732,8 @@ def _copy_origin_pdf_if_present(output_dir: Path, book_name: str) -> Path | None
 
 
 def _run_output_import_job(job_id: str, archive_path: Path, book_name: str, subject: str = "") -> None:
+    pdf_path: Path | None = None
+
     def progress(stage: str, message: str, percent: int | None = None) -> None:
         _job_manager.raise_if_cancelled(job_id)
         payload = {"stage": stage, "message": message}
@@ -689,6 +745,7 @@ def _run_output_import_job(job_id: str, archive_path: Path, book_name: str, subj
         progress("extract", "Extracting OCR output package", 10)
         output_dir = _extract_zip_safe(archive_path, _unique_output_dir(book_name))
         result = import_textbook_from_mineru_output(output_dir, book_name, on_progress=progress)
+        _job_manager.raise_if_cancelled(job_id)
         _save_chapters(book_name, result.chapters)
         pdf_path = _copy_origin_pdf_if_present(output_dir, book_name)
         _write_book_meta(
@@ -699,9 +756,8 @@ def _run_output_import_job(job_id: str, archive_path: Path, book_name: str, subj
             source_archive=str(archive_path),
         )
         _set_current_book(book_name, result.chapters, pdf_path)
-        _update_job(
+        _job_manager.complete_job(
             job_id,
-            status="completed",
             stage="completed",
             progress=100,
             message=result.message or "OCR output import completed",
@@ -716,8 +772,10 @@ def _run_output_import_job(job_id: str, archive_path: Path, book_name: str, subj
             },
         )
     except JobCancelled as exc:
+        _cleanup_new_book_import(book_name, archive_path, pdf_path)
         _update_job(job_id, status="cancelled", stage="cancelled", progress=100, message=str(exc) or "OCR output import cancelled", error=str(exc))
     except Exception as exc:
+        _cleanup_new_book_import(book_name, archive_path, pdf_path)
         _update_job(job_id, status="failed", stage="failed", progress=100, message=f"OCR output import failed: {exc}", error=str(exc))
 
 @router.post("/import-job")
@@ -772,7 +830,7 @@ def import_mineru_output(
     subject: str = Form(""),
 ):
     try:
-        resolved_book = _safe_output_book_name(book_name or file.filename or "external_textbook")
+        resolved_book = _unique_new_book_name(book_name or file.filename or "external_textbook")
         archive_path = _save_output_upload(file, resolved_book)
     except Exception as exc:
         return {"success": False, "message": str(exc)}

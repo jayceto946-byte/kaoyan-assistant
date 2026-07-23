@@ -18,6 +18,11 @@ from utils.resource_limits import (
 
 TOKEN_HEADER = "X-Kaoyan-Token"
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+CAPTURE_API_PATHS = {
+    "/api/mistakes/recognize-image",
+    "/api/mistakes/add",
+    "/api/exercises/add",
+}
 DEFAULT_TRUSTED_ORIGINS = {
     "http://localhost:3000",
     "http://localhost:5173",
@@ -43,10 +48,14 @@ def is_trusted_origin(origin: str, request_origin: str = "") -> bool:
         for item in os.getenv("KAOYAN_TRUSTED_ORIGINS", "").split(",")
         if item.strip()
     }
-    return origin.rstrip("/") in DEFAULT_TRUSTED_ORIGINS | configured | {request_origin.rstrip("/")}
+    # Never trust the request Host as an allow-list entry. Host is
+    # attacker-controlled during DNS rebinding and must not authorize writes.
+    return origin.rstrip("/") in DEFAULT_TRUSTED_ORIGINS | configured
 
 def upload_body_limit(path: str) -> int | None:
     limits = {
+        "/api/mistakes/recognize-image": 24 * MIB,
+        "/api/mistakes/solve-image": 24 * MIB,
         "/api/books/import": MAX_BOOK_PDF_BYTES + 4 * MIB,
         "/api/books/import-job": MAX_BOOK_PDF_BYTES + 4 * MIB,
         "/api/books/import-local": MAX_BOOK_PDF_BYTES + 4 * MIB,
@@ -71,6 +80,14 @@ def authorize_api_client(host: str, supplied_token: str, configured_token: str, 
     return True, "token"
 
 
+def authorize_capture_client(path: str, supplied_token: str, configured_token: str) -> tuple[bool, str]:
+    if not configured_token or not supplied_token or not hmac.compare_digest(supplied_token, configured_token):
+        return False, "invalid_capture_token"
+    if path.rstrip("/") not in CAPTURE_API_PATHS:
+        return False, "capture_scope_denied"
+    return True, "capture"
+
+
 class LocalApiBoundaryMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if not request.url.path.startswith("/api"):
@@ -83,14 +100,43 @@ class LocalApiBoundaryMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 pass
         configured = os.getenv("KAOYAN_API_TOKEN", "").strip()
+        capture_token = os.getenv("KAOYAN_CAPTURE_TOKEN", "").strip()
         require_token = os.getenv("KAOYAN_REQUIRE_API_TOKEN", "0") == "1"
         supplied = request.headers.get(TOKEN_HEADER, "").strip()
+        capture_allowed, capture_reason = authorize_capture_client(request.url.path, supplied, capture_token)
+        if capture_allowed:
+            body_limit = upload_body_limit(request.url.path)
+            if body_limit is not None:
+                raw_length = request.headers.get("content-length", "").strip()
+                try:
+                    content_length = int(raw_length)
+                except ValueError:
+                    content_length = -1
+                if content_length < 0:
+                    return JSONResponse(
+                        status_code=411,
+                        content={"success": False, "error_code": "CONTENT_LENGTH_REQUIRED", "message": "Upload Content-Length is required."},
+                    )
+                if content_length > body_limit:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"success": False, "error_code": "UPLOAD_TOO_LARGE", "message": "Upload request exceeds the configured size limit."},
+                    )
+            return await call_next(request)
+        if capture_reason == "capture_scope_denied":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "success": False,
+                    "error_code": "CAPTURE_SCOPE_DENIED",
+                    "message": "The mobile capture token can only upload and save captured questions.",
+                },
+            )
         allowed, reason = authorize_api_client(host, supplied, configured, require_token)
         if allowed:
             if reason == "local" and request.method.upper() in UNSAFE_METHODS:
                 origin = request.headers.get("Origin", "").strip()
-                request_origin = f"{request.url.scheme}://{request.headers.get('host', '')}".rstrip("/")
-                if not is_trusted_origin(origin, request_origin):
+                if not is_trusted_origin(origin):
                     return JSONResponse(
                         status_code=403,
                         content={

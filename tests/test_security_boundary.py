@@ -66,3 +66,27 @@ def test_oversized_upload_is_rejected_before_route_parsing(monkeypatch):
     response = client.post("/api/books/import", headers={"Content-Length": str(10**12)})
     assert response.status_code == 413
     assert response.json()["error_code"] == "UPLOAD_TOO_LARGE"
+
+
+def test_request_host_cannot_make_untrusted_origin_trusted(monkeypatch):
+    client = _test_client(monkeypatch)
+    response = client.post(
+        "/api/write",
+        headers={"Origin": "http://evil.test", "Host": "evil.test"},
+    )
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "UNTRUSTED_ORIGIN"
+
+
+def test_capture_token_does_not_bypass_upload_limit(monkeypatch):
+    monkeypatch.setenv("KAOYAN_CAPTURE_TOKEN", "capture-secret")
+    client = _test_client(monkeypatch)
+    response = client.post(
+        "/api/mistakes/recognize-image",
+        headers={
+            "X-Kaoyan-Token": "capture-secret",
+            "Content-Length": str(10**12),
+        },
+    )
+    assert response.status_code == 413
+    assert response.json()["error_code"] == "UPLOAD_TOO_LARGE"

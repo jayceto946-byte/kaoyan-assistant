@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from config import MINERU_API_URL, MINERU_CLI_COMMAND, MINERU_OUTPUT_PATH, MINERU_TASK_POLL_SECONDS, MINERU_TASK_TIMEOUT_SECONDS
+import config
 from ingestion.chapter_splitter import ChapterSplitter
 from ingestion.chunk_roles import assign_chunk_roles, load_kg_chunk_roles, role_distribution
 from ingestion.textbook_chunk import TextbookChunk, link_neighbors
@@ -43,10 +43,12 @@ def import_textbook(
     require_mineru: bool = True,
     on_progress: ProgressCallback | None = None,
 ) -> BookImportResult:
-    if require_mineru and not MINERU_API_URL:
-        raise RuntimeError("未配置 MINERU_API_URL，无法执行 MinerU 教材导入")
-    if MINERU_API_URL:
+    if config.MINERU_API_URL:
         return _import_with_mineru(pdf_path, book_name, on_progress)
+    if config.MINERU_CLI_COMMAND:
+        return _import_with_mineru_cli(pdf_path, book_name, on_progress)
+    if require_mineru:
+        raise RuntimeError("未配置 MINERU_API_URL 或 MINERU_CLI_COMMAND，无法执行 MinerU 教材导入")
     return import_textbook_local(pdf_path, book_name, toc_pages, on_progress)
 
 
@@ -61,7 +63,7 @@ def import_textbook_local(
     chapters = _parse_chapters_locally(pdf_path, book_name, toc_pages)
     if on_progress:
         on_progress("indexing", "Building local textbook index", 75)
-    output_dir = MINERU_OUTPUT_PATH / book_name / "local"
+    output_dir = config.MINERU_OUTPUT_PATH / book_name / "local"
     output_dir.mkdir(parents=True, exist_ok=True)
     indexed = build_index_from_chapters(book_name, chapters, output_dir)
     return BookImportResult(
@@ -108,12 +110,12 @@ def import_textbook_from_mineru_output(
     )
 
 def _import_with_mineru(pdf_path: Path, book_name: str, on_progress: ProgressCallback | None) -> BookImportResult:
-    output_dir = MINERU_OUTPUT_PATH / book_name / "hybrid_auto"
+    output_dir = config.MINERU_OUTPUT_PATH / book_name / "hybrid_auto"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if on_progress:
         on_progress("mineru_submit", "提交到 MinerU 服务", 10)
-    client = MinerUClient(MINERU_API_URL)
+    client = MinerUClient(config.MINERU_API_URL)
     task_id = client.submit_pdf(pdf_path, parse_method="auto")
 
     if on_progress:
@@ -127,7 +129,7 @@ def _import_with_mineru(pdf_path: Path, book_name: str, on_progress: ProgressCal
                 msg += f"，队列前方 {queued}"
             on_progress("mineru_running", msg, None)
 
-    client.wait_for_task(task_id, MINERU_TASK_TIMEOUT_SECONDS, MINERU_TASK_POLL_SECONDS, on_progress=status_update)
+    client.wait_for_task(task_id, config.MINERU_TASK_TIMEOUT_SECONDS, config.MINERU_TASK_POLL_SECONDS, on_progress=status_update)
 
     if on_progress:
         on_progress("mineru_download", "下载 MinerU 解析结果", 55)
@@ -154,12 +156,12 @@ def _import_with_mineru(pdf_path: Path, book_name: str, on_progress: ProgressCal
 
 
 def _import_with_mineru_cli(pdf_path: Path, book_name: str, on_progress: ProgressCallback | None) -> BookImportResult:
-    output_dir = MINERU_OUTPUT_PATH / book_name / "hybrid_auto"
+    output_dir = config.MINERU_OUTPUT_PATH / book_name / "hybrid_auto"
     output_dir.mkdir(parents=True, exist_ok=True)
-    command = MINERU_CLI_COMMAND.format(input=str(pdf_path), output=str(output_dir), book=book_name)
+    command = config.MINERU_CLI_COMMAND.format(input=str(pdf_path), output=str(output_dir), book=book_name)
     if on_progress:
         on_progress("mineru_cli", "运行 MinerU CLI", 15)
-    completed = subprocess.run(shlex.split(command, posix=False), capture_output=True, text=True, timeout=MINERU_TASK_TIMEOUT_SECONDS)
+    completed = subprocess.run(shlex.split(command, posix=False), capture_output=True, text=True, timeout=config.MINERU_TASK_TIMEOUT_SECONDS)
     if completed.returncode != 0:
         err = (completed.stderr or completed.stdout or "MinerU CLI failed").strip()
         raise RuntimeError(err[-1000:])

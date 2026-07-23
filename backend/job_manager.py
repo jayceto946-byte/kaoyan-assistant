@@ -141,13 +141,62 @@ class JobManager:
             conn.commit()
         return self.get_job(job_id) or {"id": job_id}
 
-    def request_cancel(self, job_id: str, message: str = "Cancellation requested") -> dict[str, Any]:
+    def complete_job(self, job_id: str, **updates: Any) -> dict[str, Any]:
+        """Atomically complete a job unless cancellation already won the race."""
+        allowed = {"stage", "progress", "message", "result", "error"}
+        columns: dict[str, Any] = {
+            "status": "completed",
+            "completed_at": _now(),
+            "updated_at": _now(),
+        }
+        for key, value in updates.items():
+            if key not in allowed:
+                continue
+            if key == "result":
+                columns["result_json"] = _json_dumps(value)
+            elif key == "progress":
+                columns[key] = _clamp_progress(value)
+            else:
+                columns[key] = value
+        columns.setdefault("stage", "completed")
+        columns.setdefault("progress", 100)
+
+        assignments = ", ".join(f"{column} = ?" for column in columns)
+        values = list(columns.values()) + [job_id]
+        with self._connect() as conn, self._lock:
+            cur = conn.execute(
+                f"UPDATE jobs SET {assignments} WHERE id = ? AND status IN ('queued', 'running')",
+                values,
+            )
+            conn.commit()
+        if cur.rowcount:
+            return self.get_job(job_id) or {"id": job_id, "status": "completed"}
+
         job = self.get_job(job_id)
         if not job:
             raise KeyError(f"job not found: {job_id}")
-        if job.get("status") in TERMINAL_STATUSES:
+        if job.get("status") in {"cancelling", "cancelled"}:
+            raise JobCancelled(job.get("message") or "job cancelled")
+        if job.get("status") == "completed":
             return job
-        return self.update_job(job_id, status="cancelling", stage="cancelling", message=message)
+        raise RuntimeError(f"job cannot complete from status: {job.get('status')}")
+
+    def request_cancel(self, job_id: str, message: str = "Cancellation requested") -> dict[str, Any]:
+        now = _now()
+        with self._connect() as conn, self._lock:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET status = 'cancelling', stage = 'cancelling', message = ?, updated_at = ?
+                WHERE id = ? AND status IN ('queued', 'running')
+                """,
+                (message, now, job_id),
+            )
+            conn.commit()
+        job = self.get_job(job_id)
+        if not job:
+            raise KeyError(f"job not found: {job_id}")
+        return job
 
     def raise_if_cancelled(self, job_id: str) -> None:
         job = self.get_job(job_id)

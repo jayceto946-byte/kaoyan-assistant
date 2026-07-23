@@ -3,27 +3,25 @@
 DeepSeek V4 Pro 在 thinking 模式下会输出 <think>...</think> 包裹的推理链，
 需要过滤后才能展示给用户。
 """
-import re
 
 
 class ThinkingFilter:
-    """流式 thinking 过滤器，支持跨 chunk 的 <think>...</think> 标签。
-
-    Usage:
-        tf = ThinkingFilter()
-        for chunk in llm.stream(prompt):
-            clean = tf.filter(chunk.content)
-            if clean:
-                yield clean
-        # 流结束时 flush 剩余内容
-        final = tf.flush()
-        if final:
-            yield final
-    """
+    """流式 thinking 过滤器，支持跨 chunk 的 <think>...</think> 标签。"""
 
     def __init__(self):
         self.in_thinking = False
         self.buffer = ""
+        self._open_tag = "<think>"
+        self._close_tag = "</think>"
+
+    @staticmethod
+    def _partial_tag_length(text: str, tag: str) -> int:
+        """Return the longest suffix of text that can start a tag."""
+        lowered = text.lower()
+        for length in range(min(len(lowered), len(tag) - 1), 0, -1):
+            if lowered.endswith(tag[:length]):
+                return length
+        return 0
 
     def filter(self, text: str) -> str:
         """过滤文本中的 thinking 内容，返回干净的文本。"""
@@ -34,37 +32,48 @@ class ThinkingFilter:
         result = []
 
         while self.buffer:
+            lowered = self.buffer.lower()
             if self.in_thinking:
-                end = self.buffer.find("</think>")
+                end = lowered.find(self._close_tag)
                 if end == -1:
-                    # 整个 buffer 都在 thinking 中，等待更多数据
-                    self.buffer = ""
+                    # Discard confirmed thinking content, but retain a possible
+                    # split closing tag for the next chunk.
+                    keep = self._partial_tag_length(self.buffer, self._close_tag)
+                    self.buffer = self.buffer[-keep:] if keep else ""
                     break
-                # 找到结束标签，保留之后的内容继续处理
-                self.buffer = self.buffer[end + len("</think>"):]
+                self.buffer = self.buffer[end + len(self._close_tag):]
                 self.in_thinking = False
             else:
-                start = self.buffer.find("<think>")
+                start = lowered.find(self._open_tag)
                 if start == -1:
-                    # 没有 thinking 标签，全部输出
-                    result.append(self.buffer)
-                    self.buffer = ""
+                    # Emit confirmed normal text, but retain a possible split
+                    # opening tag so it can never leak as ordinary output.
+                    keep = self._partial_tag_length(self.buffer, self._open_tag)
+                    if keep:
+                        result.append(self.buffer[:-keep])
+                        self.buffer = self.buffer[-keep:]
+                    else:
+                        result.append(self.buffer)
+                        self.buffer = ""
                     break
-                # 输出 think 之前的内容
                 result.append(self.buffer[:start])
-                self.buffer = self.buffer[start + len("<think>"):]
+                self.buffer = self.buffer[start + len(self._open_tag):]
                 self.in_thinking = True
 
         return "".join(result)
 
     def flush(self) -> str:
         """流结束时调用，输出 buffer 中剩余的非 thinking 内容。"""
-        if not self.buffer:
-            return ""
         if self.in_thinking:
-            # 流结束还没看到 </think>，丢弃剩余内容
             self.buffer = ""
             self.in_thinking = False
+            return ""
+        if not self.buffer:
+            return ""
+        # A retained suffix is an incomplete opening tag. Discard it rather
+        # than exposing a fragment of a reasoning marker.
+        if self._open_tag.startswith(self.buffer.lower()):
+            self.buffer = ""
             return ""
         text = self.buffer
         self.buffer = ""
@@ -72,13 +81,8 @@ class ThinkingFilter:
 
 
 def strip_thinking(text: str) -> str:
-    """一次性过滤文本中的所有 <think>...</think> 内容。
-
-    Usage:
-        clean = strip_thinking(llm.invoke(prompt).content)
-    """
+    """一次性安全过滤完整或未闭合的 thinking 内容。"""
     if not text:
         return text
-    # 非贪婪匹配，支持多行
-    pattern = re.compile(r"<think>.*?</think>", re.DOTALL)
-    return pattern.sub("", text).strip()
+    stream_filter = ThinkingFilter()
+    return (stream_filter.filter(text) + stream_filter.flush()).strip()
