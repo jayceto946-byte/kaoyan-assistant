@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from backend.schemas import KGGraphOut, KGRefreshOut
 from config import PROGRESS_PATH
 from backend.job_manager import JobCancelled, get_job_manager
+from backend.services.dependency_cache import DependencyTTLCache
 from backend.services.kg_learning_summary import (
     build_concept_review_plan,
     days_since,
@@ -24,6 +25,7 @@ from backend.services.kg_learning_summary import (
 from knowledge.kg_enhancement import enhance_book, estimate_enhancement
 
 KG_ENHANCEMENT_JOB_TYPE = "textbook_kg_enhancement"
+_learning_summary_cache = DependencyTTLCache(ttl_seconds=5.0)
 from utils.path_safety import safe_book_name, safe_child_path
 
 router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
@@ -236,8 +238,7 @@ def _build_concept_review_plan(book_name: str, concepts: dict, strict_exposures:
 def _mistake_summary(record) -> dict:
     return mistake_summary(record)
 
-@router.get("/learning-summary")
-def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30):
+def _compute_learning_summary(book_name: str = "", subject: str = "", limit: int = 30):
     """Return strict concept memory activity plus mistake weak-point context."""
     memory_book = book_name or "default"
     try:
@@ -522,6 +523,30 @@ def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30
         return {"success": False, "message": str(e), "data": None}
 
 
+def _learning_summary_dependencies(memory_book: str) -> list[Path]:
+    safe = safe_book_name(memory_book)
+    progress_root = Path(PROGRESS_PATH)
+    mistake_db = safe_child_path(progress_root, f"mistake_book_{safe}.db")
+    event_db = safe_child_path(progress_root, "learning_events.db")
+    return [
+        safe_child_path(progress_root, safe, "concept_memory.json"),
+        mistake_db,
+        Path(f"{mistake_db}-wal"),
+        event_db,
+        Path(f"{event_db}-wal"),
+    ]
+
+
+@router.get("/learning-summary")
+def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30):
+    memory_book = book_name or "default"
+    return _learning_summary_cache.get_or_compute(
+        (memory_book, subject, int(limit)),
+        _learning_summary_dependencies(memory_book),
+        lambda: _compute_learning_summary(book_name, subject, limit),
+        should_cache=lambda result: bool(result.get("success")),
+    )
+
 @router.post("/concept-review")
 def mark_concept_review(payload: dict, book_name: str = ""):
     """Record that the user reviewed a concept from the Learning page."""
@@ -534,6 +559,7 @@ def mark_concept_review(payload: dict, book_name: str = ""):
     try:
         from knowledge.concept_memory import ConceptMemory
         updated = ConceptMemory(memory_book).mark_reviewed(name, quality=quality, note=note)
+        _learning_summary_cache.clear()
         return {"success": True, "message": "已记录概念复习", "data": updated}
     except Exception as e:
         return {"success": False, "message": str(e), "data": None}
