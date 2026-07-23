@@ -212,14 +212,31 @@ const MistakesPage: React.FC = () => {
       console.error('loadDue error:', e);
     }
   }, [scopedQuery]);
+  const loadOverview = useCallback(async () => {
+    try {
+      const res = await post(`/mistakes/overview${bookQuery}`, {
+        subject: subjectFilter.trim(),
+        search_kw: '',
+        limit: 50,
+      });
+      if (res?.success) {
+        setRecords(res.data?.records || []);
+        setDueRecords(res.data?.due_records || []);
+      }
+    } catch (e) {
+      console.error('loadOverview error:', e);
+    }
+  }, [bookQuery, subjectFilter]);
 
   const loadStats = useCallback(async () => {
     setPageLoading(true);
     setPageError('');
     try {
-      const statsRes = await get(`/mistakes/stats${scopedQuery}`);
+      const [statsRes, weakRes] = await Promise.all([
+        get(`/mistakes/stats${scopedQuery}`),
+        get(`/mistakes/weak-points${scopedQuery}`),
+      ]);
       setStats(statsRes && typeof statsRes.total === 'number' ? statsRes : null);
-      const weakRes = await get(`/mistakes/weak-points${scopedQuery}`);
       setWeakPoints(weakRes?.success ? weakRes.data || [] : []);
     } catch {
       setPageError('加载统计数据失败');
@@ -231,9 +248,8 @@ const MistakesPage: React.FC = () => {
   }, [scopedQuery]);
 
   useEffect(() => {
-    loadList();
-    loadDue();
-  }, [loadDue, loadList]);
+    loadOverview();
+  }, [loadOverview]);
 
   useEffect(() => {
     if (activeTab === '统计') loadStats();

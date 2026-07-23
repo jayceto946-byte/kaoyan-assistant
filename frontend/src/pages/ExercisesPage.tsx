@@ -46,10 +46,7 @@ const ExercisesPage: React.FC = () => {
   const [targetSubject, setTargetSubject] = useState(subject || '\u6570\u5b66');
   const activeName = targetName.trim() || bookName || 'default';
   const bookQuery = activeName && activeName !== 'default' ? `?book_name=${encodeURIComponent(activeName)}` : '';
-  const statsQuery = new URLSearchParams();
-  if (activeName && activeName !== 'default') statsQuery.set('book_name', activeName);
-  if (targetSubject.trim()) statsQuery.set('subject', targetSubject.trim());
-  const statsSuffix = statsQuery.toString() ? `?${statsQuery.toString()}` : '';
+
 
   const [records, setRecords] = useState<ExerciseRecord[]>([]);
   const [stats, setStats] = useState<ExerciseStats | null>(null);
@@ -193,16 +190,23 @@ const ExercisesPage: React.FC = () => {
     setLoading(true);
     setMessage('');
     try {
-      const listRes = await post(`/exercises/list${bookQuery}`, { search_kw: searchKwRef.current, subject: targetSubject, status: statusFilter, limit: 100 });
-      if (listRes?.success) setRecords(listRes.data || []);
-      const statsRes = await get(`/exercises/stats${statsSuffix}`);
-      if (statsRes?.success) setStats(statsRes.data);
+      const overview = await post(`/exercises/overview${bookQuery}`, {
+        search_kw: searchKwRef.current,
+        subject: targetSubject,
+        status: statusFilter,
+        limit: 100,
+      });
+      if (overview?.success) {
+        setRecords(overview.data?.records || []);
+        setStats(overview.data?.stats || null);
+        setPracticeSession(overview.data?.practice_session || null);
+      }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [bookQuery, statsSuffix, statusFilter, targetSubject]);
+  }, [bookQuery, statusFilter, targetSubject]);
 
   useEffect(() => {
     loadBooks();
@@ -219,17 +223,7 @@ const ExercisesPage: React.FC = () => {
   useEffect(() => {
     load();
   }, [load]);
-  useEffect(() => {
-    let cancelled = false;
-    get(`/exercises/practice-sessions/active${bookQuery}`)
-      .then((res) => {
-        if (!cancelled) setPracticeSession(res?.success ? res.data || null : null);
-      })
-      .catch(() => {
-        if (!cancelled) setPracticeSession(null);
-      });
-    return () => { cancelled = true; };
-  }, [bookQuery]);
+
 
 
   const resetImportPreview = () => {

@@ -353,9 +353,8 @@ def add_mistake(req: MistakeAddRequest, book_name: str = "default"):
             "message": f"保存失败：{e}。如果提示 disk I/O error，请检查 data/progress 的 SQLite 文件权限或残留 journal。",
         }
 
-@router.post("/list")
-def list_mistakes(req: MistakeListRequest, book_name: str = "default"):
-    records = _mb(book_name).list_all(
+def _list_mistake_records(req: MistakeListRequest, mistake_book) -> list[MistakeRecord]:
+    records = mistake_book.list_all(
         subject=req.subject or None,
         chapter=req.chapter or None,
         tag=req.tag or None,
@@ -364,14 +363,34 @@ def list_mistakes(req: MistakeListRequest, book_name: str = "default"):
     if req.search_kw.strip():
         kw = req.search_kw.strip().lower()
         records = [
-            r
-            for r in records
-            if kw in r.question_text.lower()
-            or kw in r.ocr_text.lower()
-            or kw in r.explanation.lower()
-            or any(kw in t.lower() for t in r.tags)
+            record
+            for record in records
+            if kw in record.question_text.lower()
+            or kw in record.ocr_text.lower()
+            or kw in record.explanation.lower()
+            or any(kw in tag.lower() for tag in record.tags)
         ]
-    return {"success": True, "data": [_record_to_out(r) for r in records]}
+    return records
+
+
+@router.post("/list")
+def list_mistakes(req: MistakeListRequest, book_name: str = "default"):
+    records = _list_mistake_records(req, _mb(book_name))
+    return {"success": True, "data": [_record_to_out(record) for record in records]}
+
+
+@router.post("/overview")
+def get_mistake_overview(req: MistakeListRequest, book_name: str = "default"):
+    mistake_book = _mb(book_name)
+    records = _list_mistake_records(req, mistake_book)
+    due = mistake_book.get_due(subject=req.subject or None)
+    return {
+        "success": True,
+        "data": {
+            "records": [_record_to_out(record) for record in records],
+            "due_records": [_record_to_out(record) for record in due],
+        },
+    }
 
 
 @router.get("/due")

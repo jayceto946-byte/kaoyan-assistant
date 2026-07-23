@@ -211,9 +211,8 @@ def add_exercise(req: ExerciseAddRequest, book_name: str = "default"):
         return {"success": False, "message": f"保存失败：{e}"}
 
 
-@router.post("/list")
-def list_exercises(req: ExerciseListRequest, book_name: str = "default"):
-    records = _bank(book_name).list_all(
+def _list_exercise_records(req: ExerciseListRequest, bank) -> list[ExerciseRecord]:
+    return bank.list_all(
         subject=req.subject or None,
         chapter=req.chapter or None,
         tag=req.tag or None,
@@ -221,7 +220,27 @@ def list_exercises(req: ExerciseListRequest, book_name: str = "default"):
         status=req.status,
         limit=req.limit,
     )
+
+
+@router.post("/list")
+def list_exercises(req: ExerciseListRequest, book_name: str = "default"):
+    records = _list_exercise_records(req, _bank(book_name))
     return {"success": True, "data": [_record_to_out(r) for r in records]}
+
+
+@router.post("/overview")
+def get_exercise_overview(req: ExerciseListRequest, book_name: str = "default"):
+    practice = _practice_service(book_name)
+    records = _list_exercise_records(req, practice.bank)
+    active = practice.bank.get_active_practice_session()
+    return {
+        "success": True,
+        "data": {
+            "records": [_record_to_out(record) for record in records],
+            "stats": practice.bank.stats(subject=req.subject or None),
+            "practice_session": practice.session_data(active) if active else None,
+        },
+    }
 
 
 @router.get("/stats")
