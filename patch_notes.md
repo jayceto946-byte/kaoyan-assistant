@@ -1,3 +1,16 @@
+# 2026-07-23 - 保守解耦第一批
+
+- 将知识图谱学习汇总中的日期计算、错题摘要和概念复习优先级迁入无 I/O 的 `backend/services/kg_learning_summary.py`；API 保留原函数签名和错题库读取职责。
+- 将错题图片上传、暂存、优化、提交和清理迁入 `MistakeImageStore`；API 保留同名兼容包装，OCR 路由和图片事务语义不变。
+- 将错题图片裁剪/锐化工具及习题、错题无状态展示组件迁入 `frontend/src/features`；页面请求、状态和交互流程不变。
+- 教材导入和习题练习状态机暂未迁移，避免在第一批同时触碰高风险写入链路。
+
+### Validation
+
+- KG 定向回归：10 passed。
+- 错题图片与 API 定向回归：20 passed。
+- 后端全量回归：174 passed。
+- 前端 ESLint、Vitest 14 项、TypeScript 与 Vite 生产构建通过。
 # 2026-07-23 - P0/P1 稳定性与安全修复
 
 - 修复流式 `<think>` / `</think>` 标签跨 chunk 时推理内容泄漏；未闭合推理块与不完整标签片段会安全丢弃。
