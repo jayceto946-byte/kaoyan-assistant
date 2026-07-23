@@ -1,0 +1,179 @@
+"""Pure helpers for knowledge-graph learning summaries."""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Iterable
+
+
+def parse_datetime(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def days_since(value: str, *, now: datetime | None = None) -> int | None:
+    parsed = parse_datetime(value)
+    if not parsed:
+        return None
+    reference = now or datetime.now()
+    return max(0, (reference - parsed).days)
+
+
+def mistake_summary(record: Any) -> dict:
+    sm2 = getattr(record, "sm2", {}) or {}
+    return {
+        "id": record.id,
+        "question_text": record.question_text,
+        "source": record.source,
+        "subject": record.subject,
+        "chapter": record.chapter,
+        "tags": record.tags,
+        "mistake_type": record.mistake_type,
+        "next_review": sm2.get("next_review"),
+        "interval": sm2.get("interval"),
+        "review_history": record.review_history,
+        "linked_concepts": record.linked_concepts,
+    }
+
+
+def build_concept_review_plan(
+    concepts: dict,
+    strict_exposures: list[dict],
+    concept_counts,
+    mistake_weak_points: list[dict],
+    mistake_records: Iterable[Any],
+    *,
+    limit: int = 8,
+    weak_names: set[str] | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Build deterministic review cards from already-loaded domain data."""
+    reference = now or datetime.now()
+    records = list(mistake_records)
+    weak_names = weak_names if weak_names is not None else {
+        name for name, info in concepts.items() if info.get("weak_flag")
+    }
+    mistake_counts = {
+        item.get("name", ""): int(item.get("count", 0) or 0)
+        for item in mistake_weak_points
+    }
+    candidate_names = (
+        set(weak_names)
+        | {name for name, _ in concept_counts.most_common(12)}
+        | {name for name, count in mistake_counts.items() if count > 0}
+    )
+
+    review_items = []
+    for name in candidate_names:
+        if not name:
+            continue
+        info = concepts.get(name, {})
+        if str(info.get("last_reviewed_at", ""))[:10] == reference.date().isoformat():
+            continue
+        exposure_count = int(info.get("exposure_count", 0) or concept_counts.get(name, 0) or 0)
+        days_since_seen = days_since(info.get("last_exposed_at", ""), now=reference)
+        days_since_review = days_since(info.get("last_reviewed_at", ""), now=reference)
+        related_mistakes = []
+        for record in records:
+            linked_names = [str(c.get("name", "")) for c in getattr(record, "linked_concepts", [])]
+            haystack = "\n".join([
+                getattr(record, "question_text", ""),
+                getattr(record, "ocr_text", ""),
+                getattr(record, "explanation", ""),
+                " ".join(getattr(record, "tags", []) or []),
+                " ".join(linked_names),
+            ])
+            if name in haystack:
+                related_mistakes.append(mistake_summary(record))
+            if len(related_mistakes) >= 50:
+                break
+
+        recent_questions = []
+        seen_questions = set()
+        for exposure in reversed(strict_exposures):
+            if exposure.get("concept") != name:
+                continue
+            question = (exposure.get("question") or "").strip()
+            if not question or question in seen_questions:
+                continue
+            seen_questions.add(question)
+            recent_questions.append({
+                "question": question,
+                "source": (
+                    "mistake"
+                    if exposure.get("source") == "mistake" or exposure.get("intent") == "mistake"
+                    else "qa"
+                ),
+                "timestamp": exposure.get("timestamp", ""),
+                "weak": bool(exposure.get("weak")),
+                "mistake_id": next(
+                    (
+                        record.id
+                        for record in records
+                        if question
+                        and question
+                        in "\n".join([record.question_text, record.ocr_text, record.explanation])
+                    ),
+                    "",
+                ),
+            })
+            if len(recent_questions) >= 3:
+                break
+
+        textbook_snippets = [
+            {"type": "chapter", "text": chapter, "chapter": chapter}
+            for chapter in [
+                str(chapter)
+                for chapter in info.get("source_chapters", [])
+                if str(chapter).strip()
+            ][:4]
+        ]
+
+        reasons = []
+        priority = 0
+        if name in weak_names:
+            reasons.append("已标记为薄弱概念")
+            priority += 45
+        if related_mistakes:
+            reasons.append(f"关联 {len(related_mistakes)} 道错题")
+            priority += 30 + len(related_mistakes) * 4
+        elif mistake_counts.get(name, 0):
+            reasons.append(f"错题统计出现 {mistake_counts[name]} 次")
+            priority += 25
+        if days_since_seen is not None and days_since_seen >= 7:
+            reasons.append(f"{days_since_seen} 天未接触")
+            priority += min(30, days_since_seen)
+        if exposure_count >= 2:
+            reasons.append(f"累计接触 {exposure_count} 次")
+            priority += min(15, exposure_count * 2)
+        if days_since_review is None:
+            reasons.append("还没有明确复习记录")
+            priority += 8
+        elif days_since_review >= 7:
+            reasons.append(f"上次复习已过 {days_since_review} 天")
+            priority += min(20, days_since_review)
+        if recent_questions:
+            priority += 4
+        if not reasons:
+            continue
+
+        review_items.append({
+            "name": name,
+            "priority": priority,
+            "reasons": reasons[:4],
+            "days_since_seen": days_since_seen,
+            "days_since_review": days_since_review,
+            "exposure_count": exposure_count,
+            "mastery_level": info.get("mastery_level", 0),
+            "weak": name in weak_names,
+            "recent_questions": recent_questions,
+            "related_mistakes": related_mistakes,
+            "textbook_snippets": textbook_snippets[:3],
+        })
+
+    review_items.sort(
+        key=lambda item: (item["priority"], item["exposure_count"]),
+        reverse=True,
+    )
+    return review_items[:limit]

@@ -15,6 +15,12 @@ from pydantic import BaseModel
 from backend.schemas import KGGraphOut, KGRefreshOut
 from config import PROGRESS_PATH
 from backend.job_manager import JobCancelled, get_job_manager
+from backend.services.kg_learning_summary import (
+    build_concept_review_plan,
+    days_since,
+    mistake_summary,
+    parse_datetime,
+)
 from knowledge.kg_enhancement import enhance_book, estimate_enhancement
 
 KG_ENHANCEMENT_JOB_TYPE = "textbook_kg_enhancement"
@@ -199,153 +205,37 @@ def get_concept_wiki(name: str, book_name: str = ""):
 
 
 def _parse_dt(value: str):
-    from datetime import datetime
-    try:
-        return datetime.fromisoformat(value) if value else None
-    except (TypeError, ValueError):
-        return None
+    return parse_datetime(value)
 
 
 def _days_since(value: str) -> int | None:
-    from datetime import datetime
-    dt = _parse_dt(value)
-    if not dt:
-        return None
-    return max(0, (datetime.now() - dt).days)
+    return days_since(value)
 
 
 def _build_concept_review_plan(book_name: str, concepts: dict, strict_exposures: list[dict], concept_counts, mistake_weak_points: list[dict], subject: str = "", limit: int = 8, weak_names: set[str] | None = None) -> list[dict]:
-    """Build actionable concept review cards from memory, mistakes, and KG metadata."""
+    """Load mistake records and delegate review-card calculation to a pure service."""
     from config import PROGRESS_PATH
     from memory.mistake_book import get_mistake_book
 
-    weak_names = weak_names if weak_names is not None else {name for name, info in concepts.items() if info.get("weak_flag")}
-    mistake_counts = {item.get("name", ""): int(item.get("count", 0) or 0) for item in mistake_weak_points}
-    candidate_names = set(weak_names) | {name for name, _ in concept_counts.most_common(12)} | {name for name, count in mistake_counts.items() if count > 0}
-
-    now_items = []
     try:
         mb = get_mistake_book(book_name, str(PROGRESS_PATH))
         mistake_records = mb.list_all(subject=subject or None, limit=1000)
     except Exception:
         mistake_records = []
+    return build_concept_review_plan(
+        concepts,
+        strict_exposures,
+        concept_counts,
+        mistake_weak_points,
+        mistake_records,
+        limit=limit,
+        weak_names=weak_names,
+    )
 
-    for name in candidate_names:
-        if not name:
-            continue
-        info = concepts.get(name, {})
-        if str(info.get("last_reviewed_at", ""))[:10] == datetime.now().date().isoformat():
-            continue
-        exposure_count = int(info.get("exposure_count", 0) or concept_counts.get(name, 0) or 0)
-        days_since_seen = _days_since(info.get("last_exposed_at", ""))
-        days_since_review = _days_since(info.get("last_reviewed_at", ""))
-        related_mistakes = []
-        for record in mistake_records:
-            linked_names = [str(c.get("name", "")) for c in getattr(record, "linked_concepts", [])]
-            haystack = "\n".join([
-                getattr(record, "question_text", ""),
-                getattr(record, "ocr_text", ""),
-                getattr(record, "explanation", ""),
-                " ".join(getattr(record, "tags", []) or []),
-                " ".join(linked_names),
-            ])
-            if name in haystack:
-                related_mistakes.append(_mistake_summary(record))
-            if len(related_mistakes) >= 50:
-                break
-
-        recent_questions = []
-        seen_questions = set()
-        for e in reversed(strict_exposures):
-            if e.get("concept") != name:
-                continue
-            question = (e.get("question") or "").strip()
-            if not question or question in seen_questions:
-                continue
-            seen_questions.add(question)
-            recent_questions.append({
-                "question": question,
-                "source": "mistake" if e.get("source") == "mistake" or e.get("intent") == "mistake" else "qa",
-                "timestamp": e.get("timestamp", ""),
-                "weak": bool(e.get("weak")),
-                "mistake_id": next(
-                    (
-                        record.id
-                        for record in mistake_records
-                        if question and question in "\n".join([record.question_text, record.ocr_text, record.explanation])
-                    ),
-                    "",
-                ),
-            })
-            if len(recent_questions) >= 3:
-                break
-
-        textbook_snippets = []
-        source_chapters = [str(ch) for ch in info.get("source_chapters", []) if str(ch).strip()]
-        for ch in source_chapters[:4]:
-            textbook_snippets.append({"type": "chapter", "text": ch, "chapter": ch})
-
-        reasons = []
-        priority = 0
-        if name in weak_names:
-            reasons.append("已标记为薄弱概念")
-            priority += 45
-        if related_mistakes:
-            reasons.append(f"关联 {len(related_mistakes)} 道错题")
-            priority += 30 + len(related_mistakes) * 4
-        elif mistake_counts.get(name, 0):
-            reasons.append(f"错题统计出现 {mistake_counts[name]} 次")
-            priority += 25
-        if days_since_seen is not None and days_since_seen >= 7:
-            reasons.append(f"{days_since_seen} 天未接触")
-            priority += min(30, days_since_seen)
-        if exposure_count >= 2:
-            reasons.append(f"累计接触 {exposure_count} 次")
-            priority += min(15, exposure_count * 2)
-        if days_since_review is None:
-            reasons.append("还没有明确复习记录")
-            priority += 8
-        elif days_since_review >= 7:
-            reasons.append(f"上次复习已过 {days_since_review} 天")
-            priority += min(20, days_since_review)
-        if recent_questions:
-            priority += 4
-
-        if not reasons:
-            continue
-
-        now_items.append({
-            "name": name,
-            "priority": priority,
-            "reasons": reasons[:4],
-            "days_since_seen": days_since_seen,
-            "days_since_review": days_since_review,
-            "exposure_count": exposure_count,
-            "mastery_level": info.get("mastery_level", 0),
-            "weak": name in weak_names,
-            "recent_questions": recent_questions,
-            "related_mistakes": related_mistakes,
-            "textbook_snippets": textbook_snippets[:3],
-        })
-
-    now_items.sort(key=lambda item: (item["priority"], item["exposure_count"]), reverse=True)
-    return now_items[:limit]
 
 def _mistake_summary(record) -> dict:
-    sm2 = getattr(record, "sm2", {}) or {}
-    return {
-        "id": record.id,
-        "question_text": record.question_text,
-        "source": record.source,
-        "subject": record.subject,
-        "chapter": record.chapter,
-        "tags": record.tags,
-        "mistake_type": record.mistake_type,
-        "next_review": sm2.get("next_review"),
-        "interval": sm2.get("interval"),
-        "review_history": record.review_history,
-        "linked_concepts": record.linked_concepts,
-    }
+    return mistake_summary(record)
+
 @router.get("/learning-summary")
 def get_learning_summary(book_name: str = "", subject: str = "", limit: int = 30):
     """Return strict concept memory activity plus mistake weak-point context."""
