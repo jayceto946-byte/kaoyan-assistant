@@ -1,3 +1,14 @@
+# 2026-07-23 - 保守解耦第二批
+
+- 将习题练习会话的创建、读取、作答、暂停、恢复、放弃和幂等错题转换编排迁入 `ExercisePracticeService`；SQLite 原子状态转换继续由现有 `ExerciseBank` 负责。
+- 将教材 OCR 章节形态识别、目录解析、标题降级和前端章节格式化迁入无 I/O 的 `backend/services/book_chapters.py`。
+- 原 API 路由、响应字段和兼容函数名保持不变；教材导入提交、失败回滚、向量索引与当前教材状态没有迁移。
+
+### Validation
+
+- 练习会话定向回归：14 passed。
+- 教材章节与导入相关定向回归：22 passed。
+- 后端全量回归：177 passed。
 # 2026-07-23 - 保守解耦第一批
 
 - 将知识图谱学习汇总中的日期计算、错题摘要和概念复习优先级迁入无 I/O 的 `backend/services/kg_learning_summary.py`；API 保留原函数签名和错题库读取职责。
