@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from backend.job_manager import JobCancelled, get_job_manager
 from backend.book_lifecycle import BookLifecycleService
+from backend.services.book_read_cache import BookReadCache
 from backend.services.book_chapters import (
     chapters_from_embedded_toc,
     chapters_from_ocr_headings,
@@ -62,6 +63,7 @@ _book_state: dict = {
 IMPORT_JOB_TYPE = "textbook_import"
 OUTPUT_UPLOAD_DIR = DATA_DIR / "uploads" / "mineru_outputs"
 BOOK_UPLOAD_DIR = DATA_DIR / "uploads" / "book_imports"
+_book_read_cache = BookReadCache()
 _job_manager = get_job_manager()
 _lifecycle = BookLifecycleService(PROGRESS_PATH)
 _job_manager.import_legacy_json_jobs(
@@ -72,9 +74,11 @@ _job_manager.import_legacy_json_jobs(
 
 
 def _get_books() -> list[Path]:
-    BOOKS_PATH.mkdir(parents=True, exist_ok=True)
-    return list(BOOKS_PATH.glob("*.pdf"))
+    return _book_read_cache.list_pdfs(Path(BOOKS_PATH))
 
+
+def _invalidate_book_read_cache() -> None:
+    _book_read_cache.clear()
 
 def _known_book_names(include_archived: bool = False) -> list[str]:
     names = {p.stem for p in _get_books()}
@@ -87,13 +91,13 @@ def _known_book_names(include_archived: bool = False) -> list[str]:
         names = {name for name in names if not _read_book_meta(name).get("archived")}
     return sorted(names)
 
-def _fast_book_index_stats(book_name: str) -> dict:
+def _compute_fast_book_index_stats(book_name: str) -> dict:
     normalized = safe_book_name(book_name)
     stats = {"book_name": normalized, "collection_count": 0, "chunk_count": 0, "healthy": False}
 
     map_path = Path(VECTOR_DB_PATH) / "_chapter_map.json"
     try:
-        raw = json.loads(map_path.read_text(encoding="utf-8")) if map_path.exists() else {}
+        raw = _book_read_cache.read_json(map_path, {})
         if isinstance(raw, dict):
             for value in raw.values():
                 if not isinstance(value, dict):
@@ -114,6 +118,16 @@ def _fast_book_index_stats(book_name: str) -> dict:
     return stats
 
 
+def _fast_book_index_stats(book_name: str) -> dict:
+    normalized = safe_book_name(book_name)
+    map_path = Path(VECTOR_DB_PATH) / "_chapter_map.json"
+    lexical_path = Path(VECTOR_DB_PATH) / "_lexical" / f"{normalized}.json"
+    return _book_read_cache.index_stats(
+        normalized,
+        map_path,
+        lexical_path,
+        lambda: _compute_fast_book_index_stats(normalized),
+    )
 
 def _book_pdf_path(name: str) -> Path | None:
     candidate = BOOKS_PATH / f"{Path(name).name}.pdf"
@@ -122,23 +136,13 @@ def _book_pdf_path(name: str) -> Path | None:
 def _load_raw_chapters(name: str) -> list[dict]:
     """Load persisted OCR units without UI-only TOC normalization."""
     path = safe_child_path(PROGRESS_PATH, safe_book_name(name), "_chapters.json")
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
+    data = _book_read_cache.read_json(path, [])
+    return data if isinstance(data, list) else []
 
 def _load_chapters(name: str) -> list[dict]:
     path = safe_child_path(PROGRESS_PATH, safe_book_name(name), "_chapters.json")
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        return _normalize_loaded_chapters(name, data if isinstance(data, list) else [])
-    return []
-
+    data = _book_read_cache.read_json(path, [])
+    return _normalize_loaded_chapters(name, data if isinstance(data, list) else [])
 
 def _normalize_loaded_chapters(name: str, chapters: list[dict]) -> list[dict]:
     if not _looks_like_external_ocr_chunk_titles(chapters):
@@ -172,6 +176,7 @@ def _save_chapters(name: str, chapters: list[dict]) -> None:
     # External OCR produces one record per heading/chunk. Persist the real TOC
     # instead so highlight/exercise UIs never mistake hundreds of chunks for chapters.
     atomic_write_json(path, _normalize_loaded_chapters(name, chapters))
+    _invalidate_book_read_cache()
 
 
 def _book_meta_path(name: str) -> Path:
@@ -179,18 +184,12 @@ def _book_meta_path(name: str) -> Path:
 
 
 def _read_book_meta(name: str) -> dict:
-    path = _book_meta_path(name)
-    try:
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        pass
-    return {}
-
+    data = _book_read_cache.read_json(_book_meta_path(name), {})
+    return data if isinstance(data, dict) else {}
 
 def _write_book_meta(name: str, **updates) -> dict:
     _, meta = _lifecycle.update_metadata(name, **updates)
+    _invalidate_book_read_cache()
     return meta
 
 
