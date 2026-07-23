@@ -5,14 +5,13 @@ import base64
 import json
 import os
 import re
-import shutil
-import time
-import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from fastapi.responses import FileResponse
+
+from backend.services.mistake_images import MistakeImageStore
 
 from backend.schemas import (
     MistakeAddRequest,
@@ -226,113 +225,43 @@ def _persist_mistake_concepts(record: MistakeRecord, explanation: str = "", book
     return concepts
 
 
+def _mistake_image_store() -> MistakeImageStore:
+    return MistakeImageStore(
+        images_path=Path(IMAGES_PATH),
+        allowed_extensions=frozenset(ALLOWED_IMAGE_EXTS),
+        max_image_bytes=MAX_IMAGE_BYTES,
+        ocr_max_side=OCR_MAX_SIDE,
+        ocr_jpeg_quality=OCR_JPEG_QUALITY,
+        pending_max_age_seconds=PENDING_IMAGE_MAX_AGE_SECONDS,
+    )
+
+
 def _image_root() -> Path:
-    return Path(IMAGES_PATH) / "mistakes"
+    return _mistake_image_store().image_root
 
 
 def _pending_image_root() -> Path:
-    return _image_root() / "pending"
+    return _mistake_image_store().pending_root
 
 
 def _delete_mistake_image(path: str | Path | None) -> None:
-    if not path:
-        return
-    candidate = Path(path).resolve()
-    root = _image_root().resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError:
-        return
-    candidate.unlink(missing_ok=True)
+    _mistake_image_store().delete(path)
 
 
 def _cleanup_stale_pending_images() -> None:
-    pending = _pending_image_root()
-    if not pending.exists():
-        return
-    cutoff = time.time() - PENDING_IMAGE_MAX_AGE_SECONDS
-    for path in pending.iterdir():
-        try:
-            if path.is_file() and path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
-        except OSError:
-            continue
+    _mistake_image_store().cleanup_stale_pending()
 
 
 def _commit_pending_mistake_image(path: str | None) -> tuple[str | None, bool]:
-    if not path:
-        return None, False
-    source = Path(path).resolve()
-    root = _image_root().resolve()
-    pending = _pending_image_root().resolve()
-    try:
-        source.relative_to(root)
-    except ValueError:
-        raise ValueError("图片路径不在错题图片目录内")
-    if not source.exists() or not source.is_file():
-        raise ValueError("待保存图片不存在")
-    try:
-        source.relative_to(pending)
-    except ValueError:
-        return str(source), False
-
-    root.mkdir(parents=True, exist_ok=True)
-    destination = root / source.name
-    if destination.exists():
-        destination = root / f"{uuid.uuid4().hex}_{source.name}"
-    shutil.move(str(source), str(destination))
-    return str(destination), True
+    return _mistake_image_store().commit_pending(path)
 
 
 def _save_uploaded_image(file: UploadFile) -> Path:
-    filename = file.filename or "mistake.png"
-    suffix = Path(filename).suffix.lower()
-    if suffix not in ALLOWED_IMAGE_EXTS:
-        raise ValueError("请上传 png/jpg/jpeg/webp/bmp 格式的图片")
-
-    _cleanup_stale_pending_images()
-    out_dir = _pending_image_root()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    raw_path = out_dir / f"{uuid.uuid4().hex}_raw{suffix}"
-
-    size = 0
-    with open(raw_path, "wb") as fh:
-        while True:
-            chunk = file.file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > MAX_IMAGE_BYTES:
-                fh.close()
-                raw_path.unlink(missing_ok=True)
-                raise ValueError("图片不能超过 20MB")
-            fh.write(chunk)
-    return _optimize_for_ocr(raw_path)
+    return _mistake_image_store().save_upload(file)
 
 
 def _optimize_for_ocr(raw_path: Path) -> Path:
-    optimized_path = raw_path.with_name(raw_path.stem.replace("_raw", "") + "_ocr.jpg")
-    try:
-        from PIL import Image, ImageOps
-
-        with Image.open(raw_path) as img:
-            img = ImageOps.exif_transpose(img)
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            width, height = img.size
-            scale = min(1.0, OCR_MAX_SIDE / max(width, height))
-            if scale < 1.0:
-                next_size = (max(1, int(width * scale)), max(1, int(height * scale)))
-                img = img.resize(next_size, Image.Resampling.LANCZOS)
-            if img.mode == "L":
-                img = img.convert("RGB")
-            img.save(optimized_path, format="JPEG", quality=OCR_JPEG_QUALITY, optimize=True)
-        raw_path.unlink(missing_ok=True)
-        return optimized_path
-    except Exception:
-        optimized_path.unlink(missing_ok=True)
-        return raw_path
-
+    return _mistake_image_store().optimize_for_ocr(raw_path)
 
 def _image_data_url(image_path: Path) -> str:
     mime = "image/jpeg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
