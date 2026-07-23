@@ -16,6 +16,13 @@ from pydantic import BaseModel
 
 from backend.job_manager import JobCancelled, get_job_manager
 from backend.book_lifecycle import BookLifecycleService
+from backend.services.book_chapters import (
+    chapters_from_embedded_toc,
+    chapters_from_ocr_headings,
+    format_chapter,
+    looks_like_external_ocr_chunk_titles,
+    positive_int,
+)
 from backend.schemas import PreReadStatusOut
 from config import BOOKS_PATH, DATA_DIR, MINERU_OUTPUT_PATH, PROGRESS_PATH, VECTOR_DB_PATH
 from ingestion.background_reader import BackgroundReader
@@ -141,100 +148,23 @@ def _normalize_loaded_chapters(name: str, chapters: list[dict]) -> list[dict]:
 
 
 def _looks_like_external_ocr_chunk_titles(chapters: list[dict]) -> bool:
-    if len(chapters) < 80:
-        return False
-    external = sum(1 for ch in chapters[:120] if ch.get("source") == "external_ocr_jsonl")
-    one_chunk = sum(1 for ch in chapters[:120] if int(ch.get("chunk_count") or 0) <= 1)
-    return external >= 20 and one_chunk >= 60
+    return looks_like_external_ocr_chunk_titles(chapters)
 
 
 def _chapters_from_ocr_headings(chapters: list[dict]) -> list[dict]:
-    result: list[dict] = []
-    current: dict | None = None
-    chapter_re = re.compile(r"^第\s*[一二三四五六七八九十百千0-9]+\s*章")
-    section_re = re.compile(r"^第\s*[一二三四五六七八九十百千0-9]+\s*节")
-    for ch in chapters:
-        title = re.sub(r"\s+", " ", str(ch.get("title") or "")).strip()
-        compact = title.replace(" ", "")
-        if chapter_re.match(compact):
-            current = {"title": title, "page_number": _positive_int(ch.get("page_number") or ch.get("page")) or 1, "end_page": ch.get("end_page"), "text": "", "subsections": []}
-            result.append(current)
-            continue
-        if current is not None and section_re.match(compact):
-            current.setdefault("subsections", []).append({"title": title, "page": _positive_int(ch.get("page_number") or ch.get("page")) or current.get("page_number", 1)})
-    return result if len(result) >= 2 else []
+    return chapters_from_ocr_headings(chapters)
+
 
 def _chapters_from_embedded_toc(chapters: list[dict]) -> list[dict]:
-    toc_index = -1
-    for index, ch in enumerate(chapters[:120]):
-        title = str(ch.get("title") or "")
-        text = str(ch.get("text") or "")
-        if "目录" in title.replace(" ", "") or "目录" in text[:80].replace(" ", ""):
-            toc_index = index
-            break
-    if toc_index < 0:
-        return []
-    toc_parts: list[str] = []
-    for ch in chapters[toc_index: min(len(chapters), toc_index + 18)]:
-        title = str(ch.get("title") or "")
-        text = str(ch.get("text") or "")
-        if toc_parts and re.match(r"^第[一二三四五六七八九十百千0-9]+章", title.replace(" ", "")) and "目录" not in text[:80].replace(" ", ""):
-            break
-        toc_parts.append(text or title)
-    toc_text = "\n".join(toc_parts)
-    if not toc_text:
-        return []
-
-    chapter_pattern = re.compile(r"^\s*(第\s*[一二三四五六七八九十百千0-9]+\s*章\s*.+?)\s*[\.·…\s]*(\d{1,4})?\s*$")
-    section_pattern = re.compile(r"^\s*(第\s*[一二三四五六七八九十百千0-9]+\s*节\s*.+?)\s*[\.·…\s]*(\d{1,4})?\s*$")
-    result: list[dict] = []
-    current: dict | None = None
-    for raw in toc_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = re.sub(r"[#`*_]+", "", raw).strip()
-        if not line or "目录" in line.replace(" ", ""):
-            continue
-        chapter_match = chapter_pattern.match(line)
-        if chapter_match:
-            title = re.sub(r"[\.·…\s\d]+$", "", chapter_match.group(1)).strip()
-            page = _positive_int(chapter_match.group(2)) or 1
-            current = {"title": title, "page_number": page, "end_page": None, "text": "", "subsections": []}
-            result.append(current)
-            continue
-        section_match = section_pattern.match(line)
-        if section_match and current is not None:
-            title = re.sub(r"[\.·…\s\d]+$", "", section_match.group(1)).strip()
-            current.setdefault("subsections", []).append({"title": title, "page": _positive_int(section_match.group(2)) or current.get("page_number", 1)})
-
-    for index, chapter in enumerate(result):
-        next_page = _positive_int(result[index + 1].get("page_number")) if index + 1 < len(result) else None
-        if next_page:
-            chapter["end_page"] = max(_positive_int(chapter.get("page_number")) or 1, next_page - 1)
-    return result
+    return chapters_from_embedded_toc(chapters)
 
 
 def _positive_int(value) -> int | None:
-    try:
-        parsed = int(value)
-    except Exception:
-        return None
-    return parsed if parsed > 0 else None
+    return positive_int(value)
 
 
 def _format_chapter(ch: dict) -> dict:
-    return {
-        "title": ch.get("title", ""),
-        "page": ch.get("page_number", ch.get("page", 1)),
-        "end_page": ch.get("end_page"),
-        "subsections": [
-            {
-                "title": sub.get("title", ""),
-                "page": sub.get("page", sub.get("page_number")),
-                "end_page": sub.get("end_page"),
-            }
-            for sub in ch.get("subsections", [])
-        ],
-    }
-
+    return format_chapter(ch)
 
 def _save_chapters(name: str, chapters: list[dict]) -> None:
     path = safe_child_path(PROGRESS_PATH, safe_book_name(name), "_chapters.json")
