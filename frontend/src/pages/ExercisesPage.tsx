@@ -1,18 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Pause, Pencil, Play, RotateCcw, Save, Scissors, Search, Shuffle, Sparkles, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Pause, Pencil, Play, RotateCcw, Save, Scissors, Search, Shuffle, Sparkles, Upload, X } from 'lucide-react';
 import { apiFetch, del, get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
 import ScopeSelector from '../components/ScopeSelector';
 import { useChatContext } from '../contexts/ChatContext';
+import {
+  ExerciseBlock,
+  ExerciseDetail,
+  ExerciseMetric,
+  exerciseStatusText as statusText,
+} from '../features/exercises/components/ExercisePresentation';
 import { useVisibleList } from '../hooks/useVisibleList';
 import type { BookInfo, ExerciseCandidate, ExerciseImportBatch, ExercisePracticeSession, ExerciseRecord, ExerciseStats } from '../types';
-
-const statusText: Record<string, string> = {
-  new: '新题',
-  practicing: '练习中',
-  mastered: '已掌握',
-  needs_review: '需复习',
-};
 
 function titleOf(record: ExerciseRecord) {
   const raw = record.question_text || record.source || '未命名习题';
@@ -750,9 +749,9 @@ const ExercisesPage: React.FC = () => {
               </section>
             )}
             <div className={`${workspaceMode === 'import' ? 'hidden' : 'grid'} grid-cols-1 gap-4 sm:grid-cols-3`}>
-              <Metric label="总习题" value={stats?.total || 0} />
-              <Metric label="需复习" value={stats?.by_status?.needs_review || 0} />
-              <Metric label="已掌握" value={stats?.by_status?.mastered || 0} />
+              <ExerciseMetric label="总习题" value={stats?.total || 0} />
+              <ExerciseMetric label="需复习" value={stats?.by_status?.needs_review || 0} />
+              <ExerciseMetric label="已掌握" value={stats?.by_status?.mastered || 0} />
             </div>
 
             <section className={`${workspaceMode === 'practice' ? 'block' : 'hidden'} space-y-5 rounded-xl border border-border bg-bg-card p-5`}>
@@ -807,7 +806,7 @@ const ExercisesPage: React.FC = () => {
                     <button onClick={() => setPracticeSolutionOpen((open) => !open)} className="w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm hover:border-accent">{practiceSolutionOpen ? '收起答案解析' : '查看答案解析'}</button>
                     {practiceSolutionOpen && (
                       <div className="space-y-4 border-t border-border pt-4">
-                        <Block title="标准答案（可编辑）">
+                        <ExerciseBlock title="标准答案（可编辑）">
                           <div className="space-y-2">
                             <textarea value={answerDraft} onChange={(e) => setAnswerDraft(e.target.value)} placeholder="暂无答案，可基于教材 RAG 生成草稿" className="min-h-[220px] w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm leading-6 text-text-primary outline-none focus:border-accent" />
                             <div className="flex flex-wrap gap-2">
@@ -819,8 +818,8 @@ const ExercisesPage: React.FC = () => {
                               </button>
                             </div>
                           </div>
-                        </Block>
-                        <Block title="解析">{currentPractice.explanation ? <ChatMessage role="assistant" content={currentPractice.explanation} linkedConcepts={currentPractice.linked_concepts || []} /> : <span className="text-sm text-text-secondary">暂无解析</span>}</Block>
+                        </ExerciseBlock>
+                        <ExerciseBlock title="解析">{currentPractice.explanation ? <ChatMessage role="assistant" content={currentPractice.explanation} linkedConcepts={currentPractice.linked_concepts || []} /> : <span className="text-sm text-text-secondary">暂无解析</span>}</ExerciseBlock>
                       </div>
                     )}
                     <div className="grid grid-cols-3 gap-2">
@@ -962,37 +961,5 @@ const ExercisesPage: React.FC = () => {
     </div>
   );
 };
-
-const ExerciseDetail = ({ record, onStatus, onPractice, onDelete }: { record: ExerciseRecord; onStatus: (status: string) => void; onPractice: () => void; onDelete: () => void }) => (
-  <div className="mt-4 space-y-4 border-t border-border pt-4">
-    <Block title="题干"><ChatMessage role="assistant" content={record.question_text} linkedConcepts={record.linked_concepts || []} /></Block>
-    <Block title="答案">{record.answer ? <ChatMessage role="assistant" content={record.answer} /> : <span className="text-sm text-text-secondary">暂无答案</span>}</Block>
-    <Block title="解析">{record.explanation ? <ChatMessage role="assistant" content={record.explanation} linkedConcepts={record.linked_concepts || []} /> : <span className="text-sm text-text-secondary">暂无解析</span>}</Block>
-    <div className="flex flex-wrap gap-2">
-      <button onClick={onPractice} className="rounded border border-border bg-bg-primary px-3 py-1 text-xs hover:border-accent hover:text-accent">设为当前练习</button>
-      {Object.entries(statusText).map(([status, label]) => (
-        <button key={status} onClick={() => onStatus(status)} className="rounded border border-border bg-bg-primary px-3 py-1 text-xs hover:border-accent hover:text-accent">{label}</button>
-      ))}
-      <button onClick={onDelete} className="flex items-center gap-1 rounded border border-[#e6b2a9] bg-[#fff1ed] px-3 py-1 text-xs text-[var(--danger)] hover:border-[var(--danger)]">
-        <Trash2 className="h-3.5 w-3.5" /> 删除
-      </button>
-    </div>
-    {record.origin_type !== 'manual' && <div className="text-xs text-text-secondary">来源对象：{record.origin_type} / {record.origin_id}</div>}
-  </div>
-);
-
-const Block = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <section className="space-y-2">
-    <div className="text-xs font-medium text-text-secondary">{title}</div>
-    <div className="rounded-xl border border-border bg-bg-secondary p-3">{children}</div>
-  </section>
-);
-
-const Metric = ({ label, value }: { label: string; value: number }) => (
-  <div className="rounded-xl border border-border bg-bg-card p-4 text-center">
-    <div className="text-2xl font-semibold text-text-primary">{value}</div>
-    <div className="mt-1 text-xs text-text-secondary">{label}</div>
-  </div>
-);
 
 export default ExercisesPage;

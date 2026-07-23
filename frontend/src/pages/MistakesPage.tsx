@@ -23,6 +23,13 @@ import ChatMessage from '../components/ChatMessage';
 import ScopeSelector, { type ScopeBookOption } from '../components/ScopeSelector';
 import { StatusBanner } from '../components/ui/AsyncState';
 import { useChatContext } from '../contexts/ChatContext';
+import {
+  clamp,
+  renderProcessedImage,
+  type CropState,
+  type ImageAdjust,
+} from '../features/mistakes/imageProcessing';
+import { MistakeMetric, MistakeRange } from '../features/mistakes/components/MistakePresentation';
 import { useVisibleList } from '../hooks/useVisibleList';
 import type { MistakeRecord, MistakeStats, WeakPoint } from '../types';
 
@@ -44,8 +51,6 @@ type MistakeForm = {
   image_path?: string;
 };
 
-type CropState = { x: number; y: number; w: number; h: number };
-type ImageAdjust = { brightness: number; contrast: number; sharpen: number; grayscale: boolean };
 type CropDragMode = 'draw' | 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
 type CropDragState = {
   mode: CropDragMode;
@@ -85,74 +90,6 @@ const cropHandles: { mode: Exclude<CropDragMode, 'draw' | 'move'>; className: st
 const DEFAULT_ADJUST: ImageAdjust = { brightness: 112, contrast: 138, sharpen: 35, grayscale: true };
 const MISTAKE_TYPE_OPTIONS = ['概念不清', '公式记错', '计算错误', '思路卡住', '粗心/审题错误'];
 const qualityLabels = ['完全不会', '很吃力', '勉强', '基本会', '熟练', '秒杀'];
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function applySharpen(imageData: ImageData, amount: number) {
-  if (amount <= 0) return imageData;
-  const strength = amount / 100;
-  const { data, width, height } = imageData;
-  const copy = new Uint8ClampedArray(data);
-  const center = 1 + 4 * strength;
-  const side = -strength;
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
-      const idx = (y * width + x) * 4;
-      for (let c = 0; c < 3; c += 1) {
-        const v =
-          copy[idx + c] * center +
-          copy[idx - 4 + c] * side +
-          copy[idx + 4 + c] * side +
-          copy[idx - width * 4 + c] * side +
-          copy[idx + width * 4 + c] * side;
-        data[idx + c] = clamp(v, 0, 255);
-      }
-    }
-  }
-  return imageData;
-}
-
-async function fileToImage(file: File): Promise<HTMLImageElement> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = new Image();
-    img.decoding = 'async';
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error('图片加载失败'));
-      img.src = url;
-    });
-    return img;
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
-
-async function renderProcessedImage(file: File, crop: CropState, adjust: ImageAdjust): Promise<{ file: File; preview: string }> {
-  const img = await fileToImage(file);
-  const sx = Math.round((crop.x / 100) * img.naturalWidth);
-  const sy = Math.round((crop.y / 100) * img.naturalHeight);
-  const sw = Math.round((crop.w / 100) * img.naturalWidth);
-  const sh = Math.round((crop.h / 100) * img.naturalHeight);
-  const maxSide = 1800;
-  const scale = Math.min(1, maxSide / Math.max(sw, sh));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(sw * scale));
-  canvas.height = Math.max(1, Math.round(sh * scale));
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('无法处理图片');
-  ctx.filter = `brightness(${adjust.brightness}%) contrast(${adjust.contrast}%)${adjust.grayscale ? ' grayscale(100%)' : ''}`;
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  ctx.putImageData(applySharpen(imageData, adjust.sharpen), 0, 0);
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((next) => (next ? resolve(next) : reject(new Error('图片导出失败'))), 'image/jpeg', 0.9);
-  });
-  const processed = new File([blob], file.name.replace(/\.[^.]+$/, '') + '_scan.jpg', { type: 'image/jpeg' });
-  return { file: processed, preview: URL.createObjectURL(blob) };
-}
 
 function deriveMistakeTitle(record: MistakeRecord) {
   const raw = record.question_text || record.ocr_text || record.source || '未命名错题';
@@ -738,9 +675,9 @@ const MistakesPage: React.FC = () => {
           </div>
           <div className="space-y-4 rounded-xl border border-border bg-bg-card p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-text-primary"><SlidersHorizontal className="h-4 w-4 text-accent" /> 扫描增强</div>
-            <Range label="亮度" value={adjust.brightness} min={70} max={150} onChange={(v) => setAdjust((a) => ({ ...a, brightness: v }))} suffix="%" />
-            <Range label="对比度" value={adjust.contrast} min={80} max={200} onChange={(v) => setAdjust((a) => ({ ...a, contrast: v }))} suffix="%" />
-            <Range label="锐化" value={adjust.sharpen} min={0} max={100} onChange={(v) => setAdjust((a) => ({ ...a, sharpen: v }))} suffix="%" />
+            <MistakeRange label="亮度" value={adjust.brightness} min={70} max={150} onChange={(v) => setAdjust((a) => ({ ...a, brightness: v }))} suffix="%" />
+            <MistakeRange label="对比度" value={adjust.contrast} min={80} max={200} onChange={(v) => setAdjust((a) => ({ ...a, contrast: v }))} suffix="%" />
+            <MistakeRange label="锐化" value={adjust.sharpen} min={0} max={100} onChange={(v) => setAdjust((a) => ({ ...a, sharpen: v }))} suffix="%" />
             <label className="flex items-center gap-2 text-sm text-text-primary"><input type="checkbox" checked={adjust.grayscale} onChange={(e) => setAdjust((a) => ({ ...a, grayscale: e.target.checked }))} className="accent-accent" />黑白扫描效果</label>
             <button onClick={applyImageProcessing} className="w-full rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">使用该区域</button>
           </div>
@@ -959,7 +896,7 @@ const MistakesPage: React.FC = () => {
           <div className="max-w-3xl space-y-6">
             {pageLoading && <div className="flex items-center justify-center gap-2 py-8 text-text-secondary"><Loader2 className="h-5 w-5 animate-spin" /> 加载统计中...</div>}
             {pageError && <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-[var(--danger)]">{pageError}</div>}
-            {!pageLoading && !pageError && stats && <><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><Metric label="总错题数" value={stats.total ?? 0} tone="text-accent" /><Metric label="今日待复习" value={stats.due_today ?? 0} tone="text-[var(--danger)]" /><Metric label="错因类型" value={stats.by_type ? Object.keys(stats.by_type).length : 0} tone="text-[var(--success)]" /></div><div className="rounded-xl border border-border bg-bg-card p-4"><h3 className="mb-3 flex items-center gap-2 text-sm font-medium"><TrendingUp className="h-4 w-4 text-accent" /> 薄弱点 TOP 列表</h3><div className="space-y-2">{weakPoints.map((w, i) => <div key={`${w.type}-${w.name}`} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate text-text-primary">{i + 1}. <strong>{w.name || '未命名'}</strong><span className="ml-1 text-text-secondary">({w.type || '类型未知'})</span></span><span className="flex-shrink-0 font-medium text-accent">{w.count ?? 0} 次</span></div>)}{weakPoints.length === 0 && <div className="text-sm text-text-secondary">暂无薄弱点数据</div>}</div></div></>}
+            {!pageLoading && !pageError && stats && <><div className="grid grid-cols-1 gap-4 sm:grid-cols-3"><MistakeMetric label="总错题数" value={stats.total ?? 0} tone="text-accent" /><MistakeMetric label="今日待复习" value={stats.due_today ?? 0} tone="text-[var(--danger)]" /><MistakeMetric label="错因类型" value={stats.by_type ? Object.keys(stats.by_type).length : 0} tone="text-[var(--success)]" /></div><div className="rounded-xl border border-border bg-bg-card p-4"><h3 className="mb-3 flex items-center gap-2 text-sm font-medium"><TrendingUp className="h-4 w-4 text-accent" /> 薄弱点 TOP 列表</h3><div className="space-y-2">{weakPoints.map((w, i) => <div key={`${w.type}-${w.name}`} className="flex items-center justify-between gap-3 text-sm"><span className="min-w-0 truncate text-text-primary">{i + 1}. <strong>{w.name || '未命名'}</strong><span className="ml-1 text-text-secondary">({w.type || '类型未知'})</span></span><span className="flex-shrink-0 font-medium text-accent">{w.count ?? 0} 次</span></div>)}{weakPoints.length === 0 && <div className="text-sm text-text-secondary">暂无薄弱点数据</div>}</div></div></>}
             {!pageLoading && !pageError && !stats && <div className="py-12 text-center text-text-secondary">暂无统计数据</div>}
           </div>
         )}
@@ -968,18 +905,5 @@ const MistakesPage: React.FC = () => {
     </div>
   );
 };
-
-function Range({ label, value, min, max, suffix = '%', onChange }: { label: string; value: number; min: number; max: number; suffix?: string; onChange: (value: number) => void }) {
-  return (
-    <label className="block space-y-1 text-sm text-text-primary">
-      <div className="flex items-center justify-between"><span>{label}</span><span className="text-xs text-text-secondary">{value}{suffix}</span></div>
-      <input type="range" min={min} max={max} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full accent-accent" />
-    </label>
-  );
-}
-
-function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {
-  return <div className="rounded-xl border border-border bg-bg-card p-4 text-center"><div className={`text-2xl font-bold ${tone}`}>{value}</div><div className="mt-1 text-xs text-text-secondary">{label}</div></div>;
-}
 
 export default MistakesPage;
