@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, UploadFile
 
 from backend.job_manager import get_job_manager
-from backend.services.exercise_practice import ExercisePracticeService
+from backend.services.exercise_practice import PracticeAnswerService
 from backend.schemas import (
     ExerciseAddRequest,
     ExerciseAnalyzeRequest,
@@ -28,7 +28,7 @@ from backend.schemas import (
     TextbookExerciseAnalyzeRequest,
 )
 from config import DATA_DIR, PROGRESS_PATH
-from memory.exercise_bank import ExerciseRecord, get_exercise_bank, question_fingerprint
+from memory.exercise_bank import ExerciseBank, ExerciseRecord, PracticeSession, get_exercise_bank, question_fingerprint
 from memory.exercise_file_importer import extract_exercise_text
 from memory.exercise_importer import analyze_candidates, attach_answers_by_number, refine_low_confidence_candidates, split_candidate_blocks
 from memory.textbook_exercise_importer import extract_textbook_exercise_text
@@ -161,13 +161,12 @@ def _mistake_from_exercise(
     return mistake
 
 
-def _practice_service(book_name: str = "default") -> ExercisePracticeService:
+def _practice_answer_service(book_name: str = "default") -> PracticeAnswerService:
     bank = _bank(book_name)
-    return ExercisePracticeService(
+    return PracticeAnswerService(
         bank=bank,
         book_name=book_name,
-        mistake_book_factory=lambda: get_mistake_book(book_name, str(PROGRESS_PATH)),
-        record_payload=lambda record: _record_to_out(record).model_dump(),
+        mistake_book=get_mistake_book(book_name, str(PROGRESS_PATH)),
         mistake_factory=_mistake_from_exercise,
         log_event=lambda event_type, record, payload: _log_learning_event(
             event_type,
@@ -176,6 +175,17 @@ def _practice_service(book_name: str = "default") -> ExercisePracticeService:
             payload=payload,
         ),
     )
+
+
+def _practice_session_data(
+    bank: ExerciseBank,
+    session: PracticeSession,
+) -> dict:
+    data = session.to_dict()
+    current = bank.current_session_record(session)
+    data["current_exercise"] = _record_to_out(current).model_dump() if current else None
+    data["summary"] = session.summary()
+    return data
 
 def _record_from_request(req: ExerciseAddRequest, book_name: str = "default") -> ExerciseRecord:
     return ExerciseRecord(
@@ -230,15 +240,15 @@ def list_exercises(req: ExerciseListRequest, book_name: str = "default"):
 
 @router.post("/overview")
 def get_exercise_overview(req: ExerciseListRequest, book_name: str = "default"):
-    practice = _practice_service(book_name)
-    records = _list_exercise_records(req, practice.bank)
-    active = practice.bank.get_active_practice_session()
+    bank = _bank(book_name)
+    records = _list_exercise_records(req, bank)
+    active = bank.get_active_practice_session()
     return {
         "success": True,
         "data": {
             "records": [_record_to_out(record) for record in records],
-            "stats": practice.bank.stats(subject=req.subject or None),
-            "practice_session": practice.session_data(active) if active else None,
+            "stats": bank.stats(subject=req.subject or None),
+            "practice_session": _practice_session_data(bank, active) if active else None,
         },
     }
 
@@ -467,17 +477,42 @@ def update_exercise_status(req: ExerciseStatusRequest, book_name: str = "default
 
 @router.post("/practice-sessions")
 def create_practice_session(req: ExercisePracticeSessionCreateRequest, book_name: str = "default"):
-    return _practice_service(book_name).create_session(req)
+    bank = _bank(book_name)
+    try:
+        session = bank.create_practice_session(
+            subject=req.subject,
+            chapter=req.chapter,
+            tag=req.tag,
+            status=req.status,
+            limit=req.limit,
+            shuffle=req.shuffle,
+        )
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+    return {
+        "success": True,
+        "data": _practice_session_data(bank, session),
+        "message": "练习会话已开始",
+    }
 
 
 @router.get("/practice-sessions/active")
 def get_active_practice_session(book_name: str = "default"):
-    return _practice_service(book_name).active_session()
+    bank = _bank(book_name)
+    session = bank.get_active_practice_session()
+    return {
+        "success": True,
+        "data": _practice_session_data(bank, session) if session else None,
+    }
 
 
 @router.get("/practice-sessions/{session_id}")
 def get_practice_session(session_id: str, book_name: str = "default"):
-    return _practice_service(book_name).get_session(session_id)
+    bank = _bank(book_name)
+    session = bank.get_practice_session(session_id)
+    if not session:
+        return {"success": False, "message": "未找到练习会话"}
+    return {"success": True, "data": _practice_session_data(bank, session)}
 
 
 @router.post("/practice-sessions/{session_id}/answer")
@@ -486,11 +521,50 @@ def answer_practice_session(
     req: ExercisePracticeSessionAnswerRequest,
     book_name: str = "default",
 ):
-    return _practice_service(book_name).answer_session(session_id, req)
+    practice = _practice_answer_service(book_name)
+    try:
+        result = practice.answer_session(
+            session_id,
+            exercise_id=req.exercise_id,
+            user_answer=req.user_answer,
+            quality=req.quality,
+            note=req.note,
+            add_to_mistake=req.add_to_mistake,
+        )
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
+    session_data = _practice_session_data(practice.bank, result.session)
+    record_data = _record_to_out(result.record).model_dump()
+    if result.mistake_error:
+        return {
+            "success": False,
+            "message": f"作答已记录，但写入错题本失败，可重试：{result.mistake_error}",
+            "retryable": True,
+            "data": session_data,
+            "record": record_data,
+        }
+    message = (
+        "本轮练习已完成"
+        if result.session.status == "completed"
+        else "已记录，进入下一题"
+    )
+    return {
+        "success": True,
+        "data": session_data,
+        "record": record_data,
+        "mistake_id": result.mistake_id,
+        "message": message,
+    }
 
 
 def _change_practice_session_status(session_id: str, status: str, book_name: str) -> dict:
-    return _practice_service(book_name).change_status(session_id, status)
+    bank = _bank(book_name)
+    try:
+        session = bank.set_practice_session_status(session_id, status)
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+    return {"success": True, "data": _practice_session_data(bank, session)}
 
 
 @router.post("/practice-sessions/{session_id}/pause")

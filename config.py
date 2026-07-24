@@ -1,6 +1,7 @@
 import os
 import re
 import base64
+import json
 import threading
 from pathlib import Path
 from typing import Optional
@@ -86,24 +87,49 @@ LLM_BACKEND = os.getenv("LLM_BACKEND", "deepseek")
 # Multimodal entrypoint is intentionally disabled unless OCR/Vision workflows enable it.
 MULTIMODAL_ENABLED = False
 
+_llm_cache: dict[tuple, object] = {}
+_llm_cache_lock = threading.RLock()
+
+
+def _cached_llm(key: tuple, factory):
+    """Return one reusable model/client instance for an immutable config key."""
+    with _llm_cache_lock:
+        instance = _llm_cache.get(key)
+        if instance is None:
+            instance = factory()
+            _llm_cache[key] = instance
+        return instance
+
+
+def clear_llm_cache() -> None:
+    """Drop cached clients for tests or explicit runtime reconfiguration."""
+    with _llm_cache_lock:
+        _llm_cache.clear()
+
 
 def _get_chat_model(model: str, temperature: float, api_key: str, base_url: str, extra_body: Optional[dict] = None):
     from langchain_openai import ChatOpenAI
 
-    kwargs = dict(
-        model=model,
-        temperature=temperature,
-        api_key=api_key,
-        base_url=base_url,
-        streaming=True,
-        timeout=120,
-    )
-    if "http_socket_options" in getattr(ChatOpenAI, "model_fields", {}):
-        # Disable LangChain's custom socket transport so httpx can honor system proxies.
-        kwargs["http_socket_options"] = ()
-    if extra_body:
-        kwargs["extra_body"] = extra_body
-    return ChatOpenAI(**kwargs)
+    normalized_extra = json.dumps(extra_body or {}, ensure_ascii=False, sort_keys=True)
+    key = ("chat", model, float(temperature), api_key, base_url, normalized_extra)
+
+    def create():
+        kwargs = dict(
+            model=model,
+            temperature=temperature,
+            api_key=api_key,
+            base_url=base_url,
+            streaming=True,
+            timeout=120,
+        )
+        if "http_socket_options" in getattr(ChatOpenAI, "model_fields", {}):
+            # Disable LangChain's custom socket transport so httpx can honor system proxies.
+            kwargs["http_socket_options"] = ()
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        return ChatOpenAI(**kwargs)
+
+    return _cached_llm(key, create)
 
 
 def get_llm(temperature=1):
@@ -121,10 +147,13 @@ def get_llm(temperature=1):
         return _get_chat_model(LLM_MODEL_NAME, temperature, OPENAI_API_KEY, OPENAI_API_BASE)
     else:
         from langchain_community.chat_models import ChatOllama
-        return ChatOllama(
-            model=LLM_MODEL_NAME,
-            temperature=temperature,
-            base_url=OLLAMA_BASE_URL,
+        return _cached_llm(
+            ("ollama", LLM_MODEL_NAME, float(temperature), OLLAMA_BASE_URL),
+            lambda: ChatOllama(
+                model=LLM_MODEL_NAME,
+                temperature=temperature,
+                base_url=OLLAMA_BASE_URL,
+            ),
         )
 
 
@@ -133,13 +162,21 @@ def get_llm_client():
     from openai import OpenAI
     import httpx
     if LLM_BACKEND == "deepseek":
-        return OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_API_BASE, http_client=httpx.Client(trust_env=False, timeout=120))
+        key, api_key, base_url = ("client", "deepseek", DEEPSEEK_API_KEY, DEEPSEEK_API_BASE), DEEPSEEK_API_KEY, DEEPSEEK_API_BASE
     elif LLM_BACKEND == "moonshot":
-        return OpenAI(api_key=MOONSHOT_API_KEY, base_url=MOONSHOT_API_BASE, http_client=httpx.Client(trust_env=False, timeout=120))
+        key, api_key, base_url = ("client", "moonshot", MOONSHOT_API_KEY, MOONSHOT_API_BASE), MOONSHOT_API_KEY, MOONSHOT_API_BASE
     elif LLM_BACKEND == "openai":
-        return OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE, http_client=httpx.Client(trust_env=False, timeout=120))
+        key, api_key, base_url = ("client", "openai", OPENAI_API_KEY, OPENAI_API_BASE), OPENAI_API_KEY, OPENAI_API_BASE
     else:
         return None
+    return _cached_llm(
+        key,
+        lambda: OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            http_client=httpx.Client(trust_env=False, timeout=120),
+        ),
+    )
 
 
 def encode_image(image_path: str | Path) -> str:

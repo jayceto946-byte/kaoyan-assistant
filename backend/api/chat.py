@@ -60,7 +60,8 @@ def chat_stream(req: ChatRequest):
 
         request_id = new_request_id()
         started = time.perf_counter()
-        stage_started = started
+        last_milestone_at = started
+        generation_started = None
         last_stage = "context"
         timings: dict[str, float] = {}
         ttft_ms = None
@@ -92,20 +93,31 @@ def chat_stream(req: ChatRequest):
             return assistant_persistence_error
 
         def observe(event: dict) -> None:
-            nonlocal stage_started, last_stage, ttft_ms, final_state, intent, fast_path
+            nonlocal last_milestone_at, generation_started, last_stage, ttft_ms, final_state, intent, fast_path
             now = time.perf_counter()
             stage = str(event.get("stage") or "unknown")
-            if stage != last_stage:
-                timings[last_stage] = round((now - stage_started) * 1000, 2)
-                stage_started = now
-                last_stage = stage
+            if stage in {"plan", "retrieve", "chapter"}:
+                stage_ms = round((now - last_milestone_at) * 1000, 2)
+                timings[stage] = stage_ms
+                event["stage_ms"] = stage_ms
+                last_milestone_at = now
+            if stage == "generate" and generation_started is None:
+                generation_started = last_milestone_at
             if stage == "plan":
                 intent = str(event.get("intent") or "")
                 fast_path = bool(event.get("fast_path"))
             if stage == "generate" and event.get("chunk") and ttft_ms is None:
                 ttft_ms = round((now - started) * 1000, 2)
+                timings["generate_ttft"] = round((now - (generation_started or started)) * 1000, 2)
+                event["ttft_ms"] = ttft_ms
             if stage == "done":
                 final_state = event.get("state") or {}
+                stage_ms = round((now - (generation_started or last_milestone_at)) * 1000, 2)
+                timings["generate"] = stage_ms
+                timings["total"] = round((now - started) * 1000, 2)
+                event["stage_ms"] = stage_ms
+                event["timings"] = dict(timings)
+            last_stage = stage
             event["request_id"] = request_id
             event["elapsed_ms"] = round((now - started) * 1000, 2)
 
@@ -113,6 +125,9 @@ def chat_stream(req: ChatRequest):
         try:
             yield f"data: {json.dumps({'stage': 'context', 'request_id': request_id, 'conversation_id': conversation_id, 'rewritten_question': rewritten_question if rewritten_question != req.question else ''}, ensure_ascii=False)}\n\n"
             append_message(conversation_id, "user", req.question, book_name=book_name, subject=subject)
+            context_finished = time.perf_counter()
+            timings["context"] = round((context_finished - started) * 1000, 2)
+            last_milestone_at = context_finished
             graph_events = run_graph_stream(
                 user_input=rewritten_question,
                 book_name=book_name,
@@ -152,7 +167,7 @@ def chat_stream(req: ChatRequest):
                 except Exception:
                     logger.exception("failed to close chat graph stream", extra={"request_id": request_id})
             now = time.perf_counter()
-            timings[last_stage] = round((now - stage_started) * 1000, 2)
+            timings.setdefault("total", round((now - started) * 1000, 2))
             try:
                 save_trace({
                     "request_id": request_id, "conversation_id": conversation_id,

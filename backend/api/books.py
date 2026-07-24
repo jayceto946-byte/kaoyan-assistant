@@ -22,7 +22,6 @@ from backend.services.book_chapters import (
     chapters_from_ocr_headings,
     format_chapter,
     looks_like_external_ocr_chunk_titles,
-    positive_int,
 )
 from backend.schemas import PreReadStatusOut
 from config import BOOKS_PATH, DATA_DIR, MINERU_OUTPUT_PATH, PROGRESS_PATH, VECTOR_DB_PATH
@@ -142,40 +141,20 @@ def _load_raw_chapters(name: str) -> list[dict]:
 def _load_chapters(name: str) -> list[dict]:
     path = safe_child_path(PROGRESS_PATH, safe_book_name(name), "_chapters.json")
     data = _book_read_cache.read_json(path, [])
-    return _normalize_loaded_chapters(name, data if isinstance(data, list) else [])
+    return _normalize_loaded_chapters(data if isinstance(data, list) else [])
 
-def _normalize_loaded_chapters(name: str, chapters: list[dict]) -> list[dict]:
-    if not _looks_like_external_ocr_chunk_titles(chapters):
+def _normalize_loaded_chapters(chapters: list[dict]) -> list[dict]:
+    if not looks_like_external_ocr_chunk_titles(chapters):
         return chapters
-    toc = _chapters_from_embedded_toc(chapters)
-    return toc or _chapters_from_ocr_headings(chapters) or chapters
-
-
-def _looks_like_external_ocr_chunk_titles(chapters: list[dict]) -> bool:
-    return looks_like_external_ocr_chunk_titles(chapters)
-
-
-def _chapters_from_ocr_headings(chapters: list[dict]) -> list[dict]:
-    return chapters_from_ocr_headings(chapters)
-
-
-def _chapters_from_embedded_toc(chapters: list[dict]) -> list[dict]:
-    return chapters_from_embedded_toc(chapters)
-
-
-def _positive_int(value) -> int | None:
-    return positive_int(value)
-
-
-def _format_chapter(ch: dict) -> dict:
-    return format_chapter(ch)
+    toc = chapters_from_embedded_toc(chapters)
+    return toc or chapters_from_ocr_headings(chapters) or chapters
 
 def _save_chapters(name: str, chapters: list[dict]) -> None:
     path = safe_child_path(PROGRESS_PATH, safe_book_name(name), "_chapters.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     # External OCR produces one record per heading/chunk. Persist the real TOC
     # instead so highlight/exercise UIs never mistake hundreds of chunks for chapters.
-    atomic_write_json(path, _normalize_loaded_chapters(name, chapters))
+    atomic_write_json(path, _normalize_loaded_chapters(chapters))
     _invalidate_book_read_cache()
 
 
@@ -403,7 +382,7 @@ def get_current_book():
     if not name:
         return {"success": False, "message": "\u672a\u9009\u62e9\u6559\u6750"}
     chapters = _book_state.get("chapters", [])
-    return {"success": True, "data": {"name": name, "subject": _book_subject(name), "chapter_count": len(chapters), "chapters": [_format_chapter(c) for c in chapters]}}
+    return {"success": True, "data": {"name": name, "subject": _book_subject(name), "chapter_count": len(chapters), "chapters": [format_chapter(c) for c in chapters]}}
 
 def _source_pdf_path(book_name: str) -> Path | None:
     safe = safe_book_name(book_name)
@@ -570,7 +549,7 @@ def switch_book(book_name: str):
 
     _set_current_book(name, chapters, pdf_path)
     identity, _ = _ensure_book_identity(name)
-    return {"success": True, "data": {"book_id": identity["book_id"], "name": name, "display_name": identity["display_name"], "displayName": identity["display_name"], "subject": _book_subject(name), "chapter_count": len(chapters), "chapters": [_format_chapter(c) for c in chapters]}}
+    return {"success": True, "data": {"book_id": identity["book_id"], "name": name, "display_name": identity["display_name"], "displayName": identity["display_name"], "subject": _book_subject(name), "chapter_count": len(chapters), "chapters": [format_chapter(c) for c in chapters]}}
 
 
 

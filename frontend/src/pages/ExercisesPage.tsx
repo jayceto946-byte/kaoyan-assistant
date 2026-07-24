@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Loader2, Pause, Pencil, Play, RotateCcw, Save, Scissors, Search, Shuffle, Sparkles, Upload, X } from 'lucide-react';
 import { apiFetch, del, get, post } from '../api/client';
 import ChatMessage from '../components/ChatMessage';
@@ -11,6 +11,9 @@ import {
   exerciseStatusText as statusText,
 } from '../features/exercises/components/ExercisePresentation';
 import { useVisibleList } from '../hooks/useVisibleList';
+import { useExerciseAnswerJob } from '../features/exercises/hooks/useExerciseAnswerJob';
+import { useExerciseImportCandidates } from '../features/exercises/hooks/useExerciseImportCandidates';
+import { usePracticeSession } from '../features/exercises/hooks/usePracticeSession';
 import type { BookInfo, ExerciseCandidate, ExerciseImportBatch, ExercisePracticeSession, ExerciseRecord, ExerciseStats } from '../types';
 
 function titleOf(record: ExerciseRecord) {
@@ -53,14 +56,7 @@ const ExercisesPage: React.FC = () => {
   const [searchKw, setSearchKw] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [expandedId, setExpandedId] = useState('');
-  const [practiceId, setPracticeId] = useState('');
-  const [practiceAnswer, setPracticeAnswer] = useState('');
-  const [practiceSolutionOpen, setPracticeSolutionOpen] = useState(false);
-  const [practiceMessage, setPracticeMessage] = useState('');
   const [practiceSession, setPracticeSession] = useState<ExercisePracticeSession | null>(null);
-  const [sessionLimit, setSessionLimit] = useState(20);
-  const [sessionShuffle, setSessionShuffle] = useState(false);
-  const [sessionBusy, setSessionBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [message, setMessage] = useState('');
@@ -78,101 +74,32 @@ const ExercisesPage: React.FC = () => {
   const [textbookSourceMode, setTextbookSourceMode] = useState('exercise_sections');
   const [useLlmRepair, setUseLlmRepair] = useState(false);
   const [extractedPreview, setExtractedPreview] = useState('');
-  const [candidates, setCandidates] = useState<ExerciseCandidate[]>([]);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [candidateFilter, setCandidateFilter] = useState<'all' | 'issues' | 'duplicates'>('all');
-  const [editingCandidateId, setEditingCandidateId] = useState('');
   const [lastImportBatch, setLastImportBatch] = useState<ExerciseImportBatch | null>(null);
-  const [answerDraft, setAnswerDraft] = useState('');
-  const [answerBusy, setAnswerBusy] = useState(false);
-  const [answerJobId, setAnswerJobId] = useState('');
   const searchKwRef = useRef(searchKw);
+  const {
+    candidates,
+    selectedIds,
+    candidateFilter,
+    setCandidateFilter,
+    editingCandidateId,
+    setEditingCandidateId,
+    importSummary,
+    filteredCandidates,
+    resetImportCandidates,
+    updateCandidate,
+    replaceCandidates,
+    removeSelectedCandidates,
+    selectAllCandidates,
+    clearCandidateSelection,
+    mergeSelectedCandidates,
+    splitCandidate,
+    toggleCandidate,
+  } = useExerciseImportCandidates({ onMessage: setMessage });
 
   useEffect(() => {
     searchKwRef.current = searchKw;
   }, [searchKw]);
 
-  const importSummary = useMemo(() => {
-    const needsLlm = candidates.filter((item) => item.needs_llm).length;
-    const refined = candidates.filter((item) => item.refined_by_llm).length;
-    const issues = candidates.filter((item) => (item.validation_issues || []).length > 0).length;
-    const duplicates = candidates.filter((item) => Boolean(item.duplicate_of)).length;
-    return { total: candidates.length, needsLlm, confident: candidates.length - needsLlm, refined, issues, duplicates };
-  }, [candidates]);
-
-  const practicePool = useMemo(() => {
-    const rank: Record<string, number> = { needs_review: 0, practicing: 1, new: 2, mastered: 3 };
-    return [...records].sort((a, b) => (rank[a.status] ?? 2) - (rank[b.status] ?? 2) || (a.practice_count || 0) - (b.practice_count || 0));
-  }, [records]);
-
-  const filteredCandidates = useMemo(() => candidates.filter((item) => {
-    if (candidateFilter === 'issues') return (item.validation_issues || []).length > 0;
-    if (candidateFilter === 'duplicates') return Boolean(item.duplicate_of);
-    return true;
-  }), [candidateFilter, candidates]);
-
-  const currentPractice = useMemo(() => {
-    if (practiceSession && ['active', 'paused', 'completed'].includes(practiceSession.status)) {
-      return practiceSession.current_exercise || null;
-    }
-    if (practiceId) return records.find((item) => item.id === practiceId) || null;
-    return practicePool.find((item) => item.status !== 'mastered') || practicePool[0] || null;
-  }, [practiceId, practicePool, practiceSession, records]);
-
-  useEffect(() => {
-    setAnswerDraft(currentPractice?.answer || '');
-    setAnswerJobId('');
-    if (!currentPractice?.id) return;
-    let cancelled = false;
-    get('/exercises/answer/jobs/latest' + (bookQuery ? bookQuery + '&' : '?') + 'id=' + encodeURIComponent(currentPractice.id), 20000)
-      .then((res) => {
-        if (cancelled || !res?.success || !res.data) return;
-        const job = res.data;
-        if (job.status === 'queued' || job.status === 'running') {
-          setAnswerJobId(job.id);
-          setAnswerBusy(true);
-          setPracticeMessage(job.message || '标准答案正在后台生成');
-        } else if (job.status === 'completed' && !currentPractice.answer && job.result?.answer) {
-          setAnswerDraft(job.result.answer);
-          setPracticeMessage('后台答案草稿已完成，请检查修改后保存');
-        }
-      })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [currentPractice?.id, currentPractice?.answer, bookQuery]);
-
-  useEffect(() => {
-    if (!answerJobId) return;
-    let stopped = false;
-    const poll = async () => {
-      try {
-        const res = await get('/exercises/answer/jobs/' + encodeURIComponent(answerJobId), 20000);
-        if (stopped || !res?.success) return;
-        const job = res.data;
-        if (job.status === 'completed') {
-          setAnswerDraft(job.result?.answer || '');
-          setPracticeMessage((job.message || '答案草稿已生成') + '（引用 ' + (job.result?.evidence_count || 0) + ' 条教材证据）');
-          setAnswerBusy(false);
-          setAnswerJobId('');
-        } else if (job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted') {
-          setPracticeMessage(job.message || job.error || '标准答案生成失败');
-          setAnswerBusy(false);
-          setAnswerJobId('');
-        } else {
-          setAnswerBusy(true);
-          setPracticeMessage(job.message || '标准答案正在后台生成');
-        }
-      } catch {
-        // Polling may stop during navigation; the durable backend job keeps running.
-      }
-    };
-    void poll();
-    const timer = window.setInterval(poll, 1600);
-    return () => {
-      stopped = true;
-      window.clearInterval(timer);
-    };
-  }, [answerJobId]);
 
   const recordList = useVisibleList(records, 30, `${activeName}|${targetSubject}|${statusFilter}|${searchKw}`);
   const candidateList = useVisibleList(filteredCandidates, 20, `${activeName}|${importFile?.name || ''}|${textbookChapter}|${textbookPageStart}|${textbookPageEnd}|${importSummary.total}|${candidateFilter}`);
@@ -208,6 +135,53 @@ const ExercisesPage: React.FC = () => {
     }
   }, [bookQuery, statusFilter, targetSubject]);
 
+  const {
+    practicePool,
+    currentPractice,
+    practiceAnswer,
+    setPracticeAnswer,
+    practiceSolutionOpen,
+    setPracticeSolutionOpen,
+    practiceMessage,
+    showPracticeMessage,
+    sessionLimit,
+    setSessionLimit,
+    sessionShuffle,
+    setSessionShuffle,
+    sessionBusy,
+    startPracticeSession,
+    changePracticeSessionStatus,
+    selectPractice,
+    submitPractice,
+    sendPracticeToMistake,
+    clearDeletedPractice,
+  } = usePracticeSession({
+    records,
+    setRecords,
+    practiceSession,
+    setPracticeSession,
+    bookQuery,
+    targetSubject,
+    statusFilter,
+    refreshOverview: load,
+  });
+  const handleAnswerSaved = useCallback((saved: ExerciseRecord) => {
+    setRecords((items) => items.map((item) => item.id === saved.id ? saved : item));
+  }, []);
+  const {
+    answerDraft,
+    setAnswerDraft,
+    answerBusy,
+    generateStandardAnswer,
+    saveStandardAnswer,
+  } = useExerciseAnswerJob({
+    exercise: currentPractice,
+
+    bookQuery,
+    onMessage: showPracticeMessage,
+    onRecordSaved: handleAnswerSaved,
+  });
+
   useEffect(() => {
     loadBooks();
   }, [loadBooks]);
@@ -227,8 +201,7 @@ const ExercisesPage: React.FC = () => {
 
 
   const resetImportPreview = () => {
-    setCandidates([]);
-    setSelectedIds(new Set());
+    resetImportCandidates();
     setExtractedPreview('');
   };
 
@@ -287,8 +260,7 @@ const ExercisesPage: React.FC = () => {
         return;
       }
       const next = data.data || [];
-      setCandidates(next);
-      setSelectedIds(new Set(next.map((item: ExerciseCandidate) => item.id)));
+      replaceCandidates(next);
       setExtractedPreview(data.extract?.text || '');
       const warnings = data.extract?.warnings?.length ? `；${data.extract.warnings.join('；')}` : '';
       const paired = answerFile ? `；答案匹配 ${data.summary?.paired_answers || 0}/${next.length}` : '';
@@ -326,8 +298,7 @@ const ExercisesPage: React.FC = () => {
         return;
       }
       const next = res.data || [];
-      setCandidates(next);
-      setSelectedIds(new Set(next.map((item: ExerciseCandidate) => item.id)));
+      replaceCandidates(next);
       setExtractedPreview(res.extract?.text || '');
       const warnings = res.extract?.warnings?.length ? `（${res.extract.warnings.join('；')}）` : '';
       setMessage(`${res.message || `已从教材抽取 ${next.length} 道候选题`}${warnings}`);
@@ -335,42 +306,6 @@ const ExercisesPage: React.FC = () => {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
       setImporting(false);
-    }
-  };
-  const generateStandardAnswer = async () => {
-    if (!currentPractice || answerBusy) return;
-    setAnswerBusy(true);
-    setPracticeMessage('正在创建后台答案任务');
-    try {
-      const res = await post('/exercises/answer/jobs' + bookQuery, { id: currentPractice.id }, 20000);
-      if (!res?.success) {
-        setPracticeMessage(res?.message || '生成标准答案失败');
-        setAnswerBusy(false);
-        return;
-      }
-      setAnswerJobId(res.job_id || res.data?.id || '');
-      setPracticeMessage(res.message || '标准答案已转入后台生成');
-    } catch (e) {
-      setPracticeMessage(e instanceof Error ? e.message : String(e));
-      setAnswerBusy(false);
-    }
-  };
-  const saveStandardAnswer = async () => {
-    if (!currentPractice || !answerDraft.trim()) return;
-    setAnswerBusy(true);
-    setPracticeMessage('');
-    try {
-      const res = await post(`/exercises/answer/save${bookQuery}`, { id: currentPractice.id, answer: answerDraft, explanation: currentPractice.explanation || '' });
-      if (!res?.success) {
-        setPracticeMessage(res?.message || '保存标准答案失败');
-        return;
-      }
-      setRecords((items) => items.map((item) => item.id === currentPractice.id ? res.data : item));
-      setPracticeMessage('标准答案已保存');
-    } catch (e) {
-      setPracticeMessage(e instanceof Error ? e.message : String(e));
-    } finally {
-      setAnswerBusy(false);
     }
   };
   const importSelected = async () => {
@@ -393,66 +328,13 @@ const ExercisesPage: React.FC = () => {
       setMessage(res.message || `已导入 ${selected.length} 道候选题`);
       const batchRes = await get(`/exercises/import-batches${bookQuery ? `${bookQuery}&limit=1` : '?limit=1'}`);
       if (batchRes?.success) setLastImportBatch(batchRes.data?.[0] || null);
-      setCandidates((prev) => prev.filter((item) => !selectedIds.has(item.id)));
-      setSelectedIds(new Set());
+      removeSelectedCandidates();
       await load();
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
     } finally {
       setImporting(false);
     }
-  };
-
-  const updateCandidate = (id: string, updates: Partial<ExerciseCandidate>) => {
-    setCandidates((items) => items.map((item) => item.id === id ? { ...item, ...updates } : item));
-  };
-
-  const mergeSelectedCandidates = () => {
-    const selected = candidates.filter((item) => selectedIds.has(item.id));
-    if (selected.length < 2) {
-      setMessage('请至少选择两道相邻候选题进行合并');
-      return;
-    }
-    const firstIndex = candidates.findIndex((item) => item.id === selected[0].id);
-    const merged: ExerciseCandidate = {
-      ...selected[0],
-      question_text: selected.map((item) => item.question_text.trim()).filter(Boolean).join('\n\n'),
-      answer: selected.map((item) => item.answer.trim()).filter(Boolean).join('\n\n'),
-      explanation: selected.map((item) => item.explanation.trim()).filter(Boolean).join('\n\n'),
-      tags: Array.from(new Set(selected.flatMap((item) => item.tags))),
-      linked_concepts: selected.flatMap((item) => item.linked_concepts || []),
-      validation_issues: ['已人工合并，请复核题干边界'],
-      duplicate_of: '',
-      needs_review: true,
-    };
-    const remaining = candidates.filter((item) => !selectedIds.has(item.id));
-    remaining.splice(Math.max(0, firstIndex), 0, merged);
-    setCandidates(remaining);
-    setSelectedIds(new Set([merged.id]));
-    setEditingCandidateId(merged.id);
-  };
-
-  const splitCandidate = (candidate: ExerciseCandidate) => {
-    const boundary = candidate.question_text.search(/\n\s*\n/);
-    if (boundary < 0) {
-      setMessage('请先在题干编辑框中用空行标出拆分位置');
-      setEditingCandidateId(candidate.id);
-      return;
-    }
-    const left = candidate.question_text.slice(0, boundary).trim();
-    const right = candidate.question_text.slice(boundary).trim();
-    if (!left || !right) return;
-    const suffix = Date.now().toString(36);
-    const parts = [
-      { ...candidate, id: `${candidate.id}-${suffix}-1`, question_text: left, answer: '', explanation: '', duplicate_of: '', validation_issues: ['拆分后请补充答案并复核'] },
-      { ...candidate, id: `${candidate.id}-${suffix}-2`, question_text: right, duplicate_of: '', validation_issues: ['拆分后请复核题干边界'] },
-    ];
-    const index = candidates.findIndex((item) => item.id === candidate.id);
-    const next = candidates.filter((item) => item.id !== candidate.id);
-    next.splice(Math.max(0, index), 0, ...parts);
-    setCandidates(next);
-    setSelectedIds(new Set(parts.map((item) => item.id)));
-    setEditingCandidateId(parts[0].id);
   };
 
   const rollbackLastImport = async () => {
@@ -466,45 +348,6 @@ const ExercisesPage: React.FC = () => {
     setLastImportBatch(res.data);
     setMessage(res.message || '导入批次已回滚');
     await load();
-  };
-
-  const startPracticeSession = async () => {
-    setSessionBusy(true);
-    setPracticeMessage('');
-    try {
-      const res = await post(`/exercises/practice-sessions${bookQuery}`, {
-        subject: targetSubject,
-        status: statusFilter,
-        limit: sessionLimit,
-        shuffle: sessionShuffle,
-      });
-      if (!res?.success) {
-        setPracticeMessage(res?.message || '无法开始练习会话');
-        return;
-      }
-      setPracticeSession(res.data);
-      setPracticeAnswer('');
-      setPracticeSolutionOpen(false);
-      setPracticeMessage(res.message || '练习会话已开始');
-    } finally {
-      setSessionBusy(false);
-    }
-  };
-
-  const changePracticeSessionStatus = async (action: 'pause' | 'resume' | 'abandon') => {
-    if (!practiceSession) return;
-    setSessionBusy(true);
-    try {
-      const res = await post(`/exercises/practice-sessions/${encodeURIComponent(practiceSession.id)}/${action}${bookQuery}`, {});
-      if (!res?.success) {
-        setPracticeMessage(res?.message || '练习会话状态更新失败');
-        return;
-      }
-      setPracticeSession(res.data);
-      setPracticeMessage(action === 'pause' ? '练习已暂停，可稍后继续' : action === 'resume' ? '练习已继续' : '本轮练习已结束');
-    } finally {
-      setSessionBusy(false);
-    }
   };
 
   const updateStatus = async (id: string, status: string) => {
@@ -527,99 +370,13 @@ const ExercisesPage: React.FC = () => {
       }
       setRecords((prev) => prev.filter((item) => item.id !== id));
       if (expandedId === id) setExpandedId('');
-      if (practiceId === id) {
-        setPracticeId('');
-        setPracticeAnswer('');
-        setPracticeSolutionOpen(false);
-      }
+      clearDeletedPractice(id);
       setMessage(res.message || '已删除习题');
       await load();
     } catch (e) {
       setMessage(e instanceof Error ? e.message : String(e));
     }
   };
-  const selectPractice = (record?: ExerciseRecord | null) => {
-    const next = record || practicePool.find((item) => item.id !== currentPractice?.id && item.status !== 'mastered') || practicePool.find((item) => item.id !== currentPractice?.id) || practicePool[0] || null;
-    setPracticeId(next?.id || '');
-    setPracticeAnswer('');
-    setPracticeSolutionOpen(false);
-    setPracticeMessage('');
-  };
-
-  const submitPractice = async (quality: number, addToMistake = false) => {
-    if (!currentPractice) return;
-    if (practiceSession && practiceSession.status !== 'active') {
-      setPracticeMessage('请先继续当前练习会话');
-      return;
-    }
-    try {
-      const sessionMode = Boolean(practiceSession);
-      const path = sessionMode
-        ? `/exercises/practice-sessions/${encodeURIComponent(practiceSession!.id)}/answer${bookQuery}`
-        : `/exercises/practice${bookQuery}`;
-      const res = await post(path, sessionMode ? {
-        exercise_id: currentPractice.id,
-        user_answer: practiceAnswer,
-        quality,
-        add_to_mistake: addToMistake,
-      } : {
-        id: currentPractice.id,
-        user_answer: practiceAnswer,
-        quality,
-        add_to_mistake: addToMistake,
-      });
-      if (!res?.success) {
-        setPracticeMessage(res?.message || '练习记录失败');
-        return;
-      }
-      const updatedRecord = sessionMode ? res.record : res.data;
-      setRecords((prev) => prev.map((item) => (item.id === currentPractice.id ? updatedRecord : item)));
-      if (sessionMode) {
-        setPracticeSession(res.data);
-        setPracticeAnswer('');
-        setPracticeSolutionOpen(false);
-        const summary = res.data?.summary;
-        setPracticeMessage(res.data?.status === 'completed'
-          ? `本轮完成：${summary?.answered || 0} 题，平均自评 ${summary?.average_quality || 0}`
-          : res.message || '已记录，进入下一题');
-      } else {
-        setPracticeMessage(addToMistake && res.mistake_id ? '已记录练习，并转入错题本' : '已记录练习结果');
-      }
-      await load();
-    } catch (e) {
-      setPracticeMessage(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const sendPracticeToMistake = async () => {
-    if (!currentPractice) return;
-    try {
-      const res = await post(`/exercises/to-mistake${bookQuery}`, {
-        id: currentPractice.id,
-        user_answer: practiceAnswer,
-        mistake_type: ['思路卡住'],
-      });
-      if (!res?.success) {
-        setPracticeMessage(res?.message || '转入错题本失败');
-        return;
-      }
-      setPracticeMessage('已转入错题本');
-      setRecords((prev) => prev.map((item) => (item.id === currentPractice.id ? res.data : item)));
-      await load();
-    } catch (e) {
-      setPracticeMessage(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const toggleCandidate = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
   return (
     <div className="flex h-full flex-col">
       <div className="app-page-header border-b border-border bg-bg-primary">
@@ -714,12 +471,12 @@ const ExercisesPage: React.FC = () => {
                     <div className="text-sm font-medium text-text-primary">候选题确认</div>
                     <div className="mt-1 text-xs text-text-secondary">{importSummary.total} 道 · {importSummary.issues} 道异常 · {importSummary.duplicates} 道重复</div>
                   </div>
-                  <button onClick={() => setSelectedIds(new Set(candidates.map((item) => item.id)))} className="rounded border border-border px-2.5 py-1 text-xs hover:border-accent">全选</button>
+                  <button onClick={selectAllCandidates} className="rounded border border-border px-2.5 py-1 text-xs hover:border-accent">全选</button>
                 </div>
                 <button onClick={importSelected} disabled={importing || selectedIds.size === 0} className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"><CheckCircle2 className="h-4 w-4" /> 导入选中 {selectedIds.size}</button>
                 <div className="grid grid-cols-2 gap-2">
                   <button onClick={mergeSelectedCandidates} disabled={selectedIds.size < 2} className="rounded-xl border border-border px-3 py-2 text-xs hover:border-accent disabled:opacity-50">合并选中</button>
-                  <button onClick={() => setSelectedIds(new Set())} disabled={selectedIds.size === 0} className="rounded-xl border border-border px-3 py-2 text-xs hover:border-accent disabled:opacity-50">取消选择</button>
+                  <button onClick={clearCandidateSelection} disabled={selectedIds.size === 0} className="rounded-xl border border-border px-3 py-2 text-xs hover:border-accent disabled:opacity-50">取消选择</button>
                 </div>
               </section>
             )}

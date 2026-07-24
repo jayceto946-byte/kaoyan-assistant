@@ -32,6 +32,7 @@ import {
 import { MistakeMetric, MistakeRange } from '../features/mistakes/components/MistakePresentation';
 import { useVisibleList } from '../hooks/useVisibleList';
 import type { MistakeRecord, MistakeStats, WeakPoint } from '../types';
+import { useMistakeReview } from '../features/mistakes/hooks/useMistakeReview';
 
 const TABS = ['录入', '列表', '今日复习', '统计'] as const;
 type Tab = (typeof TABS)[number];
@@ -134,8 +135,6 @@ const MistakesPage: React.FC = () => {
   const [solveLoading, setSolveLoading] = useState(false);
   const [explanation, setExplanation] = useState('');
   const [expandedId, setExpandedId] = useState('');
-  const [expandedReviewId, setExpandedReviewId] = useState('');
-  const [reviewMessage, setReviewMessage] = useState('');
   const [savedRecord, setSavedRecord] = useState<MistakeRecord | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -246,6 +245,22 @@ const MistakesPage: React.FC = () => {
       setPageLoading(false);
     }
   }, [scopedQuery]);
+
+  const {
+    expandedReviewId,
+    reviewMessage,
+    showReviewMessage,
+    expandReview,
+    toggleReview,
+    clearDeletedReview,
+    handleReview,
+  } = useMistakeReview({
+    bookQuery,
+    setRecords,
+    setDueRecords,
+    refreshDue: loadDue,
+    refreshStats: loadStats,
+  });
 
   useEffect(() => {
     loadOverview();
@@ -403,7 +418,7 @@ const MistakesPage: React.FC = () => {
         setRecords((prev) => [nextRecord, ...prev.filter((item) => item.id !== nextRecord.id)]);
         setDueRecords((prev) => [nextRecord, ...prev.filter((item) => item.id !== nextRecord.id)]);
         setExpandedId(nextRecord.id);
-        setExpandedReviewId(nextRecord.id);
+        expandReview(nextRecord.id);
       }
       await loadDue();
     } catch (e) {
@@ -413,44 +428,26 @@ const MistakesPage: React.FC = () => {
 
   const deleteMistake = async (id: string) => {
     if (!window.confirm('确定删除这道错题吗？')) return;
-    setReviewMessage('');
+    showReviewMessage('');
     setUploadMessage('');
     try {
       const res = await del(`/mistakes/${encodeURIComponent(id)}${bookQuery}`, 20000);
       if (!res?.success) {
-        setReviewMessage(res?.message || '删除错题失败');
+        showReviewMessage(res?.message || '删除错题失败');
         return;
       }
       setRecords((prev) => prev.filter((item) => item.id !== id));
       setDueRecords((prev) => prev.filter((item) => item.id !== id));
       if (expandedId === id) setExpandedId('');
-      if (expandedReviewId === id) setExpandedReviewId('');
+      clearDeletedReview(id);
       if (savedRecord?.id === id) setSavedRecord(null);
-      setReviewMessage(res.message || '已删除错题');
+      showReviewMessage(res.message || '已删除错题');
       await loadList();
       await loadDue();
       if (activeTab === '统计') await loadStats();
     } catch (e) {
-      setReviewMessage(e instanceof Error ? e.message : String(e));
+      showReviewMessage(e instanceof Error ? e.message : String(e));
     }
-  };
-  const handleReview = async (id: string, quality: number) => {
-    setReviewMessage('');
-    const res = await post(`/mistakes/review${bookQuery}`, { id, quality });
-    if (!res?.success) {
-      setReviewMessage(res?.message || '复习记录失败');
-      return;
-    }
-    const updated = res.data as MistakeRecord | undefined;
-    if (updated) {
-      setRecords((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
-      setDueRecords((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
-      setReviewMessage(res.message || `已记录复习，下次复习：${updated.next_review || '待计算'}`);
-    } else {
-      setReviewMessage(res.message || '已记录复习');
-    }
-    await loadDue();
-    await loadStats();
   };
 
   const toggleMistakeType = (type: string, checked: boolean) => {
@@ -870,7 +867,7 @@ const MistakesPage: React.FC = () => {
                 const expanded = expandedReviewId === record.id;
                 return (
                   <div key={record.id} className="rounded-xl border border-border bg-bg-card p-4 transition-colors hover:border-accent/50">
-                    <button type="button" onClick={() => setExpandedReviewId(expanded ? '' : record.id)} className="flex w-full items-start justify-between gap-3 text-left">
+                    <button type="button" onClick={() => toggleReview(record.id)} className="flex w-full items-start justify-between gap-3 text-left">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
                           {expanded ? <ChevronDown className="h-4 w-4 text-accent" /> : <ChevronRight className="h-4 w-4 text-text-secondary" />}

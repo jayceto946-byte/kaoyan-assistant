@@ -1,12 +1,16 @@
 """Filesystem lifecycle for mistake-image uploads."""
 from __future__ import annotations
 
+import logging
 import shutil
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -94,7 +98,9 @@ class MistakeImageStore:
                 if size > self.max_image_bytes:
                     handle.close()
                     raw_path.unlink(missing_ok=True)
-                    raise ValueError("图片不能超过 20MB")
+                    limit_mb = self.max_image_bytes / (1024 * 1024)
+                    limit_label = f"{limit_mb:.1f}".rstrip("0").rstrip(".")
+                    raise ValueError(f"图片不能超过 {limit_label}MB")
                 handle.write(chunk)
         return self.optimize_for_ocr(raw_path)
 
@@ -103,8 +109,12 @@ class MistakeImageStore:
             raw_path.stem.replace("_raw", "") + "_ocr.jpg"
         )
         try:
-            from PIL import Image, ImageOps
+            from PIL import Image, ImageOps, UnidentifiedImageError
+        except ImportError as exc:
+            logger.warning("Pillow unavailable; keeping original OCR image: %s", exc)
+            return raw_path
 
+        try:
             with Image.open(raw_path) as image:
                 image = ImageOps.exif_transpose(image)
                 if image.mode not in ("RGB", "L"):
@@ -127,6 +137,13 @@ class MistakeImageStore:
                 )
             raw_path.unlink(missing_ok=True)
             return optimized_path
-        except Exception:
+        except UnidentifiedImageError as exc:
+            logger.warning(
+                "Uploaded image could not be decoded; keeping original: %s", exc
+            )
             optimized_path.unlink(missing_ok=True)
             return raw_path
+        except Exception:
+            optimized_path.unlink(missing_ok=True)
+            logger.exception("Failed to optimize mistake image for OCR: %s", raw_path)
+            raise

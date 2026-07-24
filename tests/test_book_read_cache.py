@@ -3,7 +3,7 @@ import json
 from backend.services.book_read_cache import BookReadCache
 
 
-def test_json_cache_reuses_read_only_snapshot(tmp_path, monkeypatch):
+def test_json_cache_reuses_disk_read_without_sharing_mutable_results(tmp_path, monkeypatch):
     path = tmp_path / "metadata.json"
     path.write_text(json.dumps({"subject": "数学"}), encoding="utf-8")
     calls = 0
@@ -18,10 +18,11 @@ def test_json_cache_reuses_read_only_snapshot(tmp_path, monkeypatch):
     cache = BookReadCache()
 
     first = cache.read_json(path, {})
+    first["subject"] = "polluted"
     second = cache.read_json(path, {})
 
     assert calls == 1
-    assert second is first
+    assert second is not first
     assert second == {"subject": "数学"}
 
 
@@ -49,7 +50,22 @@ def test_index_stats_loader_runs_once_per_file_snapshot(tmp_path):
         calls += 1
         return {"healthy": True, "calls": calls}
 
-    assert cache.index_stats("book", chapter_map, lexical, loader)["calls"] == 1
-    assert cache.index_stats("book", chapter_map, lexical, loader)["calls"] == 1
+    first = cache.index_stats("book", chapter_map, lexical, loader)
+    first["healthy"] = False
+    assert cache.index_stats("book", chapter_map, lexical, loader) == {
+        "healthy": True,
+        "calls": 1,
+    }
     lexical.write_text('[{"id":1}]', encoding="utf-8")
     assert cache.index_stats("book", chapter_map, lexical, loader)["calls"] == 2
+
+
+def test_json_cache_refreshes_after_same_size_overwrite(tmp_path):
+    path = tmp_path / "metadata.json"
+    path.write_text('{"value":"one"}', encoding="utf-8")
+    cache = BookReadCache()
+
+    assert cache.read_json(path, {}) == {"value": "one"}
+    path.write_text('{"value":"two"}', encoding="utf-8")
+
+    assert cache.read_json(path, {}) == {"value": "two"}

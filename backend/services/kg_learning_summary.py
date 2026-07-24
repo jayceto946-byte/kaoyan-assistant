@@ -1,6 +1,7 @@
 """Pure helpers for knowledge-graph learning summaries."""
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -17,6 +18,10 @@ def days_since(value: str, *, now: datetime | None = None) -> int | None:
     if not parsed:
         return None
     reference = now or datetime.now()
+    if parsed.tzinfo is None and reference.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=reference.tzinfo)
+    elif parsed.tzinfo is not None and reference.tzinfo is None:
+        reference = reference.replace(tzinfo=parsed.tzinfo)
     return max(0, (reference - parsed).days)
 
 
@@ -35,6 +40,42 @@ def mistake_summary(record: Any) -> dict:
         "review_history": record.review_history,
         "linked_concepts": record.linked_concepts,
     }
+
+
+def _normalize_question(value: str) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _build_mistake_indexes(
+    records: list[Any],
+) -> tuple[dict[str, list[dict]], dict[str, str]]:
+    by_concept: dict[str, list[dict]] = defaultdict(list)
+    question_ids: dict[str, str] = {}
+
+    for record in records:
+        summary = mistake_summary(record)
+        linked_names = {
+            str(concept.get("name", "")).strip()
+            for concept in getattr(record, "linked_concepts", []) or []
+            if str(concept.get("name", "")).strip()
+        }
+        explicit_names = linked_names | {
+            str(tag).strip()
+            for tag in getattr(record, "tags", []) or []
+            if str(tag).strip()
+        }
+        for concept_name in explicit_names:
+            by_concept[concept_name].append(summary)
+
+        for text in (
+            getattr(record, "question_text", ""),
+            getattr(record, "ocr_text", ""),
+        ):
+            normalized = _normalize_question(text)
+            if normalized:
+                question_ids.setdefault(normalized, record.id)
+
+    return dict(by_concept), question_ids
 
 
 def build_concept_review_plan(
@@ -64,6 +105,7 @@ def build_concept_review_plan(
         | {name for name, count in mistake_counts.items() if count > 0}
     )
 
+    mistakes_by_concept, mistake_ids_by_question = _build_mistake_indexes(records)
     review_items = []
     for name in candidate_names:
         if not name:
@@ -74,20 +116,7 @@ def build_concept_review_plan(
         exposure_count = int(info.get("exposure_count", 0) or concept_counts.get(name, 0) or 0)
         days_since_seen = days_since(info.get("last_exposed_at", ""), now=reference)
         days_since_review = days_since(info.get("last_reviewed_at", ""), now=reference)
-        related_mistakes = []
-        for record in records:
-            linked_names = [str(c.get("name", "")) for c in getattr(record, "linked_concepts", [])]
-            haystack = "\n".join([
-                getattr(record, "question_text", ""),
-                getattr(record, "ocr_text", ""),
-                getattr(record, "explanation", ""),
-                " ".join(getattr(record, "tags", []) or []),
-                " ".join(linked_names),
-            ])
-            if name in haystack:
-                related_mistakes.append(mistake_summary(record))
-            if len(related_mistakes) >= 50:
-                break
+        related_mistakes = mistakes_by_concept.get(name, [])[:50]
 
         recent_questions = []
         seen_questions = set()
@@ -107,15 +136,8 @@ def build_concept_review_plan(
                 ),
                 "timestamp": exposure.get("timestamp", ""),
                 "weak": bool(exposure.get("weak")),
-                "mistake_id": next(
-                    (
-                        record.id
-                        for record in records
-                        if question
-                        and question
-                        in "\n".join([record.question_text, record.ocr_text, record.explanation])
-                    ),
-                    "",
+                "mistake_id": mistake_ids_by_question.get(
+                    _normalize_question(question), ""
                 ),
             })
             if len(recent_questions) >= 3:
@@ -173,7 +195,6 @@ def build_concept_review_plan(
         })
 
     review_items.sort(
-        key=lambda item: (item["priority"], item["exposure_count"]),
-        reverse=True,
+        key=lambda item: (-item["priority"], -item["exposure_count"], item["name"])
     )
     return review_items[:limit]

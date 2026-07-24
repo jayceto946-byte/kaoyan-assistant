@@ -107,6 +107,10 @@ def retrieve_node(state: dict) -> dict:
             }
 
     precise_results, matched_concepts = _kg_precise_retrieval(kg, user_input, intent=intent)
+    for item in precise_results:
+        item.setdefault("book_name", primary_book)
+        item.setdefault("book_role", str(primary_resource.get("role") or ""))
+        item.setdefault("rag_priority", float(primary_resource.get("priority") or 1.0))
     vector_results: list[dict] = []
     lexical_results: list[dict] = []
     neighbor_results: list[dict] = []
@@ -183,8 +187,13 @@ def retrieve_node(state: dict) -> dict:
                 "section_title": item.get("section_title", ""), "page_idx": item.get("page_idx", -1),
                 "text": item.get("text", ""), "score": item.get("score", 0.0),
                 "query_coverage": item.get("query_coverage", 0.0),
+                "book_name": item.get("book_name", ""),
                 "book_role": item.get("book_role", ""),
                 "rag_priority": item.get("rag_priority", 1.0),
+                "role": item.get("role", ""),
+                "source": item.get("source", ""),
+                "is_direct_hit": bool(item.get("is_direct_hit")),
+                "fusion_sources": item.get("fusion_sources", []),
             }
             for item in retrieval_debug_items[:6]
             if item.get("text") and _supports_query_literals(user_input, item.get("text", "")) and (item.get("is_direct_hit") or float(item.get("query_coverage", 0)) >= 0.2)
@@ -475,12 +484,11 @@ def _merge_and_rerank(
             "parent_id": item.get("parent_id", ""),
             "cross_encoder_score": item.get("cross_encoder_score"),
             "query_coverage": item.get("query_coverage", 0.0),
-                "book_role": item.get("book_role", ""),
-                "rag_priority": item.get("rag_priority", 1.0),
             "reranker_mode": rerank_meta.get("mode"),
             "chunk_id": item.get("chunk_id", ""),
             "source": item.get("source", ""),
             "role": item.get("role", ""),
+            "book_name": item.get("book_name", ""),
             "book_role": item.get("book_role", ""),
             "rag_priority": item.get("rag_priority", 1.0),
             "section_title": item.get("section_title", ""),

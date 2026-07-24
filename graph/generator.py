@@ -1,5 +1,6 @@
 """综合生成 Agent — 信息整合 + 推理生成 + 格式化输出"""
 from config import get_llm
+from graph.evidence_pack import build_evidence_pack
 from utils.latex_sanitizer import sanitize_latex
 from utils.thinking_filter import strip_thinking
 
@@ -21,14 +22,8 @@ GENERATE_PROMPT = """请基于以下信息回答用户问题。直接开始，�
 ## 用户意图：{intent}
 ## 用户问题：{user_input}
 
-## 教材内容
-{chapter_content}
-
 ## Selected textbook evidence
 {evidence_content}
-
-## 概念检索
-{concept_results}
 
 ## 学习者历史
 {history_results}
@@ -40,7 +35,7 @@ GENERATE_PROMPT = """请基于以下信息回答用户问题。直接开始，�
 1. 概念定义请使用教材原文表述，如"某某概念是指……"、"某某概念是……"
 0. Every factual claim must be supported by the selected textbook evidence. Do not use model memory to fill gaps.
 0. For list/reason/feature questions, exhaustively extract every parallel point in the evidence before answering.
-0. Cite paragraphs or bullets only with a readable source label such as [短书·chapter / section / p.page]. Never expose chunk_id, collection names, UUIDs, hashes, or other internal index identifiers.
+0. Cite paragraphs or bullets only with a readable source label such as [教材名·chapter / section / p.page]. Never expose chunk_id, collection names, UUIDs, hashes, or other internal index identifiers.
 0. If evidence is insufficient, state that the imported textbook does not provide enough evidence.
 2. 遇到用户可能第一次接触、或本身比较抽象陌生的概念时，请在正式定义后补一个简短的“直观例子”或“生活化类比”，用日常场景说明它具体怎么体现；例子只用于帮助理解，不能替代教材定义、适用条件、公式推导或例题解法。
 3. 讲解结构要保留“以题讲知识点”的主线：概念只列必要项，每个核心概念尽量落回题目、公式、步骤或易错点，不要把回答写成概念清单。
@@ -89,19 +84,6 @@ def grounded_failure_message(state: dict) -> str:
 def _build_generate_prompt(state: dict) -> str:
     intent = state.get("intent", "qa")
     user_input = state.get("user_input", "")
-    chapter_text = ""
-    for chapter, docs in list(state.get("chapter_contents", {}).items())[:3]:
-        chapter_text += f"\n## {chapter}\n" + "\n---\n".join(doc[:1800] for doc in docs[:4])
-    evidence_lines = []
-    for item in state.get("evidence_items", [])[:6]:
-        page = item.get("page_idx", -1)
-        page_label = f"p.{int(page) + 1}" if isinstance(page, (int, float)) and page >= 0 else "p.?"
-        book_role = str(item.get("book_role") or "")
-        book_label = "短书" if book_role == "core" else ("长书补充" if book_role == "reference" else "教材")
-        label = " / ".join(filter(None, [f"{book_label}·{item.get('chapter') or ''}", str(item.get("section_title") or ""), page_label]))
-        evidence_lines.append(f"[{label}]\n{str(item.get('text') or '')[:1800]}")
-    evidence_text = "\n\n---\n\n".join(evidence_lines)
-    concept_text = "\n".join(f"- [{item.get('chapter', '')}] {item.get('content', '')[:200]}" for item in state.get("concept_results", [])[:3])
     history_text = "\n".join(f"- [{item.get('type', '')}] {item.get('chapter', '')}: {item.get('question', '')}" for item in state.get("history_results", [])[:3])
     output_instruction = {
         "factual_recall": "Answer in Chinese. Give the conclusion first, then exhaustively list all textbook points. Add no external facts.",
@@ -113,14 +95,20 @@ def _build_generate_prompt(state: dict) -> str:
     }.get(intent, "Answer clearly in Chinese and stay grounded in the supplied material.")
     if not state.get("use_textbook_context", True):
         return GENERAL_QA_PROMPT.format(subject=state.get("subject") or "unspecified", intent=intent, user_input=user_input, history_results=history_text or "(none)", output_instruction=output_instruction)
-    example_check = _EXAMPLE_CHECK_PROMPT if _has_example_marker(chapter_text) else (
+    evidence_pack = build_evidence_pack(
+        state.get("evidence_items") or [],
+        state.get("chapter_contents") or {},
+        intent=intent,
+    )
+    evidence_text = evidence_pack["text"]
+    example_check = _EXAMPLE_CHECK_PROMPT if _has_example_marker(evidence_text) else (
         "\u82e5\u68c0\u7d22\u5185\u5bb9\u7f3a\u5c11\u5b8c\u6574\u9898\u5e72\uff0c\u5fc5\u987b\u660e\u786e\u8bf4\u660e\u9898\u5e72\u7f3a\u5931\uff0c\u4e0d\u80fd\u7f16\u9020\u6216\u5192\u5145\u6559\u6750\u539f\u9898\u3002"
         "\u975e\u4e8b\u5b9e\u80cc\u8bf5\u95ee\u9898\u53ef\u4ee5\u7ed9\u51fa[\u8865\u5145\u4f8b\u9898]\uff0c\u4f46\u53ea\u80fd\u4f7f\u7528\u5df2\u9009\u6559\u6750\u8bc1\u636e\u4e2d\u7684\u6982\u5ff5\u548c\u516c\u5f0f\uff1b"
         "\u4e8b\u5b9e\u80cc\u8bf5\u95ee\u9898\u4e0d\u5f97\u589e\u52a0\u8865\u5145\u4f8b\u9898\u3002"
     )
     return GENERATE_PROMPT.format(
-        intent=intent, user_input=user_input, chapter_content=chapter_text or "(no relevant chapter)",
-        evidence_content=evidence_text or "(no selected evidence)", concept_results=concept_text or "(none)",
+        intent=intent, user_input=user_input,
+        evidence_content=evidence_text or "(no selected evidence)",
         history_results=history_text or "(none)",
         teaching_content=state.get("teaching_content") or "(none)", example_check=example_check,
         output_instruction=output_instruction,

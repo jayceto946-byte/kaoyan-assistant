@@ -38,6 +38,15 @@ OCR_JPEG_QUALITY = int(os.getenv("MISTAKE_OCR_JPEG_QUALITY", "86"))
 KIMI_VISION_MODEL = os.getenv("KIMI_VISION_MODEL", "kimi-k2.5")
 PENDING_IMAGE_MAX_AGE_SECONDS = 24 * 60 * 60
 
+_image_store = MistakeImageStore(
+    images_path=Path(IMAGES_PATH),
+    allowed_extensions=frozenset(ALLOWED_IMAGE_EXTS),
+    max_image_bytes=MAX_IMAGE_BYTES,
+    ocr_max_side=OCR_MAX_SIDE,
+    ocr_jpeg_quality=OCR_JPEG_QUALITY,
+    pending_max_age_seconds=PENDING_IMAGE_MAX_AGE_SECONDS,
+)
+
 
 def _log_learning_event(event_type: str, *, book_name: str = "default", record: MistakeRecord | None = None, payload: dict | None = None) -> None:
     try:
@@ -225,43 +234,6 @@ def _persist_mistake_concepts(record: MistakeRecord, explanation: str = "", book
     return concepts
 
 
-def _mistake_image_store() -> MistakeImageStore:
-    return MistakeImageStore(
-        images_path=Path(IMAGES_PATH),
-        allowed_extensions=frozenset(ALLOWED_IMAGE_EXTS),
-        max_image_bytes=MAX_IMAGE_BYTES,
-        ocr_max_side=OCR_MAX_SIDE,
-        ocr_jpeg_quality=OCR_JPEG_QUALITY,
-        pending_max_age_seconds=PENDING_IMAGE_MAX_AGE_SECONDS,
-    )
-
-
-def _image_root() -> Path:
-    return _mistake_image_store().image_root
-
-
-def _pending_image_root() -> Path:
-    return _mistake_image_store().pending_root
-
-
-def _delete_mistake_image(path: str | Path | None) -> None:
-    _mistake_image_store().delete(path)
-
-
-def _cleanup_stale_pending_images() -> None:
-    _mistake_image_store().cleanup_stale_pending()
-
-
-def _commit_pending_mistake_image(path: str | None) -> tuple[str | None, bool]:
-    return _mistake_image_store().commit_pending(path)
-
-
-def _save_uploaded_image(file: UploadFile) -> Path:
-    return _mistake_image_store().save_upload(file)
-
-
-def _optimize_for_ocr(raw_path: Path) -> Path:
-    return _mistake_image_store().optimize_for_ocr(raw_path)
 
 def _image_data_url(image_path: Path) -> str:
     mime = "image/jpeg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
@@ -338,7 +310,7 @@ def add_mistake(req: MistakeAddRequest, book_name: str = "default"):
     committed_image: str | None = None
     image_was_moved = False
     try:
-        committed_image, image_was_moved = _commit_pending_mistake_image(req.image_path)
+        committed_image, image_was_moved = _image_store.commit_pending(req.image_path)
         record = _record_from_request(req, book_name=book_name)
         record.image_path = committed_image
         _persist_mistake_concepts(record, explanation=record.explanation, book_name=book_name)
@@ -347,7 +319,7 @@ def add_mistake(req: MistakeAddRequest, book_name: str = "default"):
         return {"success": True, "id": mid, "data": _record_to_out(record), "message": f"已保存（{mid}）"}
     except Exception as e:
         if image_was_moved:
-            _delete_mistake_image(committed_image)
+            _image_store.delete(committed_image)
         return {
             "success": False,
             "message": f"保存失败：{e}。如果提示 disk I/O error，请检查 data/progress 的 SQLite 文件权限或残留 journal。",
@@ -403,10 +375,10 @@ def get_due_mistakes(subject: str = "", book_name: str = "default"):
 def recognize_mistake_image(file: UploadFile = File(...)):
     image_path: Path | None = None
     try:
-        image_path = _save_uploaded_image(file)
+        image_path = _image_store.save_upload(file)
         ocr_text = _ocr_image_with_kimi(image_path)
         if not ocr_text:
-            _delete_mistake_image(image_path)
+            _image_store.delete(image_path)
             return {
                 "success": False,
                 "message": "Kimi Vision 未返回有效 OCR 文本，请手动输入题干后保存。",
@@ -421,8 +393,8 @@ def recognize_mistake_image(file: UploadFile = File(...)):
             "optimized": image_path.name.endswith("_ocr.jpg"),
         }
     except Exception as e:
-        _delete_mistake_image(image_path)
-        return {"success": False, "message": f"讲解失败: {e}"}
+        _image_store.delete(image_path)
+        return {"success": False, "message": f"OCR 识别失败: {e}"}
 
 @router.post("/solve-image")
 def solve_mistake_image(
@@ -433,10 +405,10 @@ def solve_mistake_image(
 ):
     image_path: Path | None = None
     try:
-        image_path = _save_uploaded_image(file)
+        image_path = _image_store.save_upload(file)
         ocr_text = _ocr_image_with_kimi(image_path)
         if not ocr_text:
-            _delete_mistake_image(image_path)
+            _image_store.delete(image_path)
             return {
                 "success": False,
                 "message": "Kimi Vision 未返回有效 OCR 文本，请手动补充题干后再解答。",
@@ -453,7 +425,7 @@ def solve_mistake_image(
             "explanation": explanation,
         }
     except Exception as e:
-        _delete_mistake_image(image_path)
+        _image_store.delete(image_path)
         return {"success": False, "message": f"讲解失败: {e}"}
 
 @router.post("/solve-text")
@@ -516,7 +488,7 @@ def delete_mistake(mistake_id: str, book_name: str = "default"):
     record = mistake_book.get(mistake_id)
     mistake_book.delete(mistake_id)
     if record:
-        _delete_mistake_image(record.image_path)
+        _image_store.delete(record.image_path)
     return {"success": True, "message": f"已删除 {mistake_id}"}
 
 @router.post("/review")

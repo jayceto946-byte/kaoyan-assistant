@@ -987,3 +987,89 @@ The detailed historical notes for this period were damaged by mojibake before th
 
 - `desktop/main.cjs` 与 `desktop/preload.cjs` Node 语法检查通过。
 - 前端 TypeScript 与生产构建通过。
+
+## 2026-07-24 - 解耦分支复审修复
+
+### Fix
+
+- `BookReadCache` 在缓存存取边界使用防御性复制，避免调用方修改 JSON 或索引统计后污染后续请求；小型元数据文件增加内容指纹，可靠识别 Windows 同尺寸快速覆盖，同时避免大型章节文件每次重读全文。
+- KG 复习计划增加概念名稳定排序兜底，并兼容有/无时区时间相减。
+- KG 错题关联改为一次构建“显式概念 -> 错题摘要”和“规范化题干 -> 错题 ID”索引，不再用短概念或问题子串扫描全文，减少误命中和重复遍历。
+- 删除 books API 中无语义的一行转发函数，移除未使用的参数和导入，直接调用章节纯函数。
+- 错题图片服务改为模块级单实例，路由直接调用其生命周期方法，不再逐次重建相同服务或保留私有转发层。
+- 图片大小错误信息从 `max_image_bytes` 动态生成；Pillow 缺失或图片无法解码时记录降级原因，其他优化异常记录堆栈并向上抛出。
+- `/mistakes/recognize-image` 的失败文案改为 OCR 识别失败，不再误报为讲解失败。
+
+### Validation
+
+- `python -m pytest -q tests/test_book_read_cache.py tests/test_kg_learning_summary_service.py tests/test_mistake_image_lifecycle.py`：16 passed。
+- 覆盖缓存结果隔离、同尺寸覆盖、KG 稳定排序、时区兼容、短概念误匹配、题干子串误匹配、图片路径约束、失败清理、动态大小提示和意外优化异常向上抛出。
+- 完整后端测试：199 passed，1 条既有 Starlette/httpx2 弃用警告。
+
+## 2026-07-24 - 解耦复审第二批边界整理
+
+### Backend
+
+- `ExercisePracticeService` 移除 `Any`、请求 DTO、响应字典和序列化回调，改为明确的 `ExerciseBank`、`MistakeBook`、`ExerciseRecord`、`PracticeSession` 类型。
+- 新增 `PracticeAnswerResult`，由应用服务表达作答、稳定错题 ID 和可重试的错题写入失败；FastAPI Router 独立负责 Pydantic 序列化、成功/失败响应和用户文案。
+- 作答已经持久化但错题写入失败时，仍记录一次正常练习事件；重试继续复用稳定错题 ID，不重复作答。
+
+### Frontend
+
+- 新增 `useExerciseAnswerJob`，集中管理标准答案任务恢复、轮询、失败终止、草稿编辑和保存。
+- 新增 `useExerciseImportCandidates`，集中管理候选题筛选、选择、编辑、合并、拆分和摘要统计；所有跨状态更新均位于事件处理流程，不在 React state updater 中产生副作用。
+- `ExercisesPage` 从 909 行降至 820 行，删除重复工作流实现，没有继续抽取纯样式叶子组件。
+
+### Validation
+
+- 后端练习与 overview 针对性测试：12 passed；完整后端测试：199 passed，1 条既有 Starlette/httpx2 弃用警告。
+
+## 2026-07-24 - 解耦复审第三批工作流拆分
+
+### Review corrections
+
+- 复审发现原 `ExercisePracticeService` 仍包含四个只转发到 `ExerciseBank` 的方法；移除这些方法并收窄为只承载幂等作答、错题写入和学习事件协调的 `PracticeAnswerService`，会话查询与状态切换由 Router 直接调用题库。
+- 候选题 hook 不再向页面暴露原始 `setCandidates` / `setSelectedIds`，改为替换候选、移除已选、全选和清空选择等语义操作。
+- 候选题合并、拆分、筛选和摘要提取为纯操作并增加测试；合并现在真正校验所选题目相邻，避免界面提示与行为不一致。
+- 答案任务创建未返回任务 ID、轮询返回失败或缺少任务数据时会结束 busy 状态并给出明确提示，不再无限等待。
+
+### Workflow split
+
+- 新增 `usePracticeSession`，集中连续练习启动、暂停、恢复、作答、转入错题本、当前题选择和本地状态同步；`ExercisesPage` 进一步降至约 716 行。
+- 新增 `useMistakeReview`，集中到期复习展开状态、评分提交、记录同步以及到期列表和统计刷新。
+- 保留 `_bank()` / `_mb()` 配置入口：它们统一绑定教材范围和 `PROGRESS_PATH`，不是纯改名转发。
+- 暂不把截图裁剪强行抽成综合 hook；该流程仍与 DOM ref、Canvas 和裁剪弹窗紧密耦合，待先拆出稳定的图片处理状态模型后再迁移。
+
+### Validation
+
+- 前端 ESLint 通过。
+- 前端 Vitest：5 个测试文件、18 项测试通过。
+- 前端 TypeScript 检查与 Vite 生产构建通过。
+- 后端练习与 overview 针对性测试：12 passed。
+- 完整后端测试：199 passed，1 条既有 Starlette/httpx2 弃用警告。
+
+## 2026-07-24 - RAG EvidencePack 与问答时序优化
+
+### RAG generation
+
+- 将生成阶段重复注入的 `chapter_contents`、`evidence_items` 和 `concept_results` 收敛为单一 `EvidencePack`；按 `chunk_id` 与规范化正文去重，并使用 9000 字符总预算和 1800 字符单段上限。
+- `EvidencePack` 保持为显式接收 `evidence_items`、`chapter_contents`、`intent` 的纯函数，不直接依赖完整 GraphState、环境变量、索引或存储，避免破坏现有检索与解耦边界。
+- 证据数量限制按意图区分：普通定义保持同章最多 2 段；公式/性质最多 3 段；推导、应用、教学等最多 4 段；事实背诵允许保留检索层同章最多 6 段，避免漏掉并列要点。旧索引缺少 `evidence_items` 时仍从 `chapter_contents` 降级。
+- 检索调试项和最终证据继续分离；仅补齐 `book_name`、语义角色和命中来源等既有元数据。引用标签优先使用真实教材名，未知页码不再显示 `p.?`，未改动检索排序、证据门禁、向量库或知识图谱格式。
+
+### Runtime
+
+- 复用相同不可变配置下的 LangChain/OpenAI/Ollama 客户端，保留 DeepSeek V4 Pro、thinking 与温度配置，不引入 Planner 模型降级。
+- 修正 SSE 阶段计时归属，分别记录 context、plan、retrieve、chapter、generate TTFT、generate total 和 total；仅增加事件观测字段，不改变事件顺序和正文累积协议。
+
+### Benchmark
+
+- 固定问题“什么是电容式传感器”和同一检索结果的隔离生成测试中，Prompt 从 6782 字符降至 4419 字符（-34.8%）；3 次中位 TTFT 从 23220.97 ms 降至 10169.70 ms（-56.2%），生成总时长从 27500.96 ms 降至 14664.82 ms（-46.7%）。
+- 完整链路前后各仅 1 次，改动后总时长高 11.2%；该结果包含 Planner 和外部模型波动，样本不足，不能宣称完整链路稳定提速。前后答案及原始计时保存在 `benchmark_results/`。
+
+### Validation
+
+- EvidencePack、生成、通用教材资源组、检索降级与 SSE 定向回归：29 passed。
+- 完整后端测试：201 passed，1 条既有 Starlette/httpx2 弃用警告。
+- 前端 TypeScript 与 Vite 生产构建通过；Electron `main.cjs`、`preload.cjs` Node 语法检查通过。
+- `git diff --check` 通过。`compileall` 因现有 `__pycache__` 目录权限无法写入而未作为验证依据；完整 pytest 已成功导入并执行相关 Python 模块。

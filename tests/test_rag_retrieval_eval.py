@@ -28,9 +28,10 @@ def test_kg_precise_prefers_short_exact_concept_and_filters_toc():
 
 def test_merge_and_rerank_can_return_final_metadata():
     chapter_contents, debug = _merge_and_rerank(
-        [{"chapter": "c", "chunk_id": "a", "text": "A", "is_direct_hit": True, "source": "kg_precise", "role": "definition"}],
+        [{"chapter": "c", "chunk_id": "a", "text": "A", "is_direct_hit": True, "source": "kg_precise", "role": "definition", "book_name": "Book A"}],
         [{"chapter": "c", "chunk_id": "b", "text": "B", "is_direct_hit": False, "source": "vector", "role": "reference"}],
         include_metadata=True,
     )
     assert chapter_contents == {"c": ["A", "B"]}
     assert [item["chunk_id"] for item in debug] == ["a", "b"]
+    assert debug[0]["book_name"] == "Book A"

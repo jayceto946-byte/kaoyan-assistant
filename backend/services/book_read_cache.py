@@ -1,16 +1,26 @@
 """File-signature caches for frequently requested textbook catalog data."""
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
+_SIGNATURE_HASH_MAX_BYTES = 1024 * 1024
+FileSignature = tuple[int, int, bytes | None]
 
-def _signature(path: Path) -> tuple[int, int] | None:
+
+def _signature(path: Path) -> FileSignature | None:
     try:
         stat = path.stat()
-        return stat.st_mtime_ns, stat.st_size
+        digest = None
+        if path.is_file() and stat.st_size <= _SIGNATURE_HASH_MAX_BYTES:
+            digest = hashlib.blake2b(
+                path.read_bytes(), digest_size=16
+            ).digest()
+        return stat.st_mtime_ns, stat.st_size, digest
     except OSError:
         return None
 
@@ -20,13 +30,13 @@ class BookReadCache:
 
     def __init__(self):
         self._lock = threading.RLock()
-        self._json: dict[str, tuple[tuple[int, int] | None, Any]] = {}
-        self._pdfs: dict[str, tuple[tuple[int, int] | None, tuple[Path, ...]]] = {}
+        self._json: dict[str, tuple[FileSignature | None, Any]] = {}
+        self._pdfs: dict[str, tuple[FileSignature | None, tuple[Path, ...]]] = {}
         self._index: dict[
             tuple[str, str, str],
             tuple[
-                tuple[int, int] | None,
-                tuple[int, int] | None,
+                FileSignature | None,
+                FileSignature | None,
                 dict,
             ],
         ] = {}
@@ -43,14 +53,14 @@ class BookReadCache:
         with self._lock:
             cached = self._json.get(key)
             if cached and cached[0] == signature:
-                return cached[1]
+                return deepcopy(cached[1])
         try:
             value = json.loads(path.read_text(encoding="utf-8")) if signature else default
         except Exception:
             value = default
         with self._lock:
-            self._json[key] = (signature, value)
-        return value
+            self._json[key] = (signature, deepcopy(value))
+        return deepcopy(value)
 
     def list_pdfs(self, root: Path) -> list[Path]:
         root.mkdir(parents=True, exist_ok=True)
@@ -86,12 +96,12 @@ class BookReadCache:
                 and cached[0] == map_signature
                 and cached[1] == lexical_signature
             ):
-                return cached[2]
+                return deepcopy(cached[2])
         value = loader()
         with self._lock:
             self._index[key] = (
                 map_signature,
                 lexical_signature,
-                value,
+                deepcopy(value),
             )
-        return value
+        return deepcopy(value)
